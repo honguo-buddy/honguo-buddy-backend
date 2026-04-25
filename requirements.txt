@@ -1,0 +1,15 @@
+fastapi
+uvicorn[standard]
+SQLAlchemy
+aiomysql
+redis
+httpx
+python-jose[cryptography]
+passlib[bcrypt]
+pydantic-settings
+pydantic-extra-types
+phonenumbers
+python-multipart
+email-validator
+APScheduler
+python-dotenv
