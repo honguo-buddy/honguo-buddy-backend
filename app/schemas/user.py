@@ -1,6 +1,7 @@
-from pydantic import BaseModel,EmailStr,Field
+from pydantic import BaseModel, EmailStr, Field, field_validator
 from pydantic_extra_types.phone_numbers import PhoneNumber
 from typing import Optional
+from uuid import UUID
 
 #USER数据模型
 
@@ -28,6 +29,19 @@ class user(userBase):
     last_login_ip: str | None = None
     last_login_time: int | None = None
     user_type: str | None = None
+
+    @field_validator('user_uuid', mode='before')
+    @classmethod
+    def convert_user_uuid(cls, v):
+        """将 BINARY(16) 的 bytes 转换为 UUID 字符串。"""
+        if isinstance(v, bytes) and len(v) == 16:
+            return str(UUID(bytes=v))
+        elif isinstance(v, str):
+            return v
+        elif isinstance(v, UUID):
+            return str(v)
+        return v
+
     class Config:
         from_attributes = True
         orm_mode = True

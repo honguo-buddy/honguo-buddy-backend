@@ -6,8 +6,7 @@ import json
 
 
 from app.core.security import get_user_id_from_request  # 根据Token获取用户信息
-from app.db.base import redis,get_db  # 你封装的 Redis 客户端
-from app.models.user_access_log import UserAccessLog
+from app.db import redis, get_db, UserAccessLog
 from sqlalchemy.ext.asyncio import AsyncSession
 
 async def save_log_to_db(log_data: dict):
@@ -64,13 +63,13 @@ class LogMiddleware(BaseHTTPMiddleware):
         
         log_data = {
             "user_id": user_id,
+            "url": f"{request.url.path}",
             "ip": request.client.host,
             "ua": request.headers.get("user-agent"),
             "url": str(request.url),
             "method": request.method,
             "status_code": response.status_code,
             "response_code": response_code,
-            "access_time": time.strftime("%Y-%m-%d %H:%M:%S"),
             "duration_ms": process_time,
         }
 

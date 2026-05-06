@@ -3,10 +3,9 @@ from typing import Union
 
 from fastapi import APIRouter, Depends
 
-from app.api.auth import get_current_user
-from app.core.config import settings
-from app.schemas.response import AuthErrorResponse, ResponseModel
-from app.schemas.user import user as UserSchema
+from app.api import get_current_user
+from app.core import settings
+from app.schemas import AuthErrorResponse, ResponseModel, user as UserSchema
 
 router = APIRouter()
 

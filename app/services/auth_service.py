@@ -9,11 +9,15 @@ import httpx
 from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import settings
-from app.core.exception_handler import AuthHTTPException, BusinessHTTPException, ResourceHTTPException
-from app.core.security import create_access_token, send_email
-from app.db.base import User, redis
-from app.models.user import UserType
+from app.core import (
+    settings,
+    AuthHTTPException,
+    BusinessHTTPException,
+    ResourceHTTPException,
+    create_access_token,
+    send_email,
+)
+from app.db import redis, User, UserType
 
 
 class AuthService:

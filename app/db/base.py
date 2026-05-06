@@ -1,9 +1,9 @@
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker
 from redis.asyncio import Redis
 
-from app.core.config import settings
+from app.core import settings
 
 #异步引擎连接数据库(echo表输出日志)
 engine = create_async_engine(
@@ -28,8 +28,25 @@ Base = declarative_base()
 #Redis数据库连接
 redis = Redis(host=settings.REDIS_HOST, port=settings.REDIS_PORT, decode_responses=True, password=settings.REDIS_PASSWORD)
 
-#引用表类
-from app.models.user import User    # noqa
+# 统一导出模型，避免硬编码到单个模型文件
+from app.models import (  # noqa: E402,F401
+    Attachment,
+    Category,
+    Comment,
+    CreditLog,
+    Goods,
+    ItemType,
+    Order,
+    OrderStatus,
+    Post,
+    PostStatus,
+    SexEnum,
+    TargetType,
+    User,
+    UserAccessLog,
+    UserType,
+    parse_user_type,
+)
 
 #异步获取事务函数
 async def get_db():

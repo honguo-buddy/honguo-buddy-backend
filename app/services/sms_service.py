@@ -6,9 +6,8 @@ from alibabacloud_dypnsapi20170525.client import Client as Dypnsapi20170525Clien
 from alibabacloud_tea_openapi import models as open_api_models
 from alibabacloud_dypnsapi20170525 import models as dypnsapi_20170525_models
 from alibabacloud_tea_util import models as util_models
-from app.db.base import redis
-from app.core.exception_handler import BusinessHTTPException
-from app.core.config import settings
+from app.db import redis
+from app.core import BusinessHTTPException, settings
 
 class SMSService:
     """短信验证码服务适配器。负责生成、发送、校验验证码与防刷控制。

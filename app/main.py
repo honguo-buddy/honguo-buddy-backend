@@ -6,14 +6,11 @@ from contextlib import asynccontextmanager
 import asyncio
 import os
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from app.core.datetime_utils import BEIJING_TZ
+from app.core import BEIJING_TZ
 
 from app.api import auth,user
-from app.core.exception_handler import register_exception_handlers
-from app.core.log_middleware import LogMiddleware
-from app.core.config import settings
-from app.db.base import engine,Base,redis,AsyncSessionLocal
-from app.core.cleantask import create_cleanup_task
+from app.core import register_exception_handlers, LogMiddleware, settings, create_cleanup_task
+from app.db import engine, Base, redis, AsyncSessionLocal
 
 # 确保 logs 文件夹存在
 os.makedirs("logs", exist_ok=True)

@@ -7,13 +7,17 @@ from jose import JWTError, jwt
 from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import settings
-from app.core.exception_handler import AuthHTTPException, BusinessHTTPException
-from app.db.base import User, get_db, redis
-from app.schemas.auth import EmailSendVerifyCodeRequest, EmailVerifyCodeRequest, WxLoginRequest
-from app.schemas.response import AuthErrorResponse, ResponseModel
-from app.schemas.user import user as UserSchema
-from app.services.auth_service import AuthService
+from app.core import settings, AuthHTTPException, BusinessHTTPException
+from app.db import get_db, redis, User
+from app.schemas import (
+    EmailSendVerifyCodeRequest,
+    EmailVerifyCodeRequest,
+    WxLoginRequest,
+    AuthErrorResponse,
+    ResponseModel,
+    user as UserSchema,
+)
+from app.services import AuthService
 
 logger = logging.getLogger(__name__)
 

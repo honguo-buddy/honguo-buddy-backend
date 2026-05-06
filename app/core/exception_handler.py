@@ -6,7 +6,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 import traceback
 import logging
 import json
-from app.schemas.response import ResponseModel, UnknownErrorResponse, HTTPErrorResponse, RequestValidationErrorResponse, AuthErrorResponse, StatisticsErrorResponse, ResourceErrorResponse, BusinessErrorResponse
+from app.schemas import ResponseModel, UnknownErrorResponse, HTTPErrorResponse, RequestValidationErrorResponse, AuthErrorResponse, StatisticsErrorResponse, ResourceErrorResponse, BusinessErrorResponse
 from app.core.config import settings
 
 

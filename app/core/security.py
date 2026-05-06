@@ -6,9 +6,8 @@ import smtplib
 from email.mime.text import MIMEText
 from email.header import Header
 from app.core.datetime_utils import get_now_naive
-    
 from app.core.config import settings
-from app.db.base import redis
+from app.db import redis
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated=["auto"])
 
 
