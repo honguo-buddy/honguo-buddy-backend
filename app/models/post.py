@@ -59,6 +59,13 @@ class Post(Base):
         lazy="selectin",
     )
 
+    attachments = relationship(
+        "Attachment",
+        primaryjoin="and_(foreign(Attachment.target_id) == Post.post_id, Attachment.target_type == 'POST')",
+        lazy="selectin",
+        cascade="all, delete-orphan", # 当帖子删除时，自动清理附件记录
+    )
+    
     __table_args__ = (
         Index("idx_post_status_deleted_create_time", "status", "is_deleted", create_time.desc()),
     )
