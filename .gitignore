@@ -1,3 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtualenv
+.venv/
+
+# Pytest
+.pytest_cache/
+test_reports/
+reports/
+coverage.xml
+htmlcov/
+
+# Editor
+.vscode/
 .idea
 .ipynb_checkpoints
 .mypy_cache
@@ -11,6 +28,7 @@ site
 coverage.xml
 .netlify
 test.db
+docs/
 
 # IDE & Editor
 .idea/

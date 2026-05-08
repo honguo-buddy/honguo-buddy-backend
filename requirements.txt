@@ -13,3 +13,10 @@ python-multipart
 email-validator
 APScheduler
 python-dotenv
+
+# Testing dependencies
+pytest
+pytest-asyncio
+httpx
+pytest-cov
+aiosqlite

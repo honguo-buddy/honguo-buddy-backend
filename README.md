@@ -91,6 +91,8 @@ SMTP_PASSWORD=qq_mail_auth_code
 - app/db/: 数据库与 Redis 连接管理。
 - app/static/: 静态资源目录。
 
+- tests/unit : 单元测试目录
+- tests/integration : 集成测试目录
 当前目录简表：
 
 ```text
@@ -114,6 +116,9 @@ app/
         user.py
     services/
         auth_service.py
+tests/
+    unit/
+    integration/
 ```
 
 ## 三、接口统一规范 (API Standards)

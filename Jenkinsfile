@@ -57,8 +57,9 @@ pipeline {
                         python3 -m venv .venv
                     fi
                     . .venv/bin/activate
-                    pip install uv -i https://pypi.tuna.tsinghua.edu.cn/simple
-                    uv pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
+                    python -m pip install --upgrade pip
+                    python -m pip install uv -i https://pypi.tuna.tsinghua.edu.cn/simple
+                    uv pip install --python "$(which python)" -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple
                 '''
             }
         }
@@ -69,6 +70,7 @@ pipeline {
                 sh '''
                     set -e
                     . .venv/bin/activate
+                    export PYTHONPATH="$WORKSPACE${PYTHONPATH:+:$PYTHONPATH}"
                     python - <<'PY'
 import asyncio
 import sys
@@ -109,13 +111,86 @@ PY
                 '''
             }
         }
+
+        stage('4. 单元测试') {
+            steps {
+                echo "Status: 执行单元测试..."
+                sh '''
+                    set -e
+                    . .venv/bin/activate
+                    export PYTHONPATH="$WORKSPACE${PYTHONPATH:+:$PYTHONPATH}"
+                    
+                    # 创建测试报告目录
+                    mkdir -p test_reports
+                    
+                    # 运行单元测试层
+                    echo "=== 运行单元测试层 ==="
+                    pytest tests/unit \
+                        --junitxml=test_reports/unit_report.xml \
+                        --cov=app \
+                        --cov-append \
+                        --cov-report= \
+                        -v \
+                        --tb=short
+                    
+                    echo "✓ 单元测试完成"
+                '''
+            }
+        }
+
+        stage('5. 集成测试') {
+            steps {
+                echo "Status: 执行集成测试..."
+                sh '''
+                    set -e
+                    . .venv/bin/activate
+                    export PYTHONPATH="$WORKSPACE${PYTHONPATH:+:$PYTHONPATH}"
+                    
+                    # 创建测试报告目录
+                    mkdir -p test_reports
+                    
+                    # 运行集成测试层
+                    echo "=== 运行集成测试层 ==="
+                    pytest tests/integration \
+                        --junitxml=test_reports/integration_report.xml \
+                        --cov=app \
+                        --cov-append \
+                        --cov-report= \
+                        -v \
+                        --tb=short
+                    
+                    echo "✓ 集成测试完成"
+                '''
+            }
+        }
+
+        stage('6. 覆盖率汇总') {
+            steps {
+                echo "Status: 生成覆盖率汇总..."
+                sh '''
+                    set -e
+                    . .venv/bin/activate
+                    export PYTHONPATH="$WORKSPACE${PYTHONPATH:+:$PYTHONPATH}"
+
+                    coverage xml -o test_reports/coverage.xml
+                    coverage html -d test_reports/coverage_html
+                    coverage report -m
+
+                    echo "✓ 覆盖率报告已生成"
+                '''
+            }
+        }
     }
 
     post {
         success {
             script {
                 echo "Verify +1: 测试通过"
-                sh "${GERRIT_BASE_CMD} --verified +1 --message '\"Jenkins: Build Success [SUCCESS]\"'"
+                if (env.GERRIT_PATCHSET_REVISION) {
+                    sh "${GERRIT_BASE_CMD} --verified +1 --message '\"Jenkins: Build Success [SUCCESS]\"'"
+                } else {
+                    echo "Skip Gerrit verify +1: GERRIT_PATCHSET_REVISION is empty"
+                }
             }
         }
         failure {
@@ -127,6 +202,24 @@ PY
             }
         }
         always {
+            // 发布 JUnit 测试报告（单元 + 集成）
+            junit(
+                testResults: 'test_reports/*_report.xml',
+                allowEmptyResults: true,
+                keepLongStdio: true,
+                skipPublishingChecks: false
+            )
+            
+            // 发布代码覆盖率报告
+            publishHTML([
+                allowMissing: true,
+                alwaysLinkToLastBuild: true,
+                keepAll: true,
+                reportDir: 'test_reports/coverage_html',
+                reportFiles: 'index.html',
+                reportName: 'Coverage Report'
+            ])
+            
             cleanWs()
         }
     }

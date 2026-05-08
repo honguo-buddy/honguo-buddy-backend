@@ -97,4 +97,4 @@ db/ (数据库层)：统一导出引擎、Session 工厂、Redis 和模型注册
 七、 注意事项
 - 每次修改接口信息/参数/返回后，必须更新 README 对应接口说明（参考 prompt/prompt-readme）。
 - 每次新增第三方库时，先使用 uv 安装，再更新 requirements.txt。
-
+- 如需生成报告总结文档, 请在docs/目录下生成
