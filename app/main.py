@@ -8,7 +8,7 @@ import os
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from app.core import BEIJING_TZ
 
-from app.api import auth,user
+from app.api import auth,user,attachment
 from app.core import register_exception_handlers, LogMiddleware, settings, create_cleanup_task
 from app.db import engine, Base, redis, AsyncSessionLocal
 
@@ -120,6 +120,7 @@ app.add_middleware(
 try:
     app.include_router(router=auth.router, prefix="/auth", tags=["authentication"])
     app.include_router(router=user.router, prefix="/user", tags=["user-related"])
+    app.include_router(router=attachment.router, prefix="/attachments", tags=["attachments"])
     logger.info("All routers registered successfully")
 except Exception as e:
     logger.error(f"Failed to register routers: {e}", exc_info=True)

@@ -1,6 +1,6 @@
 import enum
 
-from sqlalchemy import Boolean, BigInteger, Column, DateTime, Enum as SAEnum, Integer, String, func
+from sqlalchemy import Boolean, BigInteger, Column, DateTime, Enum as SAEnum, ForeignKey, Integer, String, func
 from sqlalchemy.dialects.mysql import BINARY
 from sqlalchemy.orm import relationship
 
@@ -24,7 +24,7 @@ class User(Base):
     user_id = Column(BigInteger, primary_key=True, autoincrement=True, comment="用户主键")
     user_uuid = Column(BINARY(16), unique=True, index=True, nullable=False, comment="用户UUID，外部唯一标识")
     user_name = Column(String(255), unique=True, index=True, nullable=True, comment="用户名")
-    avatar = Column(String(255), nullable=True, comment="用户头像 URL")
+    avatar_id = Column(BigInteger, ForeignKey("attachment.attachment_id"), nullable=True, index=True, comment="用户头像附件ID")
     sex = Column(
         SAEnum(SexEnum, values_callable=lambda enum_cls: [e.value for e in enum_cls], name="user_sex", native_enum=False),
         default=SexEnum.UNKNOWN,
@@ -60,6 +60,7 @@ class User(Base):
     comments = relationship("Comment", back_populates="user", lazy="selectin")
     credit_logs = relationship("CreditLog", back_populates="user", lazy="selectin")
     user_access_logs = relationship("UserAccessLog", back_populates="user", lazy="selectin")
+    avatar_attachment = relationship("Attachment", foreign_keys=[avatar_id], lazy="selectin")
 
 
 def parse_user_type(value: str) -> UserType:
