@@ -119,7 +119,7 @@ app.add_middleware(
 #引用子路由
 try:
     app.include_router(router=auth.router, prefix="/auth", tags=["authentication"])
-    app.include_router(router=user.router, prefix="/user", tags=["user-related"])
+    app.include_router(router=user.router, prefix="/users", tags=["user-related"])
     app.include_router(router=attachment.router, prefix="/attachments", tags=["attachments"])
     logger.info("All routers registered successfully")
 except Exception as e:

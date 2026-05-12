@@ -1,6 +1,7 @@
 """Services 模块统一入口。"""
 
 from app.services.auth_service import AuthService
+from app.services.user_service import UserService
 from app.services.attachment_service import AttachmentService
 
 try:
@@ -10,6 +11,7 @@ except ImportError:
 
 __all__ = [
     "AuthService",
+    "UserService",
     "SMSService",
     "AttachmentService",
 ]

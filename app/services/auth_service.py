@@ -85,7 +85,6 @@ class AuthService:
         db_user = User(
             user_uuid=await AuthService._gen_unique_user_uuid(db),
             user_name=user_name,
-            avatar=None,
             sex="未知",
             email=None,
             phonenumber=None,

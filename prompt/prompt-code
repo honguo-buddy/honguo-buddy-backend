@@ -41,6 +41,10 @@ core/ (核心层)：存放配置、安全校验、异常处理及工具类。
 db/ (数据库层)：统一导出引擎、Session 工厂、Redis 和模型注册入口。
 
 三、 统一响应与错误处理规范
+RESTful API 与响应规范:
+遵循标准动词：GET (获取), POST (创建), PATCH (局部状态更新), DELETE (删除)。
+URL 必须使用复数名词：/api/orders/{order_id}。
+
 所有 API 必须返回统一 JSON 结构：
 ```json
 {

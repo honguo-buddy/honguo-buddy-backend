@@ -77,7 +77,7 @@ class TestGetCurrentUser:
         await fake_redis.set(f"token:{test_user_token}", str(test_user.user_id))
         await fake_redis.set(f"user_token:{test_user.user_id}", test_user_token)
 
-        response = await client.get("/user/info", headers={"Authorization": f"Bearer {test_user_token}"})
+        response = await client.get("/users/info", headers={"Authorization": f"Bearer {test_user_token}"})
 
         assert response.status_code == 200
         body = response.json()
@@ -85,13 +85,13 @@ class TestGetCurrentUser:
         assert body["message"]["userName"] == test_user.user_name
 
     async def test_get_current_user_with_invalid_token(self, client: AsyncClient):
-        response = await client.get("/user/info", headers={"Authorization": "Bearer invalid_token_12345"})
+        response = await client.get("/users/info", headers={"Authorization": "Bearer invalid_token_12345"})
 
         assert response.status_code == 200
         assert response.json()["code"] == settings.TOKEN_INVALID_CODE
 
     async def test_get_current_user_without_token(self, client: AsyncClient):
-        response = await client.get("/user/info")
+        response = await client.get("/users/info")
 
         assert response.status_code == 200
         assert response.json()["code"] == settings.TOKEN_INVALID_CODE
@@ -108,7 +108,7 @@ class TestGetCurrentUser:
         await db_session.flush()
         await fake_redis.set(f"token:{test_user_token}", str(test_user.user_id))
 
-        response = await client.get("/user/info", headers={"Authorization": f"Bearer {test_user_token}"})
+        response = await client.get("/users/info", headers={"Authorization": f"Bearer {test_user_token}"})
 
         assert response.status_code == 200
         assert response.json()["code"] == settings.TOKEN_INVALID_CODE
@@ -125,7 +125,7 @@ class TestGetCurrentUser:
         await db_session.flush()
         await fake_redis.set(f"token:{test_user_token}", str(test_user.user_id))
 
-        response = await client.get("/user/info", headers={"Authorization": f"Bearer {test_user_token}"})
+        response = await client.get("/users/info", headers={"Authorization": f"Bearer {test_user_token}"})
 
         assert response.status_code == 200
         assert response.json()["code"] == settings.TOKEN_INVALID_CODE

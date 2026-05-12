@@ -366,3 +366,47 @@ DATA_GET_FAILED: 301
 
 - code: 105 - Token 无效或已过期。
 - code: 103 - 用户不存在。
+
+#### 4.2.2 获取本人资料 (GET: /users/me)
+
+用途: 获取当前登录用户完整资料。返回中的 `avatar` 为可直接访问的静态资源 URL，来源于 `attachment` 表中 `avatar_id` 关联的记录。
+
+说明：
+- `avatar` 字段不再直接由客户端提交 URL 填写，而是由 `user.avatar_id`（外键指向 `attachment.attachment_id`）提供，接口返回的 `avatar` 为 `/static/...` 相对路径，可直接在前端加载。
+
+#### 4.2.3 修改本人资料 (PATCH: /users/me)
+
+用途: 修改当前登录用户资料。`avatar_id` 用于指定头像附件记录，不再直接提交头像 URL。若已上传头像附件，接口返回中的 `avatar` 仍为可直接访问的静态资源 URL。
+
+说明：
+- 请求体中 `avatar_id` 必须为 `attachment` 表中已存在且 `target_type=USER` 的附件 ID，且该附件的 `creator_id` 必须等于当前用户（即只能使用自己上传的图片作为头像）。
+- 管理员（`is_admin=true`）通过管理员接口 (`PUT /user/{user_id}`) 可为任意用户设置 `avatar_id`（管理员无须是附件 uploader）。
+- 上传附件的接口会在 `target_type=USER` 并且 `target_id` 指定为某用户时，自动把该附件回填为该用户的 `avatar_id`。
+
+#### 4.2.4 获取他人公开资料 (GET: /users/{user_id})
+
+用途: 获取他人公开资料。返回中的 `avatar` 同样来自 `attachment` 关联记录，前端可直接通过 `/static/...` 访问。
+
+### 4.3 附件上传模块
+
+#### 4.3.1 上传附件 (POST: /attachments/upload)
+
+用途: 上传图片附件并返回附件 ID 与可直接访问的静态资源 URL。若 `target_type=USER`，系统会自动把该附件回填到对应用户的 `avatar_id`。
+
+返回示例:
+
+```json
+{
+    "code": 0,
+    "message": {
+        "id": 123,
+        "url": "/static/avatar/avatar_123.png"
+    }
+}
+
+额外说明：
+- 文件存储：上传后文件保存在服务端 `app/static/` 子目录下（例如 `app/static/avatar/`、`app/static/goods/`），返回的 `url` 为相对路径（以 `/static/` 开头）。
+- 文件命名：为避免冲突，保存时会使用格式 `{type}_{user_id}_{timestamp}{ext}`（例如 `avatar_1001_1680000000.png`），其中 `type` 对应 `target_type`（`avatar` 或 `goods` 等）。
+- 附件记录字段：`attachment` 表包含 `attachment_id、target_type、target_id、url、creator_id、is_deleted` 等字段。
+- 权限规则：只有附件的上传者（`creator_id`）本人可以把该附件设为自己的 `avatar_id`；管理员接口允许为任意用户回填 `avatar_id`。
+```

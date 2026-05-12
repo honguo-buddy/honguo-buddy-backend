@@ -43,6 +43,9 @@ from app.schemas.user import (
     PasswordChangeConfirmInput,
     UserUpdate,
     UserRoleUpdate,
+    UserProfileResponse,
+    UserPublicResponse,
+    UserSelfUpdateRequest,
 )
 
 __all__ = [
@@ -80,4 +83,7 @@ __all__ = [
     "PasswordChangeConfirmInput",
     "UserUpdate",
     "UserRoleUpdate",
+    "UserProfileResponse",
+    "UserPublicResponse",
+    "UserSelfUpdateRequest",
 ]
