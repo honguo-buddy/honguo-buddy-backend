@@ -3,6 +3,7 @@
 from app.services.auth_service import AuthService
 from app.services.user_service import UserService
 from app.services.attachment_service import AttachmentService
+from app.services.category_service import CategoryService
 
 try:
     from app.services.sms_service import SMSService
@@ -14,4 +15,5 @@ __all__ = [
     "UserService",
     "SMSService",
     "AttachmentService",
+    "CategoryService",
 ]

@@ -410,3 +410,89 @@ DATA_GET_FAILED: 301
 - 附件记录字段：`attachment` 表包含 `attachment_id、target_type、target_id、url、creator_id、is_deleted` 等字段。
 - 权限规则：只有附件的上传者（`creator_id`）本人可以把该附件设为自己的 `avatar_id`；管理员接口允许为任意用户回填 `avatar_id`。
 ```
+
+### 4.4 Category 模板分类模块
+
+说明：
+
+- 创建/更新/删除 接口为管理员权限（需要 `is_admin=true`）。
+- 获取列表与详情对外开放，供前端在发布页面选择模板使用。
+
+#### 4.4.1 创建模板分类 (POST: /categories/)
+
+用途：创建一个模板分类（管理员）。
+
+请求示例：
+
+```json
+{
+    "name": "二手电子",
+    "item_type": "GOODS",
+    "icon": "/static/category/electronics.png",
+    "config_json": {
+        "fields": [
+            {"key": "brand", "label": "品牌", "type": "string", "required": true},
+            {"key": "condition", "label": "成色", "type": "select", "required": true}
+        ]
+    }
+}
+```
+
+约束说明：
+
+- `icon` 可选，可不传。
+- `item_type` 必填或有默认（`POST`），可选值：`POST` 或 `GOODS`。
+- `config_json` 必填，且不能为空对象。
+
+#### 4.4.2 获取模板分类列表 (GET: /categories/)
+
+用途：获取模板分类列表，供前端展示分类供选择。
+
+查询参数：
+
+- `type`（可选）：按业务类型过滤，取值 `POST` 或 `GOODS`，示例：`GET /categories?type=POST`。
+
+#### 4.4.3 获取模板分类详情 (GET: /categories/{category_id})
+
+用途：按 ID 获取模板分类详情，供前端展示单个模板定义。
+
+#### 4.4.4 更新模板分类 (PUT: /categories/{category_id})
+
+用途：更新模板分类信息（管理员）。
+
+请求示例：
+
+```json
+{
+    "name": "二手数码",
+    "item_type": "GOODS",
+    "icon": null,
+    "config_json": {
+        "fields": [
+            {"key": "brand", "label": "品牌", "type": "string", "required": true},
+            {"key": "storage", "label": "容量", "type": "string", "required": false}
+        ]
+    }
+}
+```
+
+约束说明：
+
+- `config_json` 更新时同样必填，且不能为空对象。
+- `icon` 可选，传 `null` 可清空图标。
+
+#### 4.4.5 删除模板分类 (DELETE: /categories/{category_id})
+
+用途：软删除模板分类（管理员）。
+
+成功响应示例：
+
+```json
+{
+    "code": 0,
+    "message": {
+        "category_id": 1,
+        "deleted": true
+    }
+}
+```

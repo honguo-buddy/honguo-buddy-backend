@@ -46,6 +46,12 @@ from app.schemas.user import (
     UserProfileResponse,
     UserPublicResponse,
     UserSelfUpdateRequest,
+    UserRead,
+)
+from app.schemas.category import (
+    CategoryCreate,
+    CategoryUpdate,
+    CategoryRead,
 )
 
 __all__ = [
@@ -86,4 +92,9 @@ __all__ = [
     "UserProfileResponse",
     "UserPublicResponse",
     "UserSelfUpdateRequest",
+    "UserRead",
+    # category
+    "CategoryCreate",
+    "CategoryUpdate",
+    "CategoryRead",
 ]

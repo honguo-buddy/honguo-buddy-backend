@@ -164,3 +164,7 @@ class UserUpdate(BaseModel):
 
 class UserRoleUpdate(BaseModel):
     is_admin: bool
+
+
+# 别名：用于 API 响应中的用户信息
+UserRead = UserPublicResponse
