@@ -52,6 +52,10 @@ class Settings(BaseSettings):
     SMS_RATE_LIMIT_SECONDS: int = 60
     SMS_VERIFIED_WINDOW_SECONDS: int = 900
 
+    # 业务常数配置 - 信用与订单管理
+    USER_INITIAL_CREDIT_SCORE: int = 60  # 用户初始信用分
+    ORDER_COMPLETE_CREDIT: int = 10      # 订单完成后卖家获得的积分奖励
+
     class Config:
         env_file = ".env"
     

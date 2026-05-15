@@ -3,7 +3,6 @@ import enum
 from sqlalchemy import Boolean, BigInteger, Column, DateTime, Enum as SAEnum, ForeignKey, Integer, String, func
 from sqlalchemy.dialects.mysql import BINARY
 from sqlalchemy.orm import relationship
-
 from app.db.base import Base
 
 
@@ -39,7 +38,7 @@ class User(Base):
         nullable=False,
         comment="用户类型",
     )
-    credit_score = Column(Integer, default=100, nullable=False, comment="信用分")
+    credit_score = Column(Integer, default=0, nullable=False, comment="信用分")
     is_verified = Column(Boolean, default=False, nullable=False, comment="是否完成认证")
     is_active = Column(Boolean, default=True, nullable=False, comment="是否可用")
     is_admin = Column(Boolean, default=False, nullable=False, comment="是否超级管理员")

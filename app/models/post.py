@@ -25,8 +25,9 @@ class Post(Base):
     publisher_id = Column(BigInteger, ForeignKey("user.user_id"), nullable=False, index=True, comment="发布者ID")
     category_id = Column(BigInteger, ForeignKey("category.category_id"), nullable=False, index=True, comment="分类ID")
     title = Column(String(255), nullable=False, comment="标题")
-    price = Column(Numeric(10, 2), nullable=False, comment="金额")
-    template_data = Column(JSON, nullable=True, comment="模板表单数据")
+    description = Column(Text, nullable=True, comment="详细描述")
+    price = Column(Numeric(10, 2), nullable=True, comment="悬赏金额（单位：元，精度到分）")
+    template_data = Column(JSON, nullable=True, comment="模板表单数据（如max_accepters、属性、紧急度等）")
     status = Column(
         SAEnum(PostStatus, values_callable=lambda enum_cls: [e.value for e in enum_cls], name="post_status", native_enum=False),
         default=PostStatus.OPEN,
@@ -69,3 +70,14 @@ class Post(Base):
     __table_args__ = (
         Index("idx_post_status_deleted_create_time", "status", "is_deleted", create_time.desc()),
     )
+
+    @property
+    def max_accepters(self) -> int:
+        """从 template_data 中安全读取最大接单数，默认 1。"""
+        try:
+            if not self.template_data:
+                return 1
+            val = self.template_data.get("max_accepters") or self.template_data.get("max_acceptors")
+            return int(val) if val is not None else 1
+        except Exception:
+            return 1

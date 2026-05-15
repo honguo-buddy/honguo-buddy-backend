@@ -17,7 +17,7 @@ from app.core import (
     create_access_token,
     send_email,
 )
-from app.db import redis, User, UserType
+from app.db import redis, User, UserType, CreditLog
 
 
 class AuthService:
@@ -89,6 +89,7 @@ class AuthService:
             email=None,
             phonenumber=None,
             user_type=UserType.USER,
+            credit_score=settings.USER_INITIAL_CREDIT_SCORE,
             is_active=True,
             is_deleted=False,
             is_admin=False,
@@ -101,6 +102,16 @@ class AuthService:
         db.add(db_user)
         await db.flush()
         await db.refresh(db_user)
+        
+        # 初始化用户信用记录
+        credit_log = CreditLog(
+            user_id=db_user.user_id,
+            change_amount=settings.USER_INITIAL_CREDIT_SCORE,
+            reason="用户注册时初始化",
+        )
+        db.add(credit_log)
+        await db.flush()
+        
         return db_user
 
     @staticmethod
