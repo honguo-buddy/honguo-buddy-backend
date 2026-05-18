@@ -1,8 +1,9 @@
 import enum
 
-from sqlalchemy import BigInteger, Column, DateTime, Enum as SAEnum, Index, String, func, Boolean
+from sqlalchemy import BigInteger, Column, DateTime, Enum as SAEnum, Index, String, Boolean
 from sqlalchemy.orm import relationship
 
+from app.core.datetime_utils import beijing_now_for_model
 from app.db.base import Base
 
 
@@ -33,8 +34,8 @@ class Attachment(Base):
     creator_id = Column(BigInteger, nullable=False, index=True, comment="上传者的用户主键 ID")
 
     # 审计字段
-    create_time = Column(DateTime, default=func.now(), nullable=False, comment="创建时间")
-    update_time = Column(DateTime, default=func.now(), onupdate=func.now(), nullable=False, comment="更新时间")
+    create_time = Column(DateTime, default=beijing_now_for_model, nullable=False, comment="创建时间")
+    update_time = Column(DateTime, default=beijing_now_for_model, onupdate=beijing_now_for_model, nullable=False, comment="更新时间")
     is_deleted = Column(Boolean, default=False, nullable=False, comment="是否软删除")
 
     avatar_users = relationship("User", back_populates="avatar_attachment", lazy="selectin")

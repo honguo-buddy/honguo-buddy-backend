@@ -1,8 +1,9 @@
 import enum
 
-from sqlalchemy import BigInteger, Boolean, Column, DateTime, Enum as SAEnum, ForeignKey, Index, JSON, Numeric, String, Text, and_, func
+from sqlalchemy import BigInteger, Boolean, Column, DateTime, Enum as SAEnum, ForeignKey, Index, JSON, Numeric, String, Text, and_
 from sqlalchemy.orm import foreign, relationship
 
+from app.core.datetime_utils import beijing_now_for_model
 from app.db.base import Base
 
 
@@ -16,6 +17,13 @@ class PostStatus(enum.Enum):
 class Direction(enum.Enum):
     SELL = "SELL"
     BUY = "BUY"
+
+
+class UrgencyLevel(str, enum.Enum):
+    """紧急程度枚举，作为一级字段存储在 post 表中"""
+    NORMAL = "NORMAL"        # 普通
+    URGENT = "URGENT"        # 紧急
+    EMERGENCY = "EMERGENCY"  # 特急
 
 
 class Post(Base):
@@ -40,10 +48,16 @@ class Post(Base):
         nullable=False,
         comment="方向",
     )
+    urgency = Column(
+        SAEnum(UrgencyLevel, values_callable=lambda enum_cls: [e.value for e in enum_cls], name="urgency_level", native_enum=False),
+        default=UrgencyLevel.NORMAL,
+        nullable=False,
+        comment="紧急程度",
+    )
     expire_time = Column(DateTime, nullable=True, comment="过期时间")
     is_deleted = Column(Boolean, default=False, nullable=False, comment="是否软删除")
-    create_time = Column(DateTime, default=func.now(), nullable=False, comment="创建时间")
-    update_time = Column(DateTime, default=func.now(), onupdate=func.now(), nullable=False, comment="更新时间")
+    create_time = Column(DateTime, default=beijing_now_for_model, nullable=False, comment="创建时间")
+    update_time = Column(DateTime, default=beijing_now_for_model, onupdate=beijing_now_for_model, nullable=False, comment="更新时间")
 
     user = relationship("User", back_populates="posts", lazy="selectin")
     category = relationship("Category", back_populates="posts", lazy="selectin")
@@ -69,6 +83,9 @@ class Post(Base):
     
     __table_args__ = (
         Index("idx_post_status_deleted_create_time", "status", "is_deleted", create_time.desc()),
+        Index("idx_post_urgency_status_deleted_create", "urgency", "status", "is_deleted", create_time.desc()),
+        Index("idx_post_direction_status_deleted", "direction", "status", "is_deleted"),
+        Index("idx_post_title", "title"),  # 支持标题前缀搜索
     )
 
     @property

@@ -1,8 +1,9 @@
 import enum
 
-from sqlalchemy import BigInteger, Boolean, Column, DateTime, Enum as SAEnum, ForeignKey, Index, Text, func
+from sqlalchemy import BigInteger, Boolean, Column, DateTime, Enum as SAEnum, ForeignKey, Index, Text
 from sqlalchemy.orm import relationship
 
+from app.core.datetime_utils import beijing_now_for_model
 from app.db.base import Base
 
 
@@ -26,8 +27,8 @@ class Comment(Base):
     parent_id = Column(BigInteger, ForeignKey("comment.comment_id"), nullable=True, index=True, comment="父评论ID")
     content = Column(Text, nullable=False, comment="评论内容")
     is_deleted = Column(Boolean, default=False, nullable=False, comment="是否软删除")
-    create_time = Column(DateTime, default=func.now(), nullable=False, comment="创建时间")
-    update_time = Column(DateTime, default=func.now(), onupdate=func.now(), nullable=False, comment="更新时间")
+    create_time = Column(DateTime, default=beijing_now_for_model, nullable=False, comment="创建时间")
+    update_time = Column(DateTime, default=beijing_now_for_model, onupdate=beijing_now_for_model, nullable=False, comment="更新时间")
 
     user = relationship("User", back_populates="comments", lazy="selectin")
     parent = relationship("Comment", remote_side=[comment_id], back_populates="replies", lazy="selectin")

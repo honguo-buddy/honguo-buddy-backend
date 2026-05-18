@@ -1,5 +1,4 @@
 import os
-import time
 import json
 import random
 from typing import Optional
@@ -8,7 +7,7 @@ from alibabacloud_tea_openapi import models as open_api_models
 from alibabacloud_dypnsapi20170525 import models as dypnsapi_20170525_models
 from alibabacloud_tea_util import models as util_models
 from app.db import redis
-from app.core import BusinessHTTPException, settings
+from app.core import BusinessHTTPException, get_now, settings
 
 class SMSService:
     """短信验证码服务适配器。负责生成、发送、校验验证码与防刷控制。
@@ -56,7 +55,7 @@ class SMSService:
         await redis.set(rate_key, "1", ex=cls.RATE_LIMIT_SECONDS)
 
         code = cls._generate_code(6)
-        data = {"code": code, "timestamp": time.time(), "attempts": 0}
+        data = {"code": code, "timestamp": get_now().timestamp(), "attempts": 0}
         # 使用 json 序列化替代不安全的 Python 字符串表示
         await redis.set(f"sms:code:{phone}", json.dumps(data), ex=cls.CODE_TTL_SECONDS)
 
@@ -118,7 +117,7 @@ class SMSService:
             )
 
         # 时间检查
-        if time.time() - float(data.get("timestamp", 0)) > cls.CODE_TTL_SECONDS:
+        if get_now().timestamp() - float(data.get("timestamp", 0)) > cls.CODE_TTL_SECONDS:
             await redis.delete(f"sms:code:{phone}")
             raise BusinessHTTPException(
                 code=settings.DATA_GET_FAILED_CODE,

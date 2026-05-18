@@ -15,6 +15,7 @@ from app.core.datetime_utils import (
     get_now,
     get_now_naive,
     get_today,
+    parse_datetime_to_beijing_naive,
 )
 from app.core.security import (
     get_hash_pwd,
@@ -40,6 +41,7 @@ __all__ = [
     "get_now",
     "get_now_naive",
     "convert_to_beijing_time",
+    "parse_datetime_to_beijing_naive",
     "beijing_now_for_model",
     "get_today",
     "BEIJING_TZ",

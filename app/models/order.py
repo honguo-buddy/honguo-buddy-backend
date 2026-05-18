@@ -1,8 +1,9 @@
 import enum
 
-from sqlalchemy import BigInteger, Boolean, Column, DateTime, Enum as SAEnum, ForeignKey, Index, JSON, func
+from sqlalchemy import BigInteger, Boolean, Column, DateTime, Enum as SAEnum, ForeignKey, Index, JSON
 from sqlalchemy.orm import relationship
 
+from app.core.datetime_utils import beijing_now_for_model
 from app.db.base import Base
 
 
@@ -75,8 +76,8 @@ class Order(Base):
 
     # 基础元数据
     is_deleted = Column(Boolean, default=False, nullable=False, comment="是否软删除")
-    create_time = Column(DateTime, default=func.now(), nullable=False, comment="创建时间")
-    update_time = Column(DateTime, default=func.now(), onupdate=func.now(), nullable=False, comment="更新时间")
+    create_time = Column(DateTime, default=beijing_now_for_model, nullable=False, comment="创建时间")
+    update_time = Column(DateTime, default=beijing_now_for_model, onupdate=beijing_now_for_model, nullable=False, comment="更新时间")
 
     # 关系映射
     buyer = relationship("User", foreign_keys=[buyer_id], back_populates="orders_as_buyer", lazy="selectin")

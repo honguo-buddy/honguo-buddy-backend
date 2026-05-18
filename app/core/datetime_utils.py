@@ -71,6 +71,20 @@ def convert_to_beijing_time(dt: Optional[datetime]) -> Optional[datetime]:
     return beijing_dt.replace(tzinfo=None)
 
 
+def parse_datetime_to_beijing_naive(dt_str: str) -> datetime:
+    """将输入字符串解析为北京时间（无时区信息）。
+
+    解析规则：
+    - 输入带时区：先按原时区解析，再转换为北京时间
+    - 输入不带时区：直接按北京时间解释
+    """
+    parsed_dt = datetime.fromisoformat(dt_str)
+    if parsed_dt.tzinfo is None:
+        return parsed_dt
+
+    return parsed_dt.astimezone(BEIJING_TZ).replace(tzinfo=None)
+
+
 def utc_to_beijing(utc_dt: Optional[datetime]) -> Optional[datetime]:
     """将 UTC 时间转换为北京时间（无时区信息）。
     

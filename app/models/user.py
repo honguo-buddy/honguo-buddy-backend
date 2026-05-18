@@ -1,8 +1,9 @@
 import enum
 
-from sqlalchemy import Boolean, BigInteger, Column, DateTime, Enum as SAEnum, ForeignKey, Integer, String, func
+from sqlalchemy import Boolean, BigInteger, Column, DateTime, Enum as SAEnum, ForeignKey, Integer, String
 from sqlalchemy.dialects.mysql import BINARY
 from sqlalchemy.orm import relationship
+from app.core.datetime_utils import beijing_now_for_model
 from app.db.base import Base
 
 
@@ -49,8 +50,8 @@ class User(Base):
     wechat_session_key = Column(String(256), nullable=True, comment="微信 session_key")
     wechat_unionid = Column(String(128), nullable=True, comment="微信 unionid")
     wechat_bind_time = Column(DateTime, nullable=True, comment="微信绑定时间")
-    create_time = Column(DateTime, default=func.now(), nullable=False, comment="创建时间")
-    update_time = Column(DateTime, default=func.now(), onupdate=func.now(), nullable=False, comment="更新时间")
+    create_time = Column(DateTime, default=beijing_now_for_model, nullable=False, comment="创建时间")
+    update_time = Column(DateTime, default=beijing_now_for_model, onupdate=beijing_now_for_model, nullable=False, comment="更新时间")
 
     posts = relationship("Post", back_populates="user", lazy="selectin")
     goods = relationship("Goods", back_populates="user", lazy="selectin")

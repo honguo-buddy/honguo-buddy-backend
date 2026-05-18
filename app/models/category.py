@@ -1,6 +1,7 @@
-from sqlalchemy import Boolean, Column, DateTime, Index, JSON, BigInteger, String, func, Enum as SAEnum
+from sqlalchemy import Boolean, Column, DateTime, Index, JSON, BigInteger, String, Enum as SAEnum
 from sqlalchemy.orm import relationship
 
+from app.core.datetime_utils import beijing_now_for_model
 from app.db.base import Base
 
 # 为了保持与系统中其他多态类型一致，复用 ItemType 枚举
@@ -21,8 +22,8 @@ class Category(Base):
         comment="适用业务类型：POST/GOODS",
     )
     is_deleted = Column(Boolean, default=False, nullable=False, comment="是否软删除")
-    create_time = Column(DateTime, default=func.now(), nullable=False, comment="创建时间")
-    update_time = Column(DateTime, default=func.now(), onupdate=func.now(), nullable=False, comment="更新时间")
+    create_time = Column(DateTime, default=beijing_now_for_model, nullable=False, comment="创建时间")
+    update_time = Column(DateTime, default=beijing_now_for_model, onupdate=beijing_now_for_model, nullable=False, comment="更新时间")
 
     posts = relationship("Post", back_populates="category", lazy="selectin")
     goods = relationship("Goods", back_populates="category", lazy="selectin")

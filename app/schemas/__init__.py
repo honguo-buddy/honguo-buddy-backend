@@ -97,4 +97,9 @@ __all__ = [
     "CategoryCreate",
     "CategoryUpdate",
     "CategoryRead",
+    # post
+    "PostCreate",
+    "PostRead",
+    "PostList",
+    "PostDetailRead",
 ]
