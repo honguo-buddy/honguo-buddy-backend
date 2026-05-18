@@ -21,3 +21,5 @@ pytest-asyncio
 httpx
 pytest-cov
 aiosqlite
+testcontainers[mysql]
+pymysql
