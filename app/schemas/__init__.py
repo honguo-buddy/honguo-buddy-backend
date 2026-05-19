@@ -53,6 +53,18 @@ from app.schemas.category import (
     CategoryUpdate,
     CategoryRead,
 )
+from app.schemas.post import (
+    PostCreate,
+    PostUpdate,
+    PostRead,
+    PostList,
+    PostDetailRead,
+)
+from app.schemas.order import (
+    OrderRead,
+    OrderList,
+    OrderItemList,
+)
 
 __all__ = [
     # auth
@@ -99,7 +111,12 @@ __all__ = [
     "CategoryRead",
     # post
     "PostCreate",
+    "PostUpdate",
     "PostRead",
     "PostList",
     "PostDetailRead",
+    # order
+    "OrderRead",
+    "OrderList",
+    "OrderItemList",
 ]

@@ -4,7 +4,8 @@ from app.services.auth_service import AuthService
 from app.services.user_service import UserService
 from app.services.attachment_service import AttachmentService
 from app.services.category_service import CategoryService
-
+from app.services.order_service import OrderService
+from app.services.post_service import PostService
 try:
     from app.services.sms_service import SMSService
 except ImportError:
@@ -16,4 +17,6 @@ __all__ = [
     "SMSService",
     "AttachmentService",
     "CategoryService",
+    "OrderService",
+    "PostService",
 ]

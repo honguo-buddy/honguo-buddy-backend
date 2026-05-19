@@ -33,6 +33,7 @@ class OrderStatus(enum.Enum):
     CONFIRMED = "CONFIRMED"
     COMPLETED = "COMPLETED"
     CANCELED = "CANCELED"
+    REJECTED = "REJECTED"
     DISPUTED = "DISPUTED"
 
 

@@ -58,6 +58,7 @@ class Settings(BaseSettings):
 
     class Config:
         env_file = ".env"
+        extra = "ignore"
     
     #正确返回码
     SUCCESS_CODE: int = 0 #正确返回码

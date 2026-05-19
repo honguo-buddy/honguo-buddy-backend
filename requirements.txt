@@ -21,5 +21,5 @@ pytest-asyncio
 httpx
 pytest-cov
 aiosqlite
-testcontainers[mysql]
+testcontainers[mysql]>=4.14.0
 pymysql

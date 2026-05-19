@@ -335,7 +335,7 @@ DATA_GET_FAILED: 301
 
 ### 4.2 USER 用户模块
 
-#### 4.2.1 获取当前用户信息 (GET: /user/info)
+#### 4.2.1 获取当前用户信息 (GET: /users/info)
 
 用途: 获取当前登录用户基础资料，用于首页和个人中心初始化。
 
@@ -371,6 +371,45 @@ DATA_GET_FAILED: 301
 
 用途: 获取当前登录用户完整资料。返回中的 `avatar` 为可直接访问的静态资源 URL，来源于 `attachment` 表中 `avatar_id` 关联的记录。
 
+请求头: Authorization: Bearer <token>。
+
+请求示例:
+
+```json
+{}
+```
+
+成功响应:
+
+```json
+{
+    "code": 0,
+    "message": {
+        "user_id": 1001,
+        "user_uuid": "6f7d2f9c-4f5f-4de5-a2b2-6f8d6e4ce100",
+        "user_name": "测试用户",
+        "avatar": "/static/avatar/avatar_1001_1680000000.png",
+        "avatar_id": 123,
+        "sex": "男",
+        "email": "test@example.com",
+        "phonenumber": "13800000000",
+        "user_type": "user",
+        "credit_score": 100,
+        "is_verified": false,
+        "is_active": true,
+        "is_admin": false,
+        "last_login_ip": "127.0.0.1",
+        "last_login_time": 1700000000,
+        "wechat_unionid": null
+    }
+}
+```
+
+常见错误:
+
+- code: 105 - Token 失效或缺失。
+- code: 103 - 用户不存在。
+
 说明：
 - `avatar` 字段不再直接由客户端提交 URL 填写，而是由 `user.avatar_id`（外键指向 `attachment.attachment_id`）提供，接口返回的 `avatar` 为 `/static/...` 相对路径，可直接在前端加载。
 
@@ -379,21 +418,120 @@ DATA_GET_FAILED: 301
 用途: 修改当前登录用户资料。`avatar_id` 用于指定头像附件记录，不再直接提交头像 URL。若已上传头像附件，接口返回中的 `avatar` 仍为可直接访问的静态资源 URL。
 
 说明：
+- 请求体字段均为可选，用户可只提交部分字段进行局部更新。
+- `user_name`、`avatar_id`、`sex` 都是可选字段。
+
+请求头: Authorization: Bearer <token>。
+
+请求示例:
+
+```json
+{
+    "user_name": "新昵称",
+    "avatar_id": 123,
+    "sex": "女"
+}
+```
+
+成功响应:
+
+```json
+{
+    "code": 0,
+    "message": {
+        "user_id": 1001,
+        "user_uuid": "6f7d2f9c-4f5f-4de5-a2b2-6f8d6e4ce100",
+        "user_name": "新昵称",
+        "avatar": "/static/avatar/avatar_1001_1680000000.png",
+        "avatar_id": 123,
+        "sex": "女",
+        "email": "test@example.com",
+        "phonenumber": "13800000000",
+        "user_type": "user",
+        "credit_score": 100,
+        "is_verified": false,
+        "is_active": true,
+        "is_admin": false,
+        "last_login_ip": "127.0.0.1",
+        "last_login_time": 1700000000,
+        "wechat_unionid": null
+    }
+}
+```
+
+常见错误:
+
+- code: 105 - Token 失效或缺失。
+- code: 102 - 无权限修改他人资料。
+- code: 99 - 请求体校验失败，或 `avatar_id` 不合法。
+
+说明：
 - 请求体中 `avatar_id` 必须为 `attachment` 表中已存在且 `target_type=USER` 的附件 ID，且该附件的 `creator_id` 必须等于当前用户（即只能使用自己上传的图片作为头像）。
-- 管理员（`is_admin=true`）通过管理员接口 (`PUT /user/{user_id}`) 可为任意用户设置 `avatar_id`（管理员无须是附件 uploader）。
+- 管理员（`is_admin=true`）通过管理员接口 (`PUT /users/{user_id}`) 可为任意用户设置 `avatar_id`。
 - 上传附件的接口会在 `target_type=USER` 并且 `target_id` 指定为某用户时，自动把该附件回填为该用户的 `avatar_id`。
 
 #### 4.2.4 获取他人公开资料 (GET: /users/{user_id})
 
-用途: 获取他人公开资料。返回中的 `avatar` 同样来自 `attachment` 关联记录，前端可直接通过 `/static/...` 访问。
+用途: 获取他人公开资料，脱敏后返回。
+
+请求头: 无。
+
+请求示例:
+
+```json
+{
+    "user_id": 1002
+}
+```
+
+成功响应:
+
+```json
+{
+    "code": 0,
+    "message": {
+        "user_id": 1002,
+        "user_uuid": "6f7d2f9c-4f5f-4de5-a2b2-6f8d6e4ce100",
+        "user_name": "公开用户",
+        "avatar": "/static/avatar/avatar_1002_1680000000.png",
+        "sex": "女",
+        "credit_score": 50,
+        "is_verified": true,
+        "user_type": "user"
+    }
+}
+```
+
+常见错误:
+
+- code: 103 - 用户不存在。
+- code: 301 - 查询公开资料失败。
 
 ### 4.3 附件上传模块
 
 #### 4.3.1 上传附件 (POST: /attachments/upload)
 
-用途: 上传图片附件并返回附件 ID 与可直接访问的静态资源 URL。若 `target_type=USER`，系统会自动把该附件回填到对应用户的 `avatar_id`。
+用途: 上传图片附件并返回附件 ID 与可访问 URL。若 `target_type=USER`，系统会自动回填该附件到对应用户的 `avatar_id`。
 
-返回示例:
+请求头: Authorization: Bearer <token>。
+
+请求说明:
+- 使用 `multipart/form-data` 上传。
+- `file`：文件字段。
+- `target_type`：可选，上传附件类型。
+- `target_id`：可选，关联目标 ID。
+
+请求示例（multipart/form-data）:
+
+```json
+{
+    "file": "image.png",
+    "target_type": "USER",
+    "target_id": 1001
+}
+```
+
+成功响应:
 
 ```json
 {
@@ -403,20 +541,20 @@ DATA_GET_FAILED: 301
         "url": "/static/avatar/avatar_123.png"
     }
 }
-
-额外说明：
-- 文件存储：上传后文件保存在服务端 `app/static/` 子目录下（例如 `app/static/avatar/`、`app/static/goods/`），返回的 `url` 为相对路径（以 `/static/` 开头）。
-- 文件命名：为避免冲突，保存时会使用格式 `{type}_{user_id}_{timestamp}{ext}`（例如 `avatar_1001_1680000000.png`），其中 `type` 对应 `target_type`（`avatar` 或 `goods` 等）。
-- 附件记录字段：`attachment` 表包含 `attachment_id、target_type、target_id、url、creator_id、is_deleted` 等字段。
-- 权限规则：只有附件的上传者（`creator_id`）本人可以把该附件设为自己的 `avatar_id`；管理员接口允许为任意用户回填 `avatar_id`。
 ```
+
+常见错误:
+
+- code: 105 - Token 失效或缺失。
+- code: 99 - 上传文件格式不合法或请求体缺失。
+- code: 301 - 文件保存失败或数据库写入失败。
 
 ### 4.4 Category 模板分类模块
 
 说明：
 
 - 创建/更新/删除 接口为管理员权限（需要 `is_admin=true`）。
-- 获取列表与详情对外开放，供前端在发布页面选择模板使用。
+- 获取列表与详情对外开放。
 
 #### 4.4.1 创建模板分类 (POST: /categories/)
 
@@ -444,21 +582,98 @@ DATA_GET_FAILED: 301
 - `item_type` 必填或有默认（`POST`），可选值：`POST` 或 `GOODS`。
 - `config_json` 必填，且不能为空对象。
 
-#### 4.4.2 获取模板分类列表 (GET: /categories/)
+成功响应:
 
-用途：获取模板分类列表，供前端展示分类供选择。
+```json
+{
+    "code": 0,
+    "message": {
+        "category_id": 1,
+        "name": "二手电子",
+        "icon": "/static/category/electronics.png",
+        "item_type": "GOODS",
+        "config_json": {"fields": [{"key": "brand", "label": "品牌", "type": "string", "required": true}, {"key": "condition", "label": "成色", "type": "select", "required": true}]},
+        "create_time": "2025-09-01T12:00:00",
+        "update_time": "2025-09-01T12:00:00"
+    }
+}
+```
+
+常见错误:
+
+- code: 102 - 权限不足。
+- code: 99 - 请求体校验失败。
+
+#### 4.4.2 获取模板分类列表 (GET: /categories)
+
 
 查询参数：
 
 - `type`（可选）：按业务类型过滤，取值 `POST` 或 `GOODS`，示例：`GET /categories?type=POST`。
 
+用途：获取模板分类列表，供前端展示分类选择。
+
+请求示例:
+
+```json
+{
+    "type": "POST"
+}
+```
+
+成功响应:
+
+```json
+{
+    "code": 0,
+    "message": [
+        {
+            "category_id": 1,
+            "name": "代跑服务",
+            "icon": "/static/category/run.png",
+            "item_type": "POST",
+            "config_json": {"fields": []},
+            "create_time": "2025-09-01T12:00:00",
+            "update_time": "2025-09-01T12:00:00"
+        }
+    ]
+}
+```
+
 #### 4.4.3 获取模板分类详情 (GET: /categories/{category_id})
 
-用途：按 ID 获取模板分类详情，供前端展示单个模板定义。
+用途：按 ID 获取模板分类详情。
+
+请求示例:
+
+```json
+{
+    "category_id": 1
+}
+```
+
+成功响应:
+
+```json
+{
+    "code": 0,
+    "message": {
+        "category_id": 1,
+        "name": "代跑服务",
+        "icon": "/static/category/run.png",
+        "item_type": "POST",
+        "config_json": {"fields": []},
+        "create_time": "2025-09-01T12:00:00",
+        "update_time": "2025-09-01T12:00:00"
+    }
+}
+```
 
 #### 4.4.4 更新模板分类 (PUT: /categories/{category_id})
 
 用途：更新模板分类信息（管理员）。
+
+请求头: Authorization: Bearer <token>。
 
 请求示例：
 
@@ -476,16 +691,42 @@ DATA_GET_FAILED: 301
 }
 ```
 
-约束说明：
 
 - `config_json` 更新时同样必填，且不能为空对象。
 - `icon` 可选，传 `null` 可清空图标。
+
+成功响应:
+
+```json
+{
+    "code": 0,
+    "message": {
+        "category_id": 1,
+        "name": "二手数码",
+        "icon": null,
+        "item_type": "GOODS",
+        "config_json": {"fields": [{"key": "brand", "label": "品牌", "type": "string", "required": true}, {"key": "storage", "label": "容量", "type": "string", "required": false}]},
+        "create_time": "2025-09-01T12:00:00",
+        "update_time": "2025-09-02T12:00:00"
+    }
+}
+```
 
 #### 4.4.5 删除模板分类 (DELETE: /categories/{category_id})
 
 用途：软删除模板分类（管理员）。
 
-成功响应示例：
+请求头: Authorization: Bearer <token>。
+
+请求示例:
+
+```json
+{
+    "category_id": 1
+}
+```
+
+成功响应:
 
 ```json
 {
@@ -496,3 +737,630 @@ DATA_GET_FAILED: 301
     }
 }
 ```
+
+### 4.5 Post 帖子模块
+
+#### 4.5.1 发布帖子 (POST: /posts/)
+
+用途: 发布悬赏帖。
+
+说明：
+- `title` 为必填字段。
+- `description`、`price`、`category_id`、`template_filters` 均为可选字段。
+- `direction` 默认为 `SELL`，`urgency` 默认为 `NORMAL`，`max_accepters` 默认为 `1`。
+
+请求头: Authorization: Bearer <token>。
+
+请求示例:
+
+```json
+{
+    "title": "代取外卖",
+    "description": "帮我从食堂取一份外卖",
+    "price": 10.5,
+    "direction": "SELL",
+    "urgency": "NORMAL",
+    "max_accepters": 1,
+    "category_id": 3,
+    "template_filters": {"pickup_address": "教学楼A楼"}
+}
+```
+
+成功响应:
+
+```json
+{
+    "code": 0,
+    "message": {
+        "post_id": 1001,
+        "title": "代取外卖",
+        "price": 10.5
+    }
+}
+```
+
+常见错误:
+
+- code: 105 - Token 失效或缺失。
+- code: 99 - 请求体校验失败。
+- code: 301 - 发布帖子失败。
+
+#### 4.5.2 获取帖子列表 (GET: /posts)
+
+用途: 获取帖子列表，支持关键词、状态、价格、时间等筛选。
+
+请求示例:
+
+```json
+{
+    "keyword": "外卖",
+    "status": "OPEN",
+    "page": 1,
+    "page_size": 20
+}
+```
+
+成功响应:
+
+```json
+{
+    "code": 0,
+    "message": {
+        "total": 42,
+        "page": 1,
+        "page_size": 20,
+        "list": [
+            {
+                "post_id": 1001,
+                "title": "二手书转让",
+                "description": "九成新教辅",
+                "price": 15.0,
+                "direction": "SELL",
+                "urgency": "NORMAL",
+                "status": "OPEN",
+                "template_data": {},
+                "max_accepters": 1,
+                "publisher": {
+                    "user_id": 2001,
+                    "user_uuid": "...",
+                    "user_name": "用户2001",
+                    "avatar": "/static/avatar/avatar_2001.png",
+                    "sex": "未知",
+                    "credit_score": 50,
+                    "is_verified": false,
+                    "user_type": "user"
+                },
+                "publisher_id": 2001,
+                "current_accepters": 0,
+                "create_time": "2025-09-01T12:00:00",
+                "attachment_urls": []
+            }
+        ]
+    }
+}
+```
+
+#### 4.5.3 我的发布 (GET: /posts/me)
+
+用途: 获取当前用户的帖子列表。
+
+请求头: Authorization: Bearer <token>。
+
+请求示例:
+
+```json
+{
+    "category_id": 3,
+    "status": "OPEN",
+    "page": 1,
+    "size": 20
+}
+```
+
+成功响应:
+
+```json
+{
+    "code": 0,
+    "message": {
+        "total": 1,
+        "page": 1,
+        "page_size": 20,
+        "list": [
+            {
+                "post_id": 1001,
+                "title": "二手书转让",
+                "description": "九成新教辅",
+                "price": 15.0,
+                "direction": "SELL",
+                "urgency": "NORMAL",
+                "status": "OPEN",
+                "template_data": {},
+                "max_accepters": 1,
+                "publisher": {
+                    "user_id": 1001,
+                    "user_uuid": "...",
+                    "user_name": "测试用户",
+                    "avatar": "/static/avatar/avatar_1001.png",
+                    "sex": "未知",
+                    "credit_score": 100,
+                    "is_verified": false,
+                    "user_type": "user"
+                },
+                "publisher_id": 1001,
+                "current_accepters": 0,
+                "create_time": "2025-09-01T12:00:00",
+                "attachment_urls": []
+            }
+        ]
+    }
+}
+```
+
+常见错误:
+
+- code: 105 - Token 失效或缺失。
+- code: 99 - 查询参数格式不合法。
+- code: 301 - 列表查询失败。
+
+#### 4.5.4 他人主页帖子 (GET: /posts/user/{user_id})
+
+用途: 公共查看指定用户的公开帖子。
+
+请求示例:
+
+```json
+{
+    "user_id": 1002,
+    "page": 1,
+    "size": 20
+}
+```
+
+成功响应:
+
+```json
+{
+    "code": 0,
+    "message": {
+        "total": 5,
+        "page": 1,
+        "page_size": 20,
+        "list": [
+            {
+                "post_id": 1002,
+                "title": "帮跑外卖",
+                "description": "今天帮取外卖",
+                "price": 8.0,
+                "direction": "SELL",
+                "urgency": "NORMAL",
+                "status": "OPEN",
+                "template_data": {},
+                "max_accepters": 1,
+                "publisher": {
+                    "user_id": 1002,
+                    "user_uuid": "...",
+                    "user_name": "公开用户",
+                    "avatar": "/static/avatar/avatar_1002.png",
+                    "sex": "未知",
+                    "credit_score": 80,
+                    "is_verified": true,
+                    "user_type": "user"
+                },
+                "publisher_id": 1002,
+                "current_accepters": 0,
+                "create_time": "2025-09-01T12:00:00",
+                "attachment_urls": []
+            }
+        ]
+    }
+}
+```
+
+常见错误:
+
+- code: 99 - 请求体或路径参数不合法。
+- code: 103 - 指定用户不存在。
+- code: 301 - 帖子列表查询失败。
+
+#### 4.5.5 帖子详情 (GET: /posts/{post_id})
+
+用途: 获取帖子详情，包含前 N 条评论。
+
+请求示例:
+
+```json
+{
+    "post_id": 1001,
+    "comments_limit": 5
+}
+```
+
+成功响应:
+
+```json
+{
+    "code": 0,
+    "message": {
+        "post_id": 1001,
+        "title": "二手书转让",
+        "description": "九成新教辅",
+        "price": 15.0,
+        "direction": "SELL",
+        "urgency": "NORMAL",
+        "status": "OPEN",
+        "template_data": {},
+        "max_accepters": 1,
+        "publisher": {
+            "user_id": 1001,
+            "user_uuid": "...",
+            "user_name": "测试用户",
+            "avatar": "/static/avatar/avatar_1001.png",
+            "sex": "未知",
+            "credit_score": 100,
+            "is_verified": false,
+            "user_type": "user"
+        },
+        "publisher_id": 1001,
+        "current_accepters": 0,
+        "create_time": "2025-09-01T12:00:00",
+        "attachment_urls": ["/static/avatar/avatar_1001_1680000000.png"],
+        "comments": [
+            {
+                "id": 2001,
+                "username": "评论者",
+                "avatar": "/static/avatar/avatar_2002.png",
+                "content": "我想要这本书",
+                "time": "2025-09-02T08:00:00"
+            }
+        ]
+    }
+}
+```
+
+#### 4.5.6 局部更新 (PATCH: /posts/{post_id})
+
+用途: 帖子拥有者或管理员可对帖子进行局部更新，状态为 `OPEN` 时允许修改。若当前帖子存在待处理申请单（PENDING），普通发布者禁止修改，只有管理员可以继续更新。
+
+说明：请求体字段均为可选，可只提交需要修改的字段。
+
+请求头: Authorization: Bearer <token>。
+
+请求示例:
+
+```json
+{
+    "title": "2025版二手书低价出售",
+    "price": 15.0
+}
+```
+
+成功响应:
+
+```json
+{
+    "code": 0,
+    "message": {
+        "post_id": 1001,
+        "title": "2025版二手书低价出售",
+        "description": "九成新教辅",
+        "price": 15.0,
+        "direction": "SELL",
+        "urgency": "NORMAL",
+        "status": "OPEN",
+        "template_data": {},
+        "max_accepters": 1,
+        "publisher": {
+            "user_id": 1001,
+            "user_uuid": "...",
+            "user_name": "测试用户",
+            "avatar": "/static/avatar/avatar_1001.png",
+            "sex": "未知",
+            "credit_score": 100,
+            "is_verified": false,
+            "user_type": "user"
+        },
+        "publisher_id": 1001,
+        "current_accepters": 0,
+        "create_time": "2025-09-01T12:00:00",
+        "attachment_urls": []
+    }
+}
+```
+
+常见错误:
+
+- code: 105 - Token 失效或缺失。
+- code: 102 - 权限不足。
+- code: 99 - 请求体校验失败。
+- code: 301 - 帖子当前状态不可修改。
+
+#### 4.5.7 软删除 (DELETE: /posts/{post_id})
+
+用途: 帖子拥有者或管理员执行软删除。
+
+请求头: Authorization: Bearer <token>。
+
+请求示例:
+
+```json
+{
+    "post_id": 1001
+}
+```
+
+成功响应:
+
+```json
+{
+    "code": 0,
+    "message": {
+        "post_id": 1001,
+        "deleted": true
+    }
+}
+```
+
+常见错误:
+
+- code: 105 - Token 失效或缺失。
+- code: 102 - 权限不足。
+- code: 103 - 帖子不存在或已被删除。
+- code: 301 - 删除操作失败。
+
+### 4.6 Order 订单模块
+
+#### 4.6.1 我的订单 (GET: /orders/me)
+
+用途: 获取当前用户相关的订单列表。
+
+请求头: Authorization: Bearer <token>。
+
+请求示例:
+
+JSON
+{
+    "role": "buyer",
+    "status": "PENDING",
+    "start_time": "2025-09-01T00:00:00Z",
+    "end_time": "2025-09-30T23:59:59Z",
+    "page": 1,
+    "size": 20
+}
+成功响应:
+
+```json
+{
+    "code": 0,
+    "message": {
+        "total": 3,
+        "page": 1,
+        "page_size": 20,
+        "list": [
+            {
+                "order_id": 5001,
+                "item_type": "POST",
+                "item_id": 1001,
+                "status": "PENDING",
+                "buyer_id": 2001,
+                "seller_id": 3001,
+                "initiator_id": 2001,
+                "trigger_type": "APPLY",
+                "accepted_time": null,
+                "create_time": "2025-09-05T10:00:00Z",
+                "update_time": "2025-09-05T10:00:00Z",
+                "meta_data": null,
+                "buyer": {
+                    "user_id": 2001,
+                    "user_uuid": "...",
+                    "user_name": "买家",
+                    "avatar": "/static/avatar/avatar_2001.png",
+                    "sex": "未知",
+                    "credit_score": 80,
+                    "is_verified": false,
+                    "user_type": "user"
+                },
+                "seller": {
+                    "user_id": 3001,
+                    "user_uuid": "...",
+                    "user_name": "卖家",
+                    "avatar": "/static/avatar/avatar_3001.png",
+                    "sex": "未知",
+                    "credit_score": 90,
+                    "is_verified": true,
+                    "user_type": "user"
+                }
+            }
+        ]
+    }
+}
+```
+
+常见错误:
+
+- code: 105 - Token 失效或缺失。
+- code: 99 - 参数不合法。
+- code: 301 - 订单列表查询失败。
+
+#### 4.6.2 按项目查订单 (GET: /orders/by-item)
+
+用途: 根据 `item_id` 与 `item_type` 查询关联订单。仅项目拥有者或管理员可查询该项目下的订单。
+
+请求头: Authorization: Bearer <token>。
+
+请求示例:
+
+```json
+{
+    "item_id": 1001,
+    "item_type": "POSTS"
+}
+```
+
+成功响应:
+
+```json
+{
+    "code": 0,
+    "message": {
+        "item_id": 1001,
+        "item_type": "POSTS",
+        "list": [
+            {
+                "order_id": 5001,
+                "item_type": "POSTS",
+                "item_id": 1001,
+                "status": "PENDING",
+                "buyer_id": 2001,
+                "seller_id": 3001,
+                "initiator_id": 2001,
+                "trigger_type": "APPLY",
+                "accepted_time": null,
+                "create_time": "2025-09-05T10:00:00Z",
+                "update_time": "2025-09-05T10:00:00Z",
+                "meta_data": null,
+                "buyer": {
+                    "user_id": 2001,
+                    "user_uuid": "...",
+                    "user_name": "买家",
+                    "avatar": "/static/avatar/avatar_2001.png",
+                    "sex": "未知",
+                    "credit_score": 80,
+                    "is_verified": false,
+                    "user_type": "user"
+                },
+                "seller": {
+                    "user_id": 3001,
+                    "user_uuid": "...",
+                    "user_name": "卖家",
+                    "avatar": "/static/avatar/avatar_3001.png",
+                    "sex": "未知",
+                    "credit_score": 90,
+                    "is_verified": true,
+                    "user_type": "user"
+                }
+            }
+        ]
+    }
+}
+```
+
+常见错误:
+
+- code: 99 - 参数缺失或无效。
+- code: 103 - 关联项目不存在。
+- code: 301 - 关联订单查询失败。
+
+#### 4.6.3 订单详情 (GET: /orders/{order_id})
+
+用途: 获取指定订单的详细信息，仅订单相关方可查看。
+
+请求头: Authorization: Bearer <token>。
+
+请求示例:
+
+```json
+{
+    "order_id": 5001
+}
+```
+
+成功响应:
+
+```json
+{
+    "code": 0,
+    "message": {
+        "order_id": 5001,
+        "item_type": "POST",
+        "item_id": 1001,
+        "status": "PENDING",
+        "buyer_id": 2001,
+        "seller_id": 3001,
+        "initiator_id": 2001,
+        "trigger_type": "APPLY",
+        "accepted_time": null,
+        "create_time": "2025-09-05T10:00:00Z",
+        "update_time": "2025-09-05T10:00:00Z",
+        "meta_data": null,
+        "buyer": {
+            "user_id": 2001,
+            "user_uuid": "...",
+            "user_name": "买家",
+            "avatar": "/static/avatar/avatar_2001.png",
+            "sex": "未知",
+            "credit_score": 80,
+            "is_verified": false,
+            "user_type": "user"
+        },
+        "seller": {
+            "user_id": 3001,
+            "user_uuid": "...",
+            "user_name": "卖家",
+            "avatar": "/static/avatar/avatar_3001.png",
+            "sex": "未知",
+            "credit_score": 90,
+            "is_verified": true,
+            "user_type": "user"
+        }
+    }
+}
+```
+
+常见错误:
+
+- code: 105 - Token 失效或缺失。
+- code: 102 - 权限不足（非买家且非卖家）。
+- code: 103 - 订单不存在。
+- code: 301 - 订单详情查询失败。
+
+#### 4.6.4 订单操作：同意 / 拒绝 / 完成 / 取消
+
+用途: 对订单执行状态变更操作。
+
+请求头: Authorization: Bearer <token>。
+
+请求示例:
+
+```json
+{}
+```
+
+可用接口:
+
+- POST /orders/{order_id}/approve
+- POST /orders/{order_id}/reject
+- POST /orders/{order_id}/complete
+- POST /orders/{order_id}/cancel
+
+权限说明:
+
+- `approve` 和 `reject` 仅限卖家（帖子发布者）操作。
+- `complete` 仅限卖家确认完成。
+- `cancel` 仅限买家或卖家取消，若订单为 PENDING，则发起人也可取消。
+
+成功响应示例:
+
+```json
+{
+    "code": 0,
+    "message": {
+        "order_id": 5001,
+        "item_type": "POST",
+        "item_id": 1001,
+        "status": "APPROVED",
+        "buyer_id": 2001,
+        "seller_id": 3001,
+        "initiator_id": 2001,
+        "trigger_type": "APPROVE",
+        "accepted_time": "2025-09-05T12:00:00Z",
+        "create_time": "2025-09-05T10:00:00Z",
+        "update_time": "2025-09-05T12:00:00Z",
+        "meta_data": null,
+        "buyer": null,
+        "seller": null
+    }
+}
+```
+
+常见错误:
