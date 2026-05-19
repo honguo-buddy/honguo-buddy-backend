@@ -1,6 +1,5 @@
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import declarative_base, sessionmaker
 from redis.asyncio import Redis
 
 from app.core import settings
@@ -15,7 +14,8 @@ engine = create_async_engine(
     max_overflow=20,            # 超出 pool_size 后最多再创建的连接数
     pool_timeout=30,            # 获取连接的超时时间（秒）
     connect_args={
-        "connect_timeout": 10   # MySQL 连接超时（秒）
+        "connect_timeout": 10 ,  # MySQL 连接超时（秒）
+        "autocommit": True # 确保自动提交
     }
 )
 

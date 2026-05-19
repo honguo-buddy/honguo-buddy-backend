@@ -71,3 +71,49 @@ Comment (递归树)：支持 parent_id 自关联，实现嵌套回复。
 兼容性：使用 SQLAlchemy 2.0 风格的 Mapped 和 mapped_column（如项目已全面切换）或保持一致的 Column 风格。
 
 幂等性：考虑到 Alembic 迁移，确保枚举类的 name 属性全局唯一。
+
+7. 增量开发与字段管理 (Critical Lessons - Post Incident)
+
+【原则】优先查看现有代码，避免盲目重构：
+- 在修改任何模型前，必须 read_file 查看完整的现有字段定义。
+- 不得假设字段不存在，务必验证。
+- 如出现相似的字段名（如 amount 与 price），应沿用现有的，而非创建重复字段。
+
+【字段策略】JSON 字段 vs 数据库列：
+- 临时性、业务流程中动态填充的字段（如：分类标签、属性、紧急度）应存储在 template_data JSON 中。
+- 核心字段（title, description, price, status）必须为数据库列，支持直接索引和高效查询。
+- Post 模型设计：title (列), description (列), price (列), template_data (JSON for 属性/紧急度/时长等)。
+
+【关系定义】多态关系维护：
+- Post/Goods 与 Order/Comment/Attachment 的关系通过 (item_type, item_id) 多态关联。
+- 定义关系时使用 foreign() + primaryjoin，指定精确的条件。
+- 示例：
+  ```python
+  orders = relationship(
+      "Order",
+      primaryjoin="and_(foreign(Order.item_id) == Post.post_id, Order.item_type == 'POST')",
+      viewonly=True,
+      lazy="selectin",
+  )
+  ```
+
+【迁移安全】扩展现有模型时的注意事项：
+- 新增字段必须有 nullable=True 或 default 值，确保向后兼容。
+- 删除字段前，必须确认该字段在代码中已完全弃用，且数据已迁移。
+- 使用 Alembic 生成迁移脚本，勿直接修改数据库。
+
+8. 时间与时区规范 (Beijing Time Required)
+
+【统一时区】
+- 项目业务时间统一使用北京时间（UTC+8），禁止依赖数据库服务器默认时区。
+
+【模型默认值】
+- 模型中的 create_time、update_time 必须使用 app.core.datetime_utils.beijing_now_for_model。
+- 禁止在模型中使用 func.now 作为业务时间默认值或 onupdate 来源。
+
+【查询过滤】
+- 涉及 create_time、update_time、expire_time 等时间字段过滤时，必须先将输入标准化为北京时间再构造 SQL 条件。
+- 输入带时区时先转 UTC+8；无时区输入按 UTC+8 解释。
+
+【迁移与兼容】
+- 时间字段迁移时要保证历史数据语义一致，明确记录原时区假设与转换策略，避免同一字段混用 UTC 与北京时间。

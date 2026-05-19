@@ -43,6 +43,27 @@ from app.schemas.user import (
     PasswordChangeConfirmInput,
     UserUpdate,
     UserRoleUpdate,
+    UserProfileResponse,
+    UserPublicResponse,
+    UserSelfUpdateRequest,
+    UserRead,
+)
+from app.schemas.category import (
+    CategoryCreate,
+    CategoryUpdate,
+    CategoryRead,
+)
+from app.schemas.post import (
+    PostCreate,
+    PostUpdate,
+    PostRead,
+    PostList,
+    PostDetailRead,
+)
+from app.schemas.order import (
+    OrderRead,
+    OrderList,
+    OrderItemList,
 )
 
 __all__ = [
@@ -80,4 +101,22 @@ __all__ = [
     "PasswordChangeConfirmInput",
     "UserUpdate",
     "UserRoleUpdate",
+    "UserProfileResponse",
+    "UserPublicResponse",
+    "UserSelfUpdateRequest",
+    "UserRead",
+    # category
+    "CategoryCreate",
+    "CategoryUpdate",
+    "CategoryRead",
+    # post
+    "PostCreate",
+    "PostUpdate",
+    "PostRead",
+    "PostList",
+    "PostDetailRead",
+    # order
+    "OrderRead",
+    "OrderList",
+    "OrderItemList",
 ]

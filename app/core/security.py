@@ -1,6 +1,6 @@
 from passlib.context import CryptContext
 from jose import jwt, JWTError
-from datetime import datetime, timedelta
+from datetime import timedelta
 from fastapi import Request
 import smtplib
 from email.mime.text import MIMEText

@@ -1,14 +1,13 @@
 
 from typing import Generic, TypeVar, Optional, List
 from pydantic import BaseModel
-from pydantic.generics import GenericModel
 from app.schemas.user import user, Token
 
 T = TypeVar("T")
 
 
 # 通用响应模型
-class ResponseModel(GenericModel, Generic[T]):
+class ResponseModel(BaseModel, Generic[T]):
     code: int
     message: Optional[T]
     

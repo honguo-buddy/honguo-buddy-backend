@@ -1,6 +1,8 @@
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
     PROJECT_NAME: str = "HONGUO-BUDDY"    
     
     # 开发模式配置（仅用于本地/测试环境）
@@ -52,9 +54,10 @@ class Settings(BaseSettings):
     SMS_RATE_LIMIT_SECONDS: int = 60
     SMS_VERIFIED_WINDOW_SECONDS: int = 900
 
-    class Config:
-        env_file = ".env"
-    
+    # 业务常数配置 - 信用与订单管理
+    USER_INITIAL_CREDIT_SCORE: int = 60  # 用户初始信用分
+    ORDER_COMPLETE_CREDIT: int = 10      # 订单完成后卖家获得的积分奖励
+
     #正确返回码
     SUCCESS_CODE: int = 0 #正确返回码
     #错误码

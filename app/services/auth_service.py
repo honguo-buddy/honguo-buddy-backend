@@ -1,7 +1,6 @@
 import json
 import random
 import re
-import time
 import uuid
 from typing import Any
 
@@ -15,9 +14,10 @@ from app.core import (
     BusinessHTTPException,
     ResourceHTTPException,
     create_access_token,
+    get_now,
     send_email,
 )
-from app.db import redis, User, UserType
+from app.db import redis, User, UserType, CreditLog
 
 
 class AuthService:
@@ -85,11 +85,11 @@ class AuthService:
         db_user = User(
             user_uuid=await AuthService._gen_unique_user_uuid(db),
             user_name=user_name,
-            avatar=None,
             sex="未知",
             email=None,
             phonenumber=None,
             user_type=UserType.USER,
+            credit_score=settings.USER_INITIAL_CREDIT_SCORE,
             is_active=True,
             is_deleted=False,
             is_admin=False,
@@ -102,6 +102,16 @@ class AuthService:
         db.add(db_user)
         await db.flush()
         await db.refresh(db_user)
+        
+        # 初始化用户信用记录
+        credit_log = CreditLog(
+            user_id=db_user.user_id,
+            change_amount=settings.USER_INITIAL_CREDIT_SCORE,
+            reason="用户注册时初始化",
+        )
+        db.add(credit_log)
+        await db.flush()
+        
         return db_user
 
     @staticmethod
@@ -163,7 +173,7 @@ class AuthService:
             )
 
         token = await AuthService._issue_token_for_user(db_user)
-        db_user.last_login_time = int(time.time())
+        db_user.last_login_time = int(get_now().timestamp())
         await db.commit()
 
         return {
@@ -214,7 +224,7 @@ class AuthService:
 
         token = await AuthService._issue_token_for_user(db_user)
         db_user.last_login_ip = login_ip
-        db_user.last_login_time = int(time.time())
+        db_user.last_login_time = int(get_now().timestamp())
         await db.commit()
         return {"access_token": token, "token_type": "bearer"}
 
@@ -256,7 +266,7 @@ class AuthService:
         code = "".join(str(random.randint(0, 9)) for _ in range(6))
         code_data = {
             "code": code,
-            "timestamp": time.time(),
+            "timestamp": get_now().timestamp(),
             "attempts": 0,
             "user_id": current_user_id,
         }
@@ -325,7 +335,7 @@ class AuthService:
                 status_code=400,
             )
 
-        if time.time() - float(code_data.get("timestamp", 0)) > AuthService.EMAIL_VERIFY_TTL_SECONDS:
+        if get_now().timestamp() - float(code_data.get("timestamp", 0)) > AuthService.EMAIL_VERIFY_TTL_SECONDS:
             await redis.delete(f"email_verify_code:{email}")
             raise BusinessHTTPException(
                 code=settings.UPDATEPROFILE_FAILED_CODE,

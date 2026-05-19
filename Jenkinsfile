@@ -1,17 +1,29 @@
 pipeline {
     agent any
 
+    options {
+        disableConcurrentBuilds()
+        buildDiscarder(logRotator(numToKeepStr: '10'))
+    }
+
     environment {
-        // --- 1. 敏感信息 (从参数读取，增加默认值保护) ---
+        // --- 1. 业务环境与测试环境分离：保留业务 DATABASE_URL，只新增测试连接串 ---
+        //业务相关
         DATABASE_URL          = "${params.DATABASE_URL ?: ''}"
         REDIS_PASSWORD        = "${params.REDIS_PASSWORD ?: ''}"
         WX_APP_SECRET         = "${params.WX_APP_SECRET ?: ''}"
         SMTP_PASSWORD         = "${params.SMTP_PASSWORD ?: ''}"
         ALI_ACCESS_KEY_SECRET = "${params.ALI_ACCESS_KEY_SECRET ?: ''}"
         DEBUG_MASTER_PASSWORD = "${params.DEBUG_MASTER_PASSWORD ?: ''}"
-        REDIS_HOST  = "${params.REDIS_HOST ?: ''}"
+        REDIS_HOST            = "${params.REDIS_HOST ?: ''}"
+        //测试相关
+        TEST_DATABASE_HOST    = "${params.TEST_DATABASE_HOST ?: ''}"
+        TEST_DATABASE_PORT    = "${params.TEST_DATABASE_PORT ?: '3306'}"
+        TEST_DATABASE_USER    = "${params.TEST_DATABASE_USER ?: ''}"
+        TEST_DATABASE_PASSWORD = "${params.TEST_DATABASE_PASSWORD ?: ''}"
+        TEST_DATABASE_BOOTSTRAP_DB = "${params.TEST_DATABASE_BOOTSTRAP_DB ?: 'testdb_0'}"
 
-        // --- 2. 固定配置
+        // --- 2. 固定配置 ---
         EMAIL_FROM  = 'tianshu@wyqsama.cn'
         SMTP_SERVER = 'smtpdm.aliyun.com'
         SMTP_PORT   = '465'
@@ -28,9 +40,25 @@ pipeline {
         GERRIT_BASE_CMD = "ssh -p 29418 jenkins@gerrit.lilingkun.com gerrit review ${env.GERRIT_PATCHSET_REVISION ?: ''}"
         PROJECT_URL     = "ssh://jenkins@gerrit.lilingkun.com:29418/${env.GERRIT_PROJECT ?: 'honguo-buddy-backend'}"
         PYTHONPATH      = "."
+
+        SSH_PRIVATE_KEY  = "${params.SSH_PRIVATE_KEY ?: ''}"
     }
 
     stages {
+        stage('0. 准备数据库连接串') {
+            steps {
+                script {
+                    if (!TEST_DATABASE_HOST?.trim() || !TEST_DATABASE_USER?.trim()) {
+                        error '请先填写 TEST_DATABASE_HOST / TEST_DATABASE_USER / TEST_DATABASE_PASSWORD / REDIS_HOST 等测试参数'
+                    }
+
+                    def encodedPassword = java.net.URLEncoder.encode(TEST_DATABASE_PASSWORD, 'UTF-8')
+                    env.TEST_DATABASE_URL = "mysql+aiomysql://${TEST_DATABASE_USER}:${encodedPassword}@${TEST_DATABASE_HOST}:${TEST_DATABASE_PORT}/${TEST_DATABASE_BOOTSTRAP_DB}"
+                    echo "✓ 测试数据库连接串已准备完成（业务 DATABASE_URL 保持不变）"
+                }
+            }
+        }
+
         stage('1. 环境拉取') {
             steps {
                 script {
@@ -74,12 +102,9 @@ pipeline {
                     python - <<'PY'
 import asyncio
 import sys
-import os
 from redis.asyncio import Redis
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
-
-# 显式加载环境变量，防止 Pydantic 漏读
 from app.core.config import settings
 
 async def check():
@@ -119,11 +144,8 @@ PY
                     set -e
                     . .venv/bin/activate
                     export PYTHONPATH="$WORKSPACE${PYTHONPATH:+:$PYTHONPATH}"
-                    
-                    # 创建测试报告目录
                     mkdir -p test_reports
                     
-                    # 运行单元测试层
                     echo "=== 运行单元测试层 ==="
                     pytest tests/unit \
                         --junitxml=test_reports/unit_report.xml \
@@ -131,36 +153,52 @@ PY
                         --cov-append \
                         --cov-report= \
                         -v \
-                        --tb=short
-                    
+                        --tb=short \
+                        -rs
+
+                    python scripts/validate_junit_report.py test_reports/unit_report.xml "unit"
                     echo "✓ 单元测试完成"
                 '''
             }
         }
 
-        stage('5. 集成测试') {
+stage('5. 集成测试') {
             steps {
-                echo "Status: 执行集成测试..."
-                sh '''
-                    set -e
-                    . .venv/bin/activate
-                    export PYTHONPATH="$WORKSPACE${PYTHONPATH:+:$PYTHONPATH}"
+                script {
+                    def realUser = env.TEST_DATABASE_USER ?: params.TEST_DATABASE_USER
+                    def realHost = env.TEST_DATABASE_HOST ?: params.TEST_DATABASE_HOST
+                    def realPort = env.TEST_DATABASE_PORT ?: params.TEST_DATABASE_PORT ?: '3306'
+                    def realDb   = env.TEST_DATABASE_BOOTSTRAP_DB ?: params.TEST_DATABASE_BOOTSTRAP_DB ?: 'testdb_0'
+                    def encodedPassword = java.net.URLEncoder.encode(env.TEST_DATABASE_PASSWORD ?: params.TEST_DATABASE_PASSWORD, 'UTF-8')
                     
-                    # 创建测试报告目录
-                    mkdir -p test_reports
-                    
-                    # 运行集成测试层
-                    echo "=== 运行集成测试层 ==="
-                    pytest tests/integration \
-                        --junitxml=test_reports/integration_report.xml \
-                        --cov=app \
-                        --cov-append \
-                        --cov-report= \
-                        -v \
-                        --tb=short
-                    
-                    echo "✓ 集成测试完成"
-                '''
+                    def runUrl = "mysql+aiomysql://${realUser}:${encodedPassword}@${realHost}:${realPort}/${realDb}"
+
+                    sh """
+                        set -e
+                        . .venv/bin/activate
+                        export PYTHONPATH="\$WORKSPACE"
+                        mkdir -p test_reports
+
+                        echo "=== 🚀 工业级多租户隔离集成测试开始 ==="
+                        
+                        echo "[DEBUG] 本次 Gerrit 门禁构建号: \${BUILD_NUMBER:-local}"
+                        
+                        # 强行死锁写入测试连接串
+                        export TEST_DATABASE_URL="${runUrl}"
+
+                        # 交付 Pytest 轰击
+                        pytest tests/integration \
+                            --junitxml=test_reports/integration_report.xml \
+                            --cov=app \
+                            --cov-append \
+                            --cov-report= \
+                            -v \
+                            --tb=short \
+                            -rs
+
+                        python scripts/validate_junit_report.py test_reports/integration_report.xml "integration"
+                    """
+                }
             }
         }
 
@@ -195,14 +233,14 @@ PY
         }
         failure {
             script {
-                echo "Verify -1: 存在错误"
+                echo "Verify -1: 测试失败 / 存在 SKIPPED 或 ERROR"
                 if (env.GERRIT_PATCHSET_REVISION) {
-                    sh "${GERRIT_BASE_CMD} --verified -1 --message '\"Jenkins: Build Failed [FAILED]\"'"
+                    sh "${GERRIT_BASE_CMD} --verified -1 --message '\"Jenkins: Build Failed — 单元/集成测试未全部通过（含 SKIPPED/ERROR）\"'"
                 }
             }
         }
         always {
-            // 发布 JUnit 测试报告（单元 + 集成）
+          
             junit(
                 testResults: 'test_reports/*_report.xml',
                 allowEmptyResults: true,
@@ -210,7 +248,6 @@ PY
                 skipPublishingChecks: false
             )
             
-            // 发布代码覆盖率报告
             publishHTML([
                 allowMissing: true,
                 alwaysLinkToLastBuild: true,

@@ -1,8 +1,9 @@
 import enum
 
-from sqlalchemy import BigInteger, Boolean, Column, DateTime, Enum as SAEnum, ForeignKey, Index, Numeric, String, Text, JSON,and_, func
+from sqlalchemy import BigInteger, Boolean, Column, DateTime, Enum as SAEnum, ForeignKey, Index, Numeric, String, Text, JSON,and_
 from sqlalchemy.orm import foreign, relationship
 
+from app.core.datetime_utils import beijing_now_for_model
 from app.db.base import Base
 
 # 商品成色枚举
@@ -35,8 +36,8 @@ class Goods(Base):
     
     is_sold = Column(Boolean, default=False, nullable=False, comment="是否已售出")
     is_deleted = Column(Boolean, default=False, nullable=False, comment="是否软删除")
-    create_time = Column(DateTime, default=func.now(), nullable=False, comment="创建时间")
-    update_time = Column(DateTime, default=func.now(), onupdate=func.now(), nullable=False, comment="更新时间")
+    create_time = Column(DateTime, default=beijing_now_for_model, nullable=False, comment="创建时间")
+    update_time = Column(DateTime, default=beijing_now_for_model, onupdate=beijing_now_for_model, nullable=False, comment="更新时间")
 
     user = relationship("User", back_populates="goods", lazy="selectin")
     category = relationship("Category", back_populates="goods", lazy="selectin")
@@ -57,6 +58,7 @@ class Goods(Base):
         "Attachment",
         primaryjoin="and_(foreign(Attachment.target_id) == Goods.goods_id, Attachment.target_type == 'GOODS')",
         lazy="selectin",
+        overlaps="attachments",
         cascade="all, delete-orphan", #帖子删除时，附件也删除
     )
     

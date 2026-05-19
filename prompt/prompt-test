@@ -29,13 +29,13 @@ tests/
 └── integration/             # [集成测试层] 关注链路与协作
     ├── api/                 # 接口端到端测试 (从 Route 到 DB)
     ├── db/                  # 核心 CRUD 逻辑测试
-    └── conftest.py          # 集成测试专属 Fixtures (如 Test DB Session)
+    └── conftest.py          # 集成测试专属 Fixtures (动态建库、刷表、销库)
 3. 技术标准
 异步框架：统一使用 pytest + pytest-asyncio。
 
 Mock 策略：单元测试中，所有对数据库的调用必须被 Mock。
 
-环境隔离：集成测试必须在 conftest.py 中覆盖数据库依赖，确保测试运行在内存库（SQLite）中且测试后自动 Rollback。
+环境隔离：集成测试必须在 conftest.py 中覆盖数据库依赖，启动时按 BUILD_NUMBER 或本地随机后缀动态创建独立 MySQL 库，测试结束后必须自动 DROP DATABASE，禁止再依赖远程 Docker 隧道或共享测试库。
 
 4. 具体交付任务 (Deliverables)
 A. 全局配置
@@ -56,7 +56,11 @@ D. 自动化集成 (CI/CD)
 
 分层运行：要求先跑单元测试（快速失败），再跑集成测试。
 
+数据库输入：Jenkins 只接收云 MySQL 的连接信息，测试框架在执行时按构建号动态创建独立数据库并在结束后销毁。
+
 报告生成：分别生成 unit_report.xml 和 integration_report.xml（JUnit 格式）并归档。
+
+补充约束：测试框架已改为“会话级独立库 + 函数级 Session 注入”模式，集成测试代码不得再出现 Testcontainers、SSH Docker 隧道或固定共享测试库字样。
 
 5. 初始突破口
 由于目前登录依赖微信，请在 tests/integration/api/ 的测试中，利用项目预留的 swagger-login 调试接口绕过微信授权，生成测试用 Token，或在 dependency_overrides 中直接 Mock 掉权限验证依赖。

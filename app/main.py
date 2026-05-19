@@ -8,7 +8,7 @@ import os
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from app.core import BEIJING_TZ
 
-from app.api import auth,user
+from app.api import auth, user, attachment, category, post, order
 from app.core import register_exception_handlers, LogMiddleware, settings, create_cleanup_task
 from app.db import engine, Base, redis, AsyncSessionLocal
 
@@ -16,14 +16,16 @@ from app.db import engine, Base, redis, AsyncSessionLocal
 os.makedirs("logs", exist_ok=True)
 
 # 配置日志
-logging.basicConfig(
-    level=logging.INFO,  # 
-    format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
-    handlers=[
-        logging.FileHandler("logs/app.log", encoding="utf-8"),  # 写入到文件
-        logging.StreamHandler()  # 控制台同时输出
-    ]
-)
+root_logger = logging.getLogger()
+if not root_logger.handlers:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
+        handlers=[
+            logging.FileHandler("logs/app.log", encoding="utf-8"),
+            logging.StreamHandler(),
+        ],
+    )
 logger = logging.getLogger(__name__)
 
 # 全局变量存储清理任务和调度器
@@ -119,7 +121,11 @@ app.add_middleware(
 #引用子路由
 try:
     app.include_router(router=auth.router, prefix="/auth", tags=["authentication"])
-    app.include_router(router=user.router, prefix="/user", tags=["user-related"])
+    app.include_router(router=user.router, prefix="/users", tags=["user-related"])
+    app.include_router(router=attachment.router, prefix="/attachments", tags=["attachments"])
+    app.include_router(router=category.router, prefix="/categories", tags=["categories"])
+    app.include_router(router=post.router, prefix="/posts", tags=["posts"])
+    app.include_router(router=order.router, prefix="/orders", tags=["orders"])
     logger.info("All routers registered successfully")
 except Exception as e:
     logger.error(f"Failed to register routers: {e}", exc_info=True)

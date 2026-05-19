@@ -87,7 +87,7 @@ async def get_current_user(
             status_code=401,
         )
 
-    return UserSchema.from_orm(db_user)
+    return UserSchema.model_validate(db_user)
 
 
 async def get_current_user_optional(
@@ -116,7 +116,7 @@ async def get_current_user_optional(
             )
         )
         db_user = user_res.scalar_one_or_none()
-        return UserSchema.from_orm(db_user) if db_user else None
+        return UserSchema.model_validate(db_user) if db_user else None
     except Exception:
         return None
 
