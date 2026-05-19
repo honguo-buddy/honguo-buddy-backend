@@ -58,6 +58,7 @@ class Goods(Base):
         "Attachment",
         primaryjoin="and_(foreign(Attachment.target_id) == Goods.goods_id, Attachment.target_type == 'GOODS')",
         lazy="selectin",
+        overlaps="attachments",
         cascade="all, delete-orphan", #帖子删除时，附件也删除
     )
     

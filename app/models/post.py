@@ -78,6 +78,7 @@ class Post(Base):
         "Attachment",
         primaryjoin="and_(foreign(Attachment.target_id) == Post.post_id, Attachment.target_type == 'POST')",
         lazy="selectin",
+        overlaps="attachments",
         cascade="all, delete-orphan", # 当帖子删除时，自动清理附件记录
     )
     

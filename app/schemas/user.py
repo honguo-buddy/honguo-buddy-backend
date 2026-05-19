@@ -1,4 +1,4 @@
-from pydantic import BaseModel, EmailStr, Field, field_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 from pydantic_extra_types.phone_numbers import PhoneNumber
 from typing import Optional
 from uuid import UUID
@@ -22,6 +22,8 @@ class PatientLogin(BaseModel):
 
 
 class user(userBase):
+    model_config = ConfigDict(from_attributes=True)
+
     user_id: int
     user_uuid: str
     user_name: str | None = None
@@ -44,13 +46,10 @@ class user(userBase):
             return str(v)
         return v
 
-    class Config:
-        from_attributes = True
-        orm_mode = True
-
-
 # 本人详细资料响应（含敏感字段）
 class UserProfileResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     """获取本人详细资料，包含敏感信息如手机号、邮箱。"""
     user_id: int
     user_uuid: str
@@ -80,12 +79,10 @@ class UserProfileResponse(BaseModel):
             return str(v)
         return v
 
-    class Config:
-        from_attributes = True
-
-
 # 他人公开资料响应（脱敏）
 class UserPublicResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     """获取他人公开资料，仅返回脱敏后的信息。"""
     user_id: int
     user_uuid: str
@@ -107,10 +104,6 @@ class UserPublicResponse(BaseModel):
         elif isinstance(v, UUID):
             return str(v)
         return v
-
-    class Config:
-        from_attributes = True
-
 
 # 修改本人资料请求（局部更新）
 class UserSelfUpdateRequest(BaseModel):

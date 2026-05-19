@@ -16,14 +16,16 @@ from app.db import engine, Base, redis, AsyncSessionLocal
 os.makedirs("logs", exist_ok=True)
 
 # 配置日志
-logging.basicConfig(
-    level=logging.INFO,  # 
-    format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
-    handlers=[
-        logging.FileHandler("logs/app.log", encoding="utf-8"),  # 写入到文件
-        logging.StreamHandler()  # 控制台同时输出
-    ]
-)
+root_logger = logging.getLogger()
+if not root_logger.handlers:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
+        handlers=[
+            logging.FileHandler("logs/app.log", encoding="utf-8"),
+            logging.StreamHandler(),
+        ],
+    )
 logger = logging.getLogger(__name__)
 
 # 全局变量存储清理任务和调度器

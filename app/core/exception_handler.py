@@ -70,7 +70,7 @@ def register_exception_handlers(app):
             content=ResponseModel(
                 code=settings.UNKNOWN_ERROR_CODE,
                 message=UnknownErrorResponse(error="未知错误", detail=error_detail)
-            ).dict(),
+            ).model_dump(),
         )
 
     #HTTP异常
@@ -82,7 +82,7 @@ def register_exception_handlers(app):
             content=ResponseModel(
                 code=settings.HTTP_ERROR_CODE,
                 message=HTTPErrorResponse(error="HTTP异常", detail=exc.detail)
-            ).dict(),
+            ).model_dump(),
         )
 
     #验证异常
@@ -143,7 +143,7 @@ def register_exception_handlers(app):
                     "error": "请求参数验证失败",
                     "msg": msg_str
                 }
-            ).dict(),
+            ).model_dump(),
         )
 
     #认证异常
@@ -155,7 +155,7 @@ def register_exception_handlers(app):
             content=ResponseModel(
                 code=exc.detail["code"],
                 message=AuthErrorResponse(error="认证时出现异常", msg=exc.detail["msg"])
-            ).dict(),
+            ).model_dump(),
         )
 
     #统计信息异常
@@ -167,7 +167,7 @@ def register_exception_handlers(app):
             content=ResponseModel(
                 code=exc.detail["code"],
                 message=StatisticsErrorResponse(error="统计数据获取失败", msg=exc.detail["msg"])
-            ).dict(),
+            ).model_dump(),
         )
 
     #业务操作异常
@@ -179,7 +179,7 @@ def register_exception_handlers(app):
             content=ResponseModel(
                 code=exc.detail["code"],
                 message=BusinessErrorResponse(error="业务规则校验失败", msg=exc.detail["msg"])
-            ).dict(),
+            ).model_dump(),
         )
 
     #资源操作异常
@@ -191,6 +191,6 @@ def register_exception_handlers(app):
             content=ResponseModel(
                 code=exc.detail["code"],
                 message=ResourceErrorResponse(error="资源操作失败", msg=exc.detail["msg"])
-            ).dict(),
+            ).model_dump(),
         )
     

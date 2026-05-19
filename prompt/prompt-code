@@ -196,3 +196,22 @@ URL 必须使用复数名词：/api/orders/{order_id}。
 
 【唯一例外】
 - 中间件耗时、性能埋点等 duration 计算可使用 time.time 或 perf_counter，但必须明确注释为“性能计时，非业务时间”。
+
+十一、 零 Warning 兼容性规范 (Pydantic v2 + SQLAlchemy 2)
+
+【总目标】
+- 所有新增或修改代码必须在 pytest 下做到 0 warning，禁止引入 DeprecatedSince20/MovedIn20/SAWarning。
+
+【Pydantic v2 强制规则】
+- 禁止使用 class Config；统一使用 model_config（例如 ConfigDict / SettingsConfigDict）。
+- 禁止使用 orm_mode；统一使用 from_attributes=True。
+- 禁止使用 from_orm()；统一使用 model_validate()。
+- 禁止使用 dict()；统一使用 model_dump()。
+- 禁止使用 pydantic.generics.GenericModel；泛型响应模型统一写法为 BaseModel + Generic[T]。
+
+【SQLAlchemy 2 强制规则】
+- 禁止从 sqlalchemy.ext.declarative 导入 declarative_base；必须从 sqlalchemy.orm 导入。
+- 多态 relationship 出现 target_id 列冲突时，必须显式添加 overlaps 或使用 viewonly，避免 SAWarning。
+
+【测试门禁】
+- 涉及 schema/model/core/db 修改后，必须至少执行一次相关 pytest 并确认 warning 数为 0 后方可交付。
