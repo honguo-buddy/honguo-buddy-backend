@@ -1363,4 +1363,186 @@ JSON
 }
 ```
 
+
+
+### 4.7 评论模块 (Comments)
+
+说明：评论模块支持对帖子/商品/订单的多层回复（盖楼）机制。所有响应遵循统一返回格式 `{ "code": int, "message": ... }`。
+
+#### 4.7.1 发布评论/回复 (POST: /comments)
+
+用途：发布根评论或对已有评论进行回复（盖楼）。
+
+请求头：Authorization: Bearer <token>（必须登录）
+
+请求示例:
+
+```json
+{
+    "target_type": "POST",     
+    "target_id": 1001,
+    "parent_id": null,          
+    "content": "这是一个评论内容"
+}
+```
+
+说明：
+- `parent_id` 可选，传 `null` 或不传表示发布根评论；传入 `parent_id` 表示回复该父评论（请确保父评论存在）。
+
+成功响应:
+
+```json
+{
+    "code": 0,
+    "message": {
+        "comment_id": 2001,
+        "user_id": 1001,
+        "target_type": "POST",
+        "target_id": 1001,
+        "parent_id": null,
+        "content": "这是一个评论内容",
+        "is_deleted": false,
+        "create_time": "2026-05-21T12:00:00",
+        "update_time": "2026-05-21T12:00:00"
+    }
+}
+```
+
 常见错误:
+- code: 105 - Token 无效或已失效（未登录）。
+- code: 99  - 请求参数校验失败（例如 `target_id` 类型不正确、`content` 为空）。
+- code: 301 - 父评论不存在或已被删除（当 `parent_id` 指向的评论不可用时）。
+
+#### 4.7.2 软删除评论 (DELETE: /comments/{comment_id})
+
+用途：对指定评论执行软删除。仅评论所有者或管理员可操作。
+
+请求头：Authorization: Bearer <token>（必须登录）
+
+请求示例:
+
+```
+(请求不需要 body)
+```
+
+成功响应:
+
+```json
+{
+    "code": 0,
+    "message": { "message": "评论已删除" }
+}
+```
+
+说明：删除操作不会物理删除记录，而是将 `is_deleted` 置为 `true` 并将被删除评论的 `content` 替换为 `"该评论已由用户删除"`，以保留树状结构和回复上下文。
+
+常见错误:
+- code: 105 - Token 无效或已失效。
+- code: 102 - 权限不足（非所有者且非管理员）。
+- code: 301 - 评论不存在（无法找到指定 `comment_id`）。
+
+#### 4.7.3 获取目标的根评论列表（游标分页） (GET: /comments/{target_type}/{target_id})
+
+用途：获取指定目标（帖子/商品/订单）的顶级根评论列表（不含被软删除的根评论），按 `comment_id` 倒序返回并支持游标分页。
+
+请求头：无（公开接口）
+
+查询参数（示例用 JSON 表示）：
+
+```json
+{
+    "cursor": null,   
+    "size": 20
+}
+```
+
+SQL 过滤核心：
+```
+WHERE target_type = :target_type
+    AND target_id = :target_id
+    AND parent_id IS NULL
+    AND is_deleted = FALSE
+    AND comment_id < :cursor  -- 可选
+ORDER BY comment_id DESC
+LIMIT :size
+```
+
+返回项说明：每个根评论节点同时携带 `reply_count`（该楼层的回复总数）和 `preview_replies`（最新 2~3 条子回复预览，供前端展示）。
+
+成功响应示例:
+
+```json
+{
+    "code": 0,
+    "message": {
+        "items": [
+            {
+                "comment_id": 2001,
+                "user_id": 1001,
+                "target_type": "POST",
+                "target_id": 1001,
+                "content": "楼主评论内容",
+                "is_deleted": false,
+                "create_time": "2026-05-21T12:00:00",
+                "update_time": "2026-05-21T12:00:00",
+                "reply_count": 5,
+                "preview_replies": [
+                    {"comment_id": 2005, "user_id":1002, "content":"最新回复1", "create_time":"2026-05-21T12:05:00"},
+                    {"comment_id": 2004, "user_id":1003, "content":"最新回复2", "create_time":"2026-05-21T12:03:00"}
+                ]
+            }
+        ],
+        "next_cursor": 1990
+    }
+}
+```
+
+常见错误:
+- code: 99  - 请求参数校验失败（`size` 范围或 `target_type` 非允许值）。
+
+#### 4.7.4 获取单条根评论下的回复流（平铺、正序，游标分页） (GET: /comments/{comment_id}/replies)
+
+用途：当用户点击“查看全部回复”时，平铺拉取该根评论下的所有子回复，按创建时间正序返回，支持游标分页。
+
+请求头：无（公开接口）
+
+查询参数（示例用 JSON 表示）：
+
+```json
+{
+    "cursor": null,
+    "size": 20
+}
+```
+
+SQL 过滤核心：
+```
+WHERE parent_id = :comment_id
+    AND is_deleted = FALSE
+    AND comment_id > :cursor  -- 可选
+ORDER BY create_time ASC
+LIMIT :size
+```
+
+成功响应示例:
+
+```json
+{
+    "code": 0,
+    "message": {
+        "items": [
+            {"comment_id": 2002, "user_id":1002, "parent_id":2001, "content":"回复1", "create_time":"2026-05-21T12:01:00"},
+            {"comment_id": 2003, "user_id":1003, "parent_id":2001, "content":"回复2", "create_time":"2026-05-21T12:02:00"}
+        ],
+        "next_cursor": 2003
+    }
+}
+```
+
+常见错误:
+- code: 301 - 根评论不存在（`comment_id` 无对应记录）。
+- code: 99  - 请求参数校验失败。
+
+---
+
+文件位置：评论接口实现位于项目代码中：`app/api/comment.py`、`app/services/comment_service.py` 与 `app/schemas/comment.py`，文档和实现保持一致。

@@ -6,6 +6,7 @@ from app.services.attachment_service import AttachmentService
 from app.services.category_service import CategoryService
 from app.services.order_service import OrderService
 from app.services.post_service import PostService
+from app.services.comment_service import CommentService
 try:
     from app.services.sms_service import SMSService
 except ImportError:
@@ -19,4 +20,5 @@ __all__ = [
     "CategoryService",
     "OrderService",
     "PostService",
+    "CommentService",
 ]

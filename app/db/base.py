@@ -8,7 +8,7 @@ from app.core import settings
 engine = create_async_engine(
     settings.DATABASE_URL,
     echo=True,
-    pool_pre_ping=True,        # 每次从连接池获取连接时先 ping 测试是否有效
+    pool_pre_ping=False,        # 封死 aiomysql.ping() 签名报错
     pool_recycle=3600,          # 连接回收时间（秒），避免使用超时的连接
     pool_size=10,               # 连接池大小
     max_overflow=20,            # 超出 pool_size 后最多再创建的连接数

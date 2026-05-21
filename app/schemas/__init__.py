@@ -5,6 +5,7 @@ Schemas 模块 - 统一导出所有 Pydantic 请求/响应模型
   - auth: 认证相关请求模型
   - response: 统一响应和异常返回模型
   - user: 用户相关数据模型
+  - comment: 评论相关数据模型
 """
 
 from app.schemas.auth import (
@@ -47,6 +48,14 @@ from app.schemas.user import (
     UserPublicResponse,
     UserSelfUpdateRequest,
     UserRead,
+)
+from app.schemas.comment import (
+    CommentCreateRequest,
+    CommentResponse,
+    CommentListResponse,
+    CommentReplyListResponse,
+    CommentWithReplyCountResponse,
+    CommentReplyPreview,
 )
 from app.schemas.category import (
     CategoryCreate,
