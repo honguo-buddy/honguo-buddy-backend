@@ -7,6 +7,7 @@ import pytest
 from app.api import get_current_user
 from app.core import settings
 from app.models import Category, Direction, Order, OrderStatus, Post, PostStatus, SexEnum, UrgencyLevel, User, UserType
+from tests.helpers import assert_api_error
 
 
 pytestmark = pytest.mark.asyncio
@@ -186,4 +187,116 @@ async def test_post_order_full_flow(client, app, db_session):
     assert final_order_b.status == OrderStatus.COMPLETED
     assert final_post.status == PostStatus.CLOSED
 
+    await _clear_current_user(app)
+
+
+@pytest.mark.asyncio
+async def test_orders_by_item_rejects_invalid_item_type(client, app, db_session):
+    user = User(
+        user_id=4101,
+        user_uuid=b"dddddddddddddddd",
+        user_name="item-user",
+        email="item@example.com",
+        phonenumber="13800004444",
+        sex=SexEnum.UNKNOWN,
+        user_type=UserType.USER,
+        is_verified=True,
+        is_active=True,
+        is_admin=False,
+        is_deleted=False,
+        credit_score=100,
+        wechat_openid="openid-item",
+    )
+    db_session.add(user)
+    await db_session.flush()
+    await _set_current_user(app, user)
+
+    resp = await client.get("/orders/by-item", params={"item_id": 1, "item_type": "INVALID"})
+    assert resp.status_code == 200
+    message = assert_api_error(resp.json(), code=settings.REQ_ERROR_CODE)
+    assert "不支持的 item_type" in message["msg"]
+    await _clear_current_user(app)
+
+
+@pytest.mark.asyncio
+async def test_orders_by_item_rejects_non_owner(client, app, db_session):
+    owner = User(
+        user_id=4102,
+        user_uuid=b"eeeeeeeeeeeeeeee",
+        user_name="owner-user",
+        email="owner@example.com",
+        phonenumber="13800005555",
+        sex=SexEnum.UNKNOWN,
+        user_type=UserType.USER,
+        is_verified=True,
+        is_active=True,
+        is_admin=False,
+        is_deleted=False,
+        credit_score=100,
+        wechat_openid="openid-owner",
+    )
+    viewer = User(
+        user_id=4103,
+        user_uuid=b"ffffffffffffffff",
+        user_name="viewer-user",
+        email="viewer@example.com",
+        phonenumber="13800006666",
+        sex=SexEnum.UNKNOWN,
+        user_type=UserType.USER,
+        is_verified=True,
+        is_active=True,
+        is_admin=False,
+        is_deleted=False,
+        credit_score=100,
+        wechat_openid="openid-viewer",
+    )
+    category = Category(category_id=4104, name="订单分类", item_type="POST", config_json={"fields": []})
+    post = Post(
+        post_id=4105,
+        publisher_id=owner.user_id,
+        category_id=category.category_id,
+        title="订单帖子",
+        description="订单帖子",
+        price=11.0,
+        template_data={"max_accepters": 1},
+        direction=Direction.SELL,
+        urgency=UrgencyLevel.NORMAL,
+        status=PostStatus.OPEN,
+    )
+    db_session.add_all([owner, viewer, category, post])
+    await db_session.flush()
+
+    await _set_current_user(app, viewer)
+    resp = await client.get("/orders/by-item", params={"item_id": post.post_id, "item_type": "POST"})
+    assert resp.status_code == 200
+    message = assert_api_error(resp.json(), code=settings.INSUFFICIENT_AUTHORITY_CODE)
+    assert "仅项目拥有者可查看关联订单" in message["msg"]
+    await _clear_current_user(app)
+
+
+@pytest.mark.asyncio
+async def test_my_orders_rejects_invalid_role(client, app, db_session):
+    user = User(
+        user_id=4106,
+        user_uuid=b"1111111111111111",
+        user_name="role-user",
+        email="role@example.com",
+        phonenumber="13800007777",
+        sex=SexEnum.UNKNOWN,
+        user_type=UserType.USER,
+        is_verified=True,
+        is_active=True,
+        is_admin=False,
+        is_deleted=False,
+        credit_score=100,
+        wechat_openid="openid-role",
+    )
+    db_session.add(user)
+    await db_session.flush()
+    await _set_current_user(app, user)
+
+    resp = await client.get("/orders/me", params={"role": "invalid"})
+    assert resp.status_code == 200
+    message = assert_api_error(resp.json(), code=settings.REQ_ERROR_CODE)
+    assert "role 仅支持 buyer/seller/all" in message["msg"]
     await _clear_current_user(app)

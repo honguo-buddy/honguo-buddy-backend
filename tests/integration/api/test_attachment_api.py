@@ -5,6 +5,7 @@ from httpx import AsyncClient
 
 from app.core import settings
 from app.models import Attachment, AttachmentTargetType, User
+from tests.helpers import assert_api_error
 
 pytestmark = pytest.mark.asyncio
 
@@ -72,4 +73,23 @@ class TestAttachmentEndpoints:
 
         assert response.status_code == 200
         body = response.json()
-        assert body["code"] == settings.INSUFFICIENT_AUTHORITY_CODE
+        assert_api_error(body, code=settings.INSUFFICIENT_AUTHORITY_CODE)
+
+    async def test_upload_attachment_rejects_invalid_extension(
+        self,
+        client: AsyncClient,
+        test_user: User,
+        test_user_token: str,
+        fake_redis,
+    ):
+        await fake_redis.set(f"token:{test_user_token}", str(test_user.user_id))
+        await fake_redis.set(f"user_token:{test_user.user_id}", test_user_token)
+
+        response = await client.post(
+            "/attachments/upload",
+            headers={"Authorization": f"Bearer {test_user_token}"},
+            files={"file": ("bad.txt", b"hello", "application/octet-stream")},
+        )
+
+        assert response.status_code == 200
+        assert_api_error(response.json(), code=settings.REQ_ERROR_CODE)

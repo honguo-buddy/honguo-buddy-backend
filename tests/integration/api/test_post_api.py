@@ -3,8 +3,9 @@
 import pytest
 from httpx import AsyncClient
 
-from app.models import Post, Category, Direction, UrgencyLevel, PostStatus
+from app.models import Post, Category, Direction, UrgencyLevel, PostStatus, User, SexEnum, UserType
 from app.core import settings
+from tests.helpers import assert_api_error
 
 
 @pytest.mark.asyncio
@@ -49,6 +50,41 @@ async def test_create_post_returns_full_post_info(
 	assert message["max_accepters"] == 2
 	assert message["current_accepters"] == 0
 	assert message["attachment_urls"] == []
+
+
+@pytest.mark.asyncio
+async def test_create_post_rejects_negative_price(
+	client: AsyncClient,
+	db_session,
+	test_user,
+	test_user_token,
+	fake_redis,
+):
+	await fake_redis.set(f"token:{test_user_token}", str(test_user.user_id))
+	await fake_redis.set(f"user_token:{test_user.user_id}", test_user_token)
+
+	category = Category(category_id=111, name="价格校验分类", config_json={"fields": []})
+	db_session.add(category)
+	await db_session.flush()
+
+	resp = await client.post(
+		"/posts/",
+		headers={"Authorization": f"Bearer {test_user_token}"},
+		json={
+			"title": "非法价格帖子",
+			"description": "用于触发参数校验",
+			"price": -1,
+			"direction": "SELL",
+			"urgency": "NORMAL",
+			"max_accepters": 1,
+			"category_id": category.category_id,
+		},
+	)
+
+	assert resp.status_code == 200
+	message = assert_api_error(resp.json(), code=settings.REQ_ERROR_CODE)
+	assert "error" in message
+	assert "msg" in message
 
 
 @pytest.mark.asyncio
@@ -308,4 +344,65 @@ async def test_update_post_returns_full_post_info(
 	assert message["max_accepters"] == 2
 	assert message["current_accepters"] == 0
 	assert message["attachment_urls"] == []
+
+
+@pytest.mark.asyncio
+async def test_update_post_rejects_non_owner(
+	client: AsyncClient,
+	db_session,
+	test_user,
+	fake_redis,
+):
+	outsider = User(
+		user_id=2008,
+		user_uuid=b"2222222222222222",
+		user_name="outsider",
+		email="outsider@example.com",
+		phonenumber="13800008888",
+		sex=SexEnum.UNKNOWN,
+		user_type=UserType.USER,
+		is_verified=True,
+		is_active=True,
+		is_admin=False,
+		is_deleted=False,
+		credit_score=100,
+		wechat_openid="openid-outsider",
+	)
+	db_session.add(outsider)
+	await db_session.flush()
+
+	from app.core import create_access_token
+
+	outsider_token = create_access_token({"sub": str(outsider.user_id), "user_name": outsider.user_name, "user_type": outsider.user_type.value})
+	await fake_redis.set(f"token:{outsider_token}", str(outsider.user_id))
+	await fake_redis.set(f"user_token:{outsider.user_id}", outsider_token)
+
+	category = Category(category_id=107, name="他人帖子分类", config_json={"fields": []})
+	db_session.add(category)
+	await db_session.flush()
+
+	post = Post(
+		post_id=2007,
+		publisher_id=test_user.user_id,
+		category_id=category.category_id,
+		title="他人帖子",
+		description="非拥有者修改",
+		price=18.0,
+		template_data={"max_accepters": 1},
+		direction=Direction.SELL,
+		urgency=UrgencyLevel.NORMAL,
+		status=PostStatus.OPEN,
+	)
+	db_session.add(post)
+	await db_session.flush()
+
+	resp = await client.patch(
+		f"/posts/{post.post_id}",
+		    headers={"Authorization": f"Bearer {outsider_token}"},
+		json={"title": "篡改标题"},
+	)
+
+	assert resp.status_code == 200
+	message = assert_api_error(resp.json(), code=settings.INSUFFICIENT_AUTHORITY_CODE)
+	assert "只有帖子拥有者或管理员可以修改" in message["msg"]
 

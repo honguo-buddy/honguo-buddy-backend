@@ -3,8 +3,10 @@
 import pytest
 from httpx import AsyncClient
 
+from app.api import get_current_user
 from app.models import Attachment, AttachmentTargetType, Post, Category, PostStatus, Direction, UrgencyLevel, Comment, TargetType
 from app.core import settings
+from tests.helpers import assert_api_error
 
 
 @pytest.mark.asyncio
@@ -56,6 +58,32 @@ async def test_create_comment(
     assert data["code"] == settings.SUCCESS_CODE
     assert data["message"]["content"] == "这是一条根评论"
     assert data["message"]["parent_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_create_comment_with_invalid_target_type_returns_error(
+    client: AsyncClient,
+    test_user,
+    test_user_token,
+    fake_redis,
+):
+    await fake_redis.set(f"token:{test_user_token}", str(test_user.user_id))
+    await fake_redis.set(f"user_token:{test_user.user_id}", test_user_token)
+
+    resp = await client.post(
+        "/comments",
+        headers={"Authorization": f"Bearer {test_user_token}"},
+        json={
+            "target_type": "INVALID",
+            "target_id": 1,
+            "parent_id": None,
+            "content": "无效目标类型",
+        },
+    )
+
+    assert resp.status_code == 200
+    message = assert_api_error(resp.json(), code=settings.REQ_ERROR_CODE)
+    assert "无效的目标类型" in message["msg"]
 
 
 @pytest.mark.asyncio
@@ -443,3 +471,69 @@ async def test_delete_comment_forbidden_for_non_owner(
     )
     assert resp.status_code == 200
     assert resp.json()["code"] == settings.SUCCESS_CODE
+
+
+@pytest.mark.asyncio
+async def test_delete_comment_rejects_unrelated_user(
+    client: AsyncClient,
+    db_session,
+    test_user,
+    fake_redis,
+):
+    from app.core import create_access_token
+    from app.models import SexEnum, User, UserType
+
+    other_user = User(
+        user_id=3901,
+        user_uuid=b"eeeeeeeeeeeeeeee",
+        user_name="other-user",
+        email="other@example.com",
+        phonenumber="13800000999",
+        sex=SexEnum.UNKNOWN,
+        user_type=UserType.USER,
+        is_verified=True,
+        is_active=True,
+        is_admin=False,
+        is_deleted=False,
+        credit_score=100,
+        wechat_openid="other-openid",
+    )
+    db_session.add(other_user)
+    await db_session.flush()
+
+    token = create_access_token({"sub": str(other_user.user_id), "user_name": other_user.user_name, "user_type": other_user.user_type.value})
+    await fake_redis.set(f"token:{token}", str(other_user.user_id))
+    await fake_redis.set(f"user_token:{other_user.user_id}", token)
+
+    category = Category(category_id=2061, name="测试分类", config_json={})
+    db_session.add(category)
+    await db_session.flush()
+    post = Post(
+        post_id=3061,
+        publisher_id=test_user.user_id,
+        category_id=category.category_id,
+        title="测试帖子",
+        description="这是一个测试帖子",
+        price=100.0,
+        template_data={"max_accepters": 1},
+        direction=Direction.SELL,
+        urgency=UrgencyLevel.NORMAL,
+        status=PostStatus.OPEN,
+    )
+    db_session.add(post)
+    await db_session.flush()
+    comment = Comment(
+        user_id=test_user.user_id,
+        target_type=TargetType.POST,
+        target_id=post.post_id,
+        parent_id=None,
+        content="测试评论",
+    )
+    db_session.add(comment)
+    await db_session.flush()
+
+    resp = await client.delete(f"/comments/{comment.comment_id}", headers={"Authorization": f"Bearer {token}"})
+
+    assert resp.status_code == 200
+    message = assert_api_error(resp.json(), code=settings.INSUFFICIENT_AUTHORITY_CODE)
+    assert "无权删除他人评论" in message["msg"]

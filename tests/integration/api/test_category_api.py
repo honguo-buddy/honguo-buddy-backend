@@ -5,7 +5,9 @@ from unittest.mock import AsyncMock, patch
 from httpx import AsyncClient
 
 from app.core import settings
+from app.core.datetime_utils import get_now_naive
 from app.models import Category, ItemType
+from tests.helpers import assert_api_error
 
 pytestmark = pytest.mark.asyncio
 
@@ -84,6 +86,12 @@ class TestCategoryPublicGet:
         assert body["message"]["category_id"] == 7004
         assert body["message"]["item_type"] == "POST"
 
+    async def test_get_missing_category_returns_resource_error(self, client: AsyncClient):
+        resp = await client.get("/categories/999999")
+
+        assert resp.status_code == 200
+        assert_api_error(resp.json(), code=settings.DATA_GET_FAILED_CODE)
+
 
 class TestCategoryAdminCrud:
     async def test_create_category_template(self, client: AsyncClient, test_admin_user, test_admin_token, fake_redis):
@@ -100,8 +108,8 @@ class TestCategoryAdminCrud:
                 "icon": None,
                 "item_type": ItemType.POST.value,
                 "config_json": {"fields": [{"key": "deadline", "label": "截止时间"}]},
-                "create_time": __import__("datetime").datetime.utcnow(),
-                "update_time": __import__("datetime").datetime.utcnow(),
+                "create_time": get_now_naive(),
+                "update_time": get_now_naive(),
             },
         )()
 
@@ -121,6 +129,35 @@ class TestCategoryAdminCrud:
         assert body["code"] == settings.SUCCESS_CODE
         assert body["message"]["name"] == "管理员创建分类"
         assert body["message"]["item_type"] == "POST"
+
+    async def test_create_duplicate_category_rejected(self, client: AsyncClient, db_session, test_admin_user, test_admin_token, fake_redis):
+        category = Category(
+            category_id=7010,
+            name="重复分类",
+            icon=None,
+            config_json={"fields": [{"key": "deadline", "label": "截止时间"}]},
+            item_type=ItemType.POST,
+            is_deleted=False,
+        )
+        db_session.add(category)
+        await db_session.flush()
+
+        await fake_redis.set(f"token:{test_admin_token}", str(test_admin_user.user_id))
+        await fake_redis.set(f"user_token:{test_admin_user.user_id}", test_admin_token)
+
+        resp = await client.post(
+            "/categories/",
+            headers={"Authorization": f"Bearer {test_admin_token}"},
+            json={
+                "name": "重复分类",
+                "item_type": "POST",
+                "config_json": {"fields": [{"key": "deadline", "label": "截止时间"}]},
+            },
+        )
+
+        assert resp.status_code == 200
+        message = assert_api_error(resp.json(), code=settings.REQ_ERROR_CODE)
+        assert "模板分类名称已存在" in message["msg"]
 
     async def test_update_category_template(self, client: AsyncClient, db_session, test_admin_user, test_admin_token, fake_redis):
         """管理员可更新模板分类。"""

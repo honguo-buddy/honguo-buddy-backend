@@ -8,6 +8,7 @@ from httpx import AsyncClient
 
 from app.core import settings
 from app.models import User, Attachment, AttachmentTargetType
+from tests.helpers import assert_api_error
 
 pytestmark = pytest.mark.asyncio
 
@@ -257,3 +258,13 @@ class TestUserEndpoints:
         body = resp.json()
         assert body["code"] == settings.SUCCESS_CODE
         assert f"用户 {test_user.user_id} 已被禁用/删除" in body["message"]["message"]
+
+    async def test_admin_cannot_delete_self(self, client: AsyncClient, test_admin_user, test_admin_token, fake_redis):
+        await fake_redis.set(f"token:{test_admin_token}", str(test_admin_user.user_id))
+        await fake_redis.set(f"user_token:{test_admin_user.user_id}", test_admin_token)
+
+        resp = await client.delete(f"/users/{test_admin_user.user_id}", headers={"Authorization": f"Bearer {test_admin_token}"})
+
+        assert resp.status_code == 200
+        message = assert_api_error(resp.json(), code=settings.INSUFFICIENT_AUTHORITY_CODE)
+        assert "无法删除自己的账号" in message["msg"]

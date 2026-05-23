@@ -4,7 +4,8 @@ import pytest
 from httpx import AsyncClient
 
 from app.core import settings
-from app.models import Attachment, AttachmentTargetType, Category, Direction, Post, PostStatus, UrgencyLevel
+from app.models import Attachment, AttachmentTargetType, Category, ChatMessage, ChatSession, Direction, Post, PostStatus, UrgencyLevel
+from tests.helpers import assert_api_error
 
 
 @pytest.mark.asyncio
@@ -98,6 +99,13 @@ async def test_chat_end_to_end_flow(
     assert quote_body["message"]["context_id"] == post.post_id
     second_message_id = quote_body["message"]["message_id"]
 
+    recalled_message = await db_session.get(ChatMessage, second_message_id)
+    assert recalled_message is not None
+    session = await db_session.get(ChatSession, session_id)
+    assert session is not None
+    session.last_message_time = recalled_message.create_time
+    await db_session.flush()
+
     sessions_resp = await client.get(
         "/chats/sessions",
         headers={"Authorization": f"Bearer {test_user_token}"},
@@ -138,6 +146,10 @@ async def test_chat_end_to_end_flow(
     assert recall_body["message"]["is_recalled"] is True
     assert recall_body["message"]["content"] == "对方撤回了一条消息"
 
+    refreshed_session = await db_session.get(ChatSession, session_id)
+    assert refreshed_session is not None
+    assert refreshed_session.last_message_content == "对方撤回了一条消息"
+
     local_delete_resp = await client.delete(
         f"/chats/messages/{first_message_id}/local",
         headers={"Authorization": f"Bearer {test_user_token}"},
@@ -154,3 +166,19 @@ async def test_chat_end_to_end_flow(
     hidden_messages_body = hidden_messages_resp.json()
     assert len(hidden_messages_body["message"]["items"]) == 1
     assert hidden_messages_body["message"]["items"][0]["message_id"] == second_message_id
+
+
+@pytest.mark.asyncio
+async def test_chat_init_rejects_self_chat(client: AsyncClient, test_user, test_user_token, fake_redis):
+    await fake_redis.set(f"token:{test_user_token}", str(test_user.user_id))
+    await fake_redis.set(f"user_token:{test_user.user_id}", test_user_token)
+
+    response = await client.post(
+        "/chats/sessions/init",
+        headers={"Authorization": f"Bearer {test_user_token}"},
+        json={"peer_id": test_user.user_id, "context_type": "POST", "context_id": 1},
+    )
+
+    assert response.status_code == 200
+    message = assert_api_error(response.json(), code=settings.REQ_ERROR_CODE)
+    assert "不能和自己创建会话" in message["msg"]
