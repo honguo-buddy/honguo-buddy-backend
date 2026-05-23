@@ -773,8 +773,32 @@ DATA_GET_FAILED: 301
     "code": 0,
     "message": {
         "post_id": 1001,
+        "category_id": 3,
         "title": "代取外卖",
-        "price": 10.5
+        "description": "帮我从食堂取一份外卖",
+        "price": 10.5,
+        "direction": "SELL",
+        "urgency": "NORMAL",
+        "status": "OPEN",
+        "template_data": {
+            "pickup_address": "教学楼A楼",
+            "max_accepters": 1
+        },
+        "max_accepters": 1,
+        "publisher": {
+            "user_id": 1001,
+            "user_uuid": "...",
+            "user_name": "测试用户",
+            "avatar": "/static/avatar/avatar_1001.png",
+            "sex": "未知",
+            "credit_score": 100,
+            "is_verified": false,
+            "user_type": "user"
+        },
+        "publisher_id": 1001,
+        "current_accepters": 0,
+        "create_time": "2025-09-01T12:00:00",
+        "attachment_urls": []
     }
 }
 ```
@@ -787,13 +811,14 @@ DATA_GET_FAILED: 301
 
 #### 4.5.2 获取帖子列表 (GET: /posts)
 
-用途: 获取帖子列表，支持关键词、状态、价格、时间等筛选。
+用途: 获取帖子列表，支持关键词、模板/分类ID、状态、价格、时间等筛选。
 
 请求示例:
 
 ```json
 {
     "keyword": "外卖",
+    "category_id": 9201,
     "status": "OPEN",
     "page": 1,
     "page_size": 20
@@ -812,6 +837,7 @@ DATA_GET_FAILED: 301
         "list": [
             {
                 "post_id": 1001,
+                "category_id": 9201,
                 "title": "二手书转让",
                 "description": "九成新教辅",
                 "price": 15.0,
@@ -869,6 +895,7 @@ DATA_GET_FAILED: 301
         "list": [
             {
                 "post_id": 1001,
+                "category_id": 3,
                 "title": "二手书转让",
                 "description": "九成新教辅",
                 "price": 15.0,
@@ -929,6 +956,7 @@ DATA_GET_FAILED: 301
         "list": [
             {
                 "post_id": 1002,
+                "category_id": 3,
                 "title": "帮跑外卖",
                 "description": "今天帮取外卖",
                 "price": 8.0,
@@ -965,7 +993,7 @@ DATA_GET_FAILED: 301
 
 #### 4.5.5 帖子详情 (GET: /posts/{post_id})
 
-用途: 获取帖子详情，包含前 N 条评论。
+用途: 获取帖子详情，包含前 N 条评论，并返回模板/分类 ID。
 
 请求示例:
 
@@ -983,6 +1011,7 @@ DATA_GET_FAILED: 301
     "code": 0,
     "message": {
         "post_id": 1001,
+        "category_id": 9201,
         "title": "二手书转让",
         "description": "九成新教辅",
         "price": 15.0,
@@ -1042,6 +1071,7 @@ DATA_GET_FAILED: 301
     "code": 0,
     "message": {
         "post_id": 1001,
+        "category_id": 3,
         "title": "2025版二手书低价出售",
         "description": "九成新教辅",
         "price": 15.0,
@@ -1382,12 +1412,14 @@ JSON
     "target_type": "POST",     
     "target_id": 1001,
     "parent_id": null,          
-    "content": "这是一个评论内容"
+    "content": "这是一个评论内容",
+    "attachment_ids": [123]
 }
 ```
 
 说明：
 - `parent_id` 可选，传 `null` 或不传表示发布根评论；传入 `parent_id` 表示回复该父评论（请确保父评论存在）。
+- `attachment_ids` 可选，评论图片会先上传到附件接口，再在评论落库后自动绑定到当前评论。
 
 成功响应:
 
@@ -1403,7 +1435,8 @@ JSON
         "content": "这是一个评论内容",
         "is_deleted": false,
         "create_time": "2026-05-21T12:00:00",
-        "update_time": "2026-05-21T12:00:00"
+        "update_time": "2026-05-21T12:00:00",
+        "attachment_urls": ["/static/comment/comment-1.png"]
     }
 }
 ```
@@ -1485,6 +1518,7 @@ LIMIT :size
                 "is_deleted": false,
                 "create_time": "2026-05-21T12:00:00",
                 "update_time": "2026-05-21T12:00:00",
+                "attachment_urls": ["/static/comment/comment-1.png"],
                 "reply_count": 5,
                 "preview_replies": [
                     {"comment_id": 2005, "user_id":1002, "content":"最新回复1", "create_time":"2026-05-21T12:05:00"},
@@ -1543,6 +1577,149 @@ LIMIT :size
 - code: 301 - 根评论不存在（`comment_id` 无对应记录）。
 - code: 99  - 请求参数校验失败。
 
+### 4.8 CHAT 私信模块
+
+说明：私信模块为双人会话制，支持会话初始化、消息发送、游标历史、一键已读、2 分钟撤回和单边本地删除。路由前缀固定为 `/chats`。消息体支持 `context_type` / `context_id`，可把聊天挂到帖子等业务上下文上。
+
+#### 4.8.1 会话初始化 (POST: /chats/sessions/init)
+
+用途：按用户 ID 自动排序创建或复用双人会话，可选附带业务上下文（例如帖子）。
+
+请求头：Authorization: Bearer <token>（必须登录）
+
+请求示例:
+
+```json
+{
+    "peer_id": 1002,
+    "context_type": "POST",
+    "context_id": 9202
+}
+```
+
+成功响应:
+
+```json
+{
+    "code": 0,
+    "message": {
+        "session_id": 3001,
+        "user_one_id": 1001,
+        "user_two_id": 1002,
+        "peer_id": 1002,
+        "context_type": "POST",
+        "context_id": 9202,
+        "last_message_content": null,
+        "last_message_time": null,
+        "unread_count": 0
+    }
+}
+```
+
+#### 4.8.2 会话列表 (GET: /chats/sessions)
+
+用途：获取当前用户的收件箱列表，并返回每个会话的未读数。
+
+请求头：Authorization: Bearer <token>（必须登录）
+
+成功响应:
+
+```json
+{
+    "code": 0,
+    "message": {
+        "items": [
+            {
+                "session_id": 3001,
+                "user_one_id": 1001,
+                "user_two_id": 1002,
+                "peer_id": 1002,
+                "context_type": "POST",
+                "context_id": 9202,
+                "last_message_content": "你好",
+                "last_message_time": "2026-05-21T12:10:00",
+                "unread_count": 1
+            }
+        ]
+    }
+}
+```
+
+#### 4.8.3 发送消息 (POST: /chats/messages)
+
+用途：发送文本消息，可选携带附件、引用消息和业务上下文。
+
+请求头：Authorization: Bearer <token>（必须登录）
+
+请求示例:
+
+```json
+{
+    "session_id": 3001,
+    "content": "我收到了",
+    "attachment_ids": [456],
+    "quote_message_id": 455,
+    "context_type": "POST",
+    "context_id": 9202
+}
+```
+
+成功响应:
+
+```json
+{
+    "code": 0,
+    "message": {
+        "message_id": 4001,
+        "session_id": 3001,
+        "sender_id": 1001,
+        "content": "我收到了",
+        "context_type": "POST",
+        "context_id": 9202,
+        "is_read": false,
+        "is_recalled": false,
+        "is_deleted_by_sender": false,
+        "is_deleted_by_receiver": false,
+        "quote_message_id": 455,
+        "create_time": "2026-05-21T12:11:00",
+        "attachment_urls": ["/static/chat/chat-1.png"]
+    }
+}
+```
+
+#### 4.8.4 历史消息拉取 (GET: /chats/sessions/{session_id}/messages)
+
+用途：按游标分页拉取消息历史，支持消息单边删除过滤，并返回消息上下文字段。
+
+请求头：Authorization: Bearer <token>（必须登录）
+
+请求示例:
+
+```json
+{
+    "cursor": null,
+    "size": 20
+}
+```
+
+#### 4.8.5 一键已读 (PATCH: /chats/sessions/{session_id}/read)
+
+用途：清除对方发来的未读红点。
+
+请求头：Authorization: Bearer <token>（必须登录）
+
+#### 4.8.6 撤回消息 (PATCH: /chats/messages/{message_id}/recall)
+
+用途：2 分钟内撤回自己发送的消息。
+
+请求头：Authorization: Bearer <token>（必须登录）
+
+#### 4.8.7 单边删除 (DELETE: /chats/messages/{message_id}/local)
+
+用途：仅删除当前用户一侧可见的消息，不影响对方视图。
+
+请求头：Authorization: Bearer <token>（必须登录）
+
 ---
 
-文件位置：评论接口实现位于项目代码中：`app/api/comment.py`、`app/services/comment_service.py` 与 `app/schemas/comment.py`，文档和实现保持一致。
+文件位置：评论接口实现位于项目代码中：`app/api/comment.py`、`app/services/comment_service.py` 与 `app/schemas/comment.py`；聊天接口位于 `app/api/chat.py`、`app/services/chat_service.py` 与 `app/schemas/chat.py`。文档和实现保持一致。

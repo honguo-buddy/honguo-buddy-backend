@@ -1,6 +1,7 @@
 from app.models.attachment import Attachment, AttachmentTargetType
 from app.models.category import Category
 from app.models.comment import Comment, TargetType
+from app.models.chat import ChatMessage, ChatSession
 from app.models.credit_log import CreditLog
 from app.models.goods import Goods, GoodsCondition
 from app.models.order import ItemType, Order, OrderStatus
@@ -14,6 +15,8 @@ __all__ = [
     "Category",
     "Comment",
     "TargetType",
+    "ChatMessage",
+    "ChatSession",
     "CreditLog",
     "Goods",
     "GoodsCondition",

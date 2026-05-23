@@ -33,6 +33,8 @@ from app.models import (  # noqa: E402,F401
     Attachment,
     Category,
     Comment,
+    ChatMessage,
+    ChatSession,
     CreditLog,
     Goods,
     ItemType,

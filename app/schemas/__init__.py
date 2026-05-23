@@ -57,6 +57,15 @@ from app.schemas.comment import (
     CommentWithReplyCountResponse,
     CommentReplyPreview,
 )
+from app.schemas.chat import (
+    ChatSessionInitRequest,
+    ChatMessageCreateRequest,
+    ChatSessionRead,
+    ChatSessionListResponse,
+    ChatMessageRead,
+    ChatMessageListResponse,
+    ChatRecallResponse,
+)
 from app.schemas.category import (
     CategoryCreate,
     CategoryUpdate,
