@@ -60,6 +60,7 @@ class PostRead(BaseModel):
     """发布悬赏帖的响应模型。"""
     
     post_id: int
+    category_id: Optional[int] = Field(default=None, description="模板/分类ID")
     title: str
     description: Optional[str] = None
     price: Optional[float] = Field(default=None, description="悬赏金额（单位：元）")

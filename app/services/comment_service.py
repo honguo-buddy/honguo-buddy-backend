@@ -9,14 +9,14 @@
 
 import logging
 from typing import List, Optional, Tuple
-from datetime import datetime
 
 from sqlalchemy import and_, select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core import AuthHTTPException, BusinessHTTPException, ResourceHTTPException, settings
-from app.models import Comment, User, TargetType
+from app.models import AttachmentTargetType, Comment, User, TargetType
+from app.services.attachment_service import AttachmentService
 
 logger = logging.getLogger(__name__)
 
@@ -32,6 +32,7 @@ class CommentService:
         target_id: int,
         content: str,
         parent_id: Optional[int] = None,
+        attachment_ids: Optional[List[int]] = None,
     ) -> Comment:
         """创建新评论/回复。
         
@@ -83,6 +84,16 @@ class CommentService:
         )
         db.add(new_comment)
         await db.flush()
+
+        if attachment_ids:
+            await AttachmentService.bind_attachments_to_target(
+                db=db,
+                attachment_ids=attachment_ids,
+                target_type=AttachmentTargetType.COMMENT.value,
+                target_id=new_comment.comment_id,
+                creator_id=user_id,
+            )
+
         await db.commit()
         await db.refresh(new_comment, attribute_names=["user", "parent", "replies"])
         
@@ -344,3 +355,7 @@ class CommentService:
         
         # 反序以保持时间正序
         return list(reversed(replies))
+
+    @staticmethod
+    async def get_comment_attachment_urls_map(db: AsyncSession, comment_ids: List[int]) -> dict[int, list[str]]:
+        return await AttachmentService.get_urls_by_target(db, AttachmentTargetType.COMMENT.value, comment_ids)

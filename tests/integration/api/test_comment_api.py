@@ -3,7 +3,7 @@
 import pytest
 from httpx import AsyncClient
 
-from app.models import Post, Category, PostStatus, Direction, UrgencyLevel, Comment, TargetType
+from app.models import Attachment, AttachmentTargetType, Post, Category, PostStatus, Direction, UrgencyLevel, Comment, TargetType
 from app.core import settings
 
 
@@ -56,6 +56,105 @@ async def test_create_comment(
     assert data["code"] == settings.SUCCESS_CODE
     assert data["message"]["content"] == "这是一条根评论"
     assert data["message"]["parent_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_comment_attachment_binding_and_listing(
+    client: AsyncClient,
+    db_session,
+    test_user,
+    test_user_token,
+    fake_redis,
+):
+    """测试评论附件延迟绑定与读取。"""
+    await fake_redis.set(f"token:{test_user_token}", str(test_user.user_id))
+
+    category = Category(category_id=9101, name="评论附件分类", config_json={})
+    db_session.add(category)
+    await db_session.flush()
+
+    post = Post(
+        post_id=9102,
+        publisher_id=test_user.user_id,
+        category_id=category.category_id,
+        title="评论附件帖子",
+        description="用于评论附件测试",
+        price=10.0,
+        template_data={"max_accepters": 1},
+        direction=Direction.SELL,
+        urgency=UrgencyLevel.NORMAL,
+        status=PostStatus.OPEN,
+    )
+    db_session.add(post)
+    await db_session.flush()
+
+    attachment = Attachment(
+        attachment_id=9103,
+        target_type=AttachmentTargetType.USER,
+        target_id=None,
+        url="/static/comment/comment-attachment.png",
+        creator_id=test_user.user_id,
+    )
+    db_session.add(attachment)
+    await db_session.flush()
+
+    create_resp = await client.post(
+        "/comments",
+        headers={"Authorization": f"Bearer {test_user_token}"},
+        json={
+            "target_type": "POST",
+            "target_id": post.post_id,
+            "parent_id": None,
+            "content": "带附件的评论",
+            "attachment_ids": [attachment.attachment_id],
+        },
+    )
+    assert create_resp.status_code == 200
+    create_body = create_resp.json()
+    assert create_body["code"] == settings.SUCCESS_CODE
+    assert create_body["message"]["attachment_urls"] == ["/static/comment/comment-attachment.png"]
+    comment_id = create_body["message"]["comment_id"]
+
+    await db_session.refresh(attachment)
+    assert attachment.target_type == AttachmentTargetType.COMMENT
+    assert attachment.target_id == comment_id
+
+    root_resp = await client.get(f"/comments/POST/{post.post_id}")
+    assert root_resp.status_code == 200
+    root_body = root_resp.json()
+    assert root_body["code"] == settings.SUCCESS_CODE
+    assert root_body["message"]["items"][0]["attachment_urls"] == ["/static/comment/comment-attachment.png"]
+
+    reply_attachment = Attachment(
+        attachment_id=9104,
+        target_type=AttachmentTargetType.USER,
+        target_id=None,
+        url="/static/comment/reply-attachment.png",
+        creator_id=test_user.user_id,
+    )
+    db_session.add(reply_attachment)
+    await db_session.flush()
+
+    reply_resp = await client.post(
+        "/comments",
+        headers={"Authorization": f"Bearer {test_user_token}"},
+        json={
+            "target_type": "POST",
+            "target_id": post.post_id,
+            "parent_id": comment_id,
+            "content": "回复附件评论",
+            "attachment_ids": [reply_attachment.attachment_id],
+        },
+    )
+    assert reply_resp.status_code == 200
+    reply_body = reply_resp.json()
+    assert reply_body["message"]["attachment_urls"] == ["/static/comment/reply-attachment.png"]
+
+    replies_resp = await client.get(f"/comments/{comment_id}/replies")
+    assert replies_resp.status_code == 200
+    replies_body = replies_resp.json()
+    assert replies_body["code"] == settings.SUCCESS_CODE
+    assert replies_body["message"]["items"][0]["attachment_urls"] == ["/static/comment/reply-attachment.png"]
 
 
 @pytest.mark.asyncio

@@ -11,6 +11,8 @@ class AttachmentTargetType(enum.Enum):
     USER = "USER"
     POST = "POST"
     GOODS = "GOODS"
+    COMMENT = "COMMENT"
+    CHAT = "CHAT"
 
 
 class Attachment(Base):

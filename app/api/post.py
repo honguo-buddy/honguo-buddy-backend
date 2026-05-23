@@ -33,6 +33,7 @@ def _build_post_read(post, current_accepters: int) -> PostRead:
     attachment_urls = [att.url for att in (post.attachments or []) if not att.is_deleted]
     return PostRead(
         post_id=post.post_id,
+        category_id=post.category_id,
         title=post.title,
         description=post.description,
         price=float(post.price) if post.price else None,
@@ -49,7 +50,7 @@ def _build_post_read(post, current_accepters: int) -> PostRead:
     )
 
 
-@router.post("/", response_model=ResponseModel)
+@router.post("/", response_model=ResponseModel[PostRead])
 async def publish_post(
     post_create: PostCreate,
     current_user: UserRead = Depends(get_current_user),
@@ -65,14 +66,15 @@ async def publish_post(
             publisher_id=current_user.user_id,
             post_create=post_create,
         )
+        current_accepters = await OrderService.get_current_accepters_count(
+            db,
+            item_type="POST",
+            item_id=post.post_id,
+        )
         
         return ResponseModel(
             code=settings.SUCCESS_CODE,
-            message={
-                "post_id": post.post_id,
-                "title": post.title,
-                "price": float(post.price) if post.price else None,
-            },
+            message=_build_post_read(post, current_accepters),
         )
     except Exception as e:
         logger.error(f"发布帖子失败 user_id={current_user.user_id}: {e}")
@@ -85,6 +87,7 @@ async def publish_post(
 @router.get("/", response_model=ResponseModel[PostList])
 async def list_posts(
     keyword: Optional[str] = Query(None, description="全局关键词（搜索标题和描述）"),
+    category_id: Optional[int] = Query(None, description="模板/分类ID"),
     urgency: Optional[str] = Query(None, description="紧急度，支持多个逗号分隔（NORMAL, URGENT, EMERGENCY）"),
     direction: Optional[str] = Query(None, description="方向（SELL 或 BUY）"),
     price_min: Optional[float] = Query(None, ge=0, description="最小价格"),
@@ -108,6 +111,7 @@ async def list_posts(
         posts, total = await PostService.list_posts(
             db,
             keyword=keyword,
+            category_id=category_id,
             urgency=urgency,
             direction=direction,
             price_min=price_min,
@@ -310,6 +314,7 @@ async def get_post_detail(
 
         post_detail = PostDetailRead(
             post_id=post.post_id,
+            category_id=post.category_id,
             title=post.title,
             description=post.description,
             price=float(post.price) if post.price else None,

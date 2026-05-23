@@ -13,6 +13,7 @@ class CommentCreateRequest(BaseModel):
     target_id: int = Field(..., description="目标ID")
     parent_id: Optional[int] = Field(default=None, description="父评论ID（可选，为null则为根评论）")
     content: str = Field(..., description="评论内容")
+    attachment_ids: Optional[List[int]] = Field(default=None, description="评论附件ID列表（可选）")
 
 
 # ===== 响应模型 =====
@@ -40,6 +41,7 @@ class CommentResponse(BaseModel):
     is_deleted: bool
     create_time: datetime
     update_time: datetime
+    attachment_urls: List[str] = Field(default_factory=list, description="评论附件相对 URL 列表")
 
 
 class CommentWithReplyCountResponse(BaseModel):
@@ -56,6 +58,7 @@ class CommentWithReplyCountResponse(BaseModel):
     update_time: datetime
     reply_count: int = Field(default=0, description="该评论的回复总数")
     preview_replies: List[CommentReplyPreview] = Field(default_factory=list, description="最新的2-3条回复预览")
+    attachment_urls: List[str] = Field(default_factory=list, description="评论附件相对 URL 列表")
 
 
 class CommentListResponse(BaseModel):
