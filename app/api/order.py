@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api import get_current_user
 from app.core import BusinessHTTPException, settings
-from app.db import get_db
+from app.db import get_db, get_redis
 from app.models import Goods, Post
 from app.schemas import (
     OrderItemList,
@@ -135,6 +135,7 @@ async def create_order_review(
     payload: OrderReviewCreateRequest,
     current_user: UserRead = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    redis_client = Depends(get_redis),
 ):
     review = await OrderReviewService.create_review(
         db,
@@ -146,6 +147,7 @@ async def create_order_review(
         rating=payload.rating,
         content=payload.content,
         is_anonymous=payload.is_anonymous,
+        redis_client=redis_client,
     )
     return ResponseModel(code=settings.SUCCESS_CODE, message=OrderReviewRead.model_validate(review))
 
@@ -173,8 +175,9 @@ async def submit_delivery(
     order_id: int,
     current_user: UserRead = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    redis_client = Depends(get_redis),
 ):
-    order = await OrderService.submit_delivery(db, order_id, current_user.user_id)
+    order = await OrderService.submit_delivery(db, order_id, current_user.user_id, redis_client=redis_client)
     return ResponseModel(code=settings.SUCCESS_CODE, message=_order_to_read(order))
 
 

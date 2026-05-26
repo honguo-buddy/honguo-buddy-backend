@@ -1,11 +1,15 @@
 """Post / Order 全链路集成测试（真实 MySQL Testcontainers）。"""
 
+import time
 from types import SimpleNamespace
+from contextlib import asynccontextmanager
 
 import pytest
 from sqlalchemy import select
 
 from app.api import get_current_user
+from app.core.cleantask import process_delayed_queues_once
+from app.core.delay_queue import ORDER_AUTO_CONFIRM_QUEUE_KEY, REVIEW_DOUBLE_BLIND_QUEUE_KEY
 from app.core import settings
 from app.models import Category, Direction, Order, OrderReview, OrderStatus, Post, PostStatus, SexEnum, UrgencyLevel, User, UserType
 from app.services import OrderReviewService
@@ -513,5 +517,123 @@ async def test_order_review_auto_release_stub(client, app, db_session):
     assert body["code"] == settings.SUCCESS_CODE
     assert len(body["message"]["items"]) == 1
     assert body["message"]["items"][0]["is_visible"] is True
+
+    await _clear_current_user(app)
+
+
+@pytest.mark.asyncio
+async def test_delayed_queue_worker_enqueues_and_consumes_order_and_review(client, app, db_session, fake_redis):
+    category = Category(
+        category_id=9901,
+        name="延迟任务分类",
+        item_type="POST",
+        config_json={"fields": []},
+    )
+    publisher = User(
+        user_id=9901,
+        user_uuid=b"queuepub00000001",
+        user_name="queue-publisher",
+        email="queue-publisher@example.com",
+        phonenumber="13800990001",
+        sex=SexEnum.UNKNOWN,
+        user_type=UserType.USER,
+        is_verified=True,
+        is_active=True,
+        is_admin=False,
+        is_deleted=False,
+        credit_score=100,
+        wechat_openid="queue-openid-a",
+    )
+    helper = User(
+        user_id=9902,
+        user_uuid=b"queuehelp0000002",
+        user_name="queue-helper",
+        email="queue-helper@example.com",
+        phonenumber="13800990002",
+        sex=SexEnum.UNKNOWN,
+        user_type=UserType.USER,
+        is_verified=True,
+        is_active=True,
+        is_admin=False,
+        is_deleted=False,
+        credit_score=100,
+        wechat_openid="queue-openid-b",
+    )
+    db_session.add_all([category, publisher, helper])
+    await db_session.flush()
+
+    post = Post(
+        post_id=9903,
+        publisher_id=publisher.user_id,
+        category_id=category.category_id,
+        title="延迟队列任务",
+        description="用于验证 Redis ZSET 延迟队列",
+        price=18.0,
+        template_data={"max_accepters": 1},
+        direction=Direction.SELL,
+        urgency=UrgencyLevel.NORMAL,
+        status=PostStatus.OPEN,
+    )
+    db_session.add(post)
+    await db_session.flush()
+
+    await _set_current_user(app, helper)
+    accept_resp = await client.post(f"/posts/{post.post_id}/accept")
+    assert accept_resp.status_code == 200
+    order_id = accept_resp.json()["message"]["order_id"]
+
+    await _set_current_user(app, publisher)
+    approve_resp = await client.post(f"/orders/{order_id}/approve")
+    assert approve_resp.status_code == 200
+
+    submit_resp = await client.post(f"/orders/{order_id}/submit-delivery")
+    assert submit_resp.status_code == 200
+    assert submit_resp.json()["message"]["status"] == "CONFIRMED"
+
+    auto_score = await fake_redis.zscore(ORDER_AUTO_CONFIRM_QUEUE_KEY, str(order_id))
+    assert auto_score is not None
+    assert auto_score > time.time()
+
+    await fake_redis.zadd(ORDER_AUTO_CONFIRM_QUEUE_KEY, {str(order_id): time.time() - 1})
+    @asynccontextmanager
+    async def _session_factory():
+        yield db_session
+
+    processed = await process_delayed_queues_once(session_factory=_session_factory)
+    assert processed is True
+
+    order_after_worker = await db_session.get(Order, order_id)
+    await db_session.refresh(order_after_worker)
+    assert order_after_worker.status == OrderStatus.COMPLETED
+
+    order_after_worker.update_time = order_after_worker.update_time.replace(year=order_after_worker.update_time.year - 1)
+    await db_session.flush()
+
+    await _set_current_user(app, helper)
+    review_resp = await client.post(
+        "/orders/reviews",
+        json={
+            "order_id": order_id,
+            "reviewee_id": publisher.user_id,
+            "review_type": "INITIAL",
+            "rating": 5,
+            "content": "延迟队列首评",
+            "is_anonymous": False,
+        },
+    )
+    assert review_resp.status_code == 200
+    assert review_resp.json()["code"] == settings.SUCCESS_CODE
+
+    review_score = await fake_redis.zscore(REVIEW_DOUBLE_BLIND_QUEUE_KEY, str(order_id))
+    assert review_score is not None
+    assert review_score > time.time()
+
+    await fake_redis.zadd(REVIEW_DOUBLE_BLIND_QUEUE_KEY, {str(order_id): time.time() - 1})
+    processed = await process_delayed_queues_once(session_factory=_session_factory)
+    assert processed is True
+
+    review_rows = await db_session.execute(select(OrderReview).where(OrderReview.order_id == order_id))
+    assert len(review_rows.scalars().all()) == 1
+    assert (await db_session.get(Order, order_id)).status == OrderStatus.COMPLETED
 
     await _clear_current_user(app)

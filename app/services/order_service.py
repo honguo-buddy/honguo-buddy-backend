@@ -1,5 +1,6 @@
 """订单服务：支持多态关联（Post / Goods）和状态机管理。"""
 
+import time
 from datetime import timedelta
 from typing import Optional
 
@@ -10,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased, selectinload
 
 from app.core import BusinessHTTPException, ResourceHTTPException, get_now, get_now_naive, parse_datetime_to_beijing_naive, settings
+from app.core.delay_queue import ORDER_AUTO_CONFIRM_QUEUE_KEY, enqueue_delayed_task
 from app.models import CreditLog, Direction, Goods, ItemType, Order, OrderStatus, OrderTriggerType, Post, PostStatus, User
 
 logger = logging.getLogger(__name__)
@@ -391,7 +393,7 @@ class OrderService:
         return {"results": results, "errors": errors}
 
     @staticmethod
-    async def submit_delivery(db: AsyncSession, order_id: int, operator_id: int) -> Order:
+    async def submit_delivery(db: AsyncSession, order_id: int, operator_id: int, redis_client=None) -> Order:
         """卖家提交交付，订单从 ONGOING 进入 CONFIRMED。"""
 
         order = await OrderService._get_order_for_update(db, order_id)
@@ -407,7 +409,47 @@ class OrderService:
         await db.flush()
         await db.refresh(order)
         await db.commit()
+
+        if redis_client is not None:
+            try:
+                delayed_score = time.time() + settings.ORDER_AUTO_CONFIRM_HOURS * 3600
+                await enqueue_delayed_task(redis_client, ORDER_AUTO_CONFIRM_QUEUE_KEY, order.order_id, delayed_score)
+            except Exception as exc:
+                logger.error(f"Failed to enqueue order auto confirm task for order {order.order_id}: {exc}")
         return order
+
+    @staticmethod
+    async def auto_confirm_overdue_order_by_id(db: AsyncSession, order_id: int) -> bool:
+        """针对单个订单执行自动完结。"""
+
+        order = await OrderService._get_order_readonly(db, order_id)
+        if order.status != OrderStatus.CONFIRMED:
+            return False
+
+        post = None
+        goods = None
+        if order.item_type == ItemType.POST:
+            post_stmt = select(Post).where(Post.post_id == order.item_id, Post.is_deleted == False)
+            post_res = await db.execute(post_stmt)
+            post = post_res.scalars().first()
+        elif order.item_type == ItemType.GOODS:
+            goods_stmt = select(Goods).where(Goods.goods_id == order.item_id, Goods.is_deleted == False)
+            goods_res = await db.execute(goods_stmt)
+            goods = goods_res.scalars().first()
+
+        order.status = OrderStatus.COMPLETED
+        OrderService._apply_completion_side_effects(order, post, goods)
+        try:
+            await OrderService._add_credit(db, order.seller_id, settings.ORDER_COMPLETE_CREDIT, f"订单自动完成，order_id={order.order_id}")
+        except Exception as exc:
+            logger.error(f"Auto credit sync failed for order {order.order_id} seller {order.seller_id}: {exc}")
+
+        md = dict(order.meta_data or {})
+        md["auto_completed_time"] = get_now().isoformat()
+        order.meta_data = md
+        await db.flush()
+        await db.commit()
+        return True
 
     @staticmethod
     async def accept_delivery(db: AsyncSession, order_id: int, operator_id: int) -> Order:

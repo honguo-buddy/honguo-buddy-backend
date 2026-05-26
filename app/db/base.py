@@ -67,9 +67,5 @@ async def get_redis():
 
     注意：不要在此处关闭全局客户端，否则会影响其他使用者。
     """
-    try:
-        yield redis
-    finally:
-        # 不在这里关闭全局 redis 客户端
-        return
+    yield redis
  

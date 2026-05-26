@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from datetime import timedelta
 
 import logging
@@ -10,6 +11,7 @@ from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import BusinessHTTPException, ResourceHTTPException, get_now_naive, settings
+from app.core.delay_queue import REVIEW_DOUBLE_BLIND_QUEUE_KEY, enqueue_delayed_task
 from app.models import Order, OrderReview, ReviewType, OrderStatus
 
 logger = logging.getLogger(__name__)
@@ -83,6 +85,7 @@ class OrderReviewService:
         rating: int | None = None,
         content: str | None = None,
         is_anonymous: bool = False,
+        redis_client=None,
     ) -> OrderReview:
         """创建订单评价并在满足条件时自动公开。"""
 
@@ -138,10 +141,34 @@ class OrderReviewService:
         db.add(review)
         await db.flush()
 
+        if review_type_enum == ReviewType.INITIAL:
+            initial_count_stmt = select(func.count()).select_from(OrderReview).where(
+                OrderReview.order_id == order_id,
+                OrderReview.review_type == ReviewType.INITIAL,
+            )
+            initial_count_res = await db.execute(initial_count_stmt)
+            initial_count = int(initial_count_res.scalar_one() or 0)
+            if initial_count == 1 and redis_client is not None:
+                try:
+                    delayed_score = time.time() + settings.REVIEW_DOUBLE_BLIND_DAYS * 86400
+                    await enqueue_delayed_task(redis_client, REVIEW_DOUBLE_BLIND_QUEUE_KEY, order_id, delayed_score)
+                except Exception as exc:
+                    logger.error(f"Failed to enqueue review delayed task for order {order_id}: {exc}")
+
         await OrderReviewService._release_reviews_if_ready(db, order)
         await db.commit()
         await db.refresh(review)
         return review
+
+    @staticmethod
+    async def release_double_blind_reviews_for_order(db: AsyncSession, order_id: int) -> bool:
+        """针对单个订单执行双盲评价解封。"""
+
+        order = await OrderReviewService._get_order(db, order_id)
+        released = await OrderReviewService._release_reviews_if_ready(db, order)
+        if released:
+            await db.commit()
+        return released
 
     @staticmethod
     async def list_reviews_for_order(

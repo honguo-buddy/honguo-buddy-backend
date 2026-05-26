@@ -34,6 +34,7 @@ class FakeRedis:
 
     def __init__(self) -> None:
         self._data: dict[str, str] = {}
+        self._zsets: dict[str, dict[str, float]] = {}
 
     async def get(self, key: str):
         return self._data.get(key)
@@ -49,6 +50,7 @@ class FakeRedis:
     async def delete(self, *keys):
         for key in keys:
             self._data.pop(key, None)
+            self._zsets.pop(key, None)
         return len(keys)
 
     async def exists(self, key: str):
@@ -56,6 +58,48 @@ class FakeRedis:
 
     async def ping(self):
         return True
+
+    async def zadd(self, key: str, mapping: dict[str, float]):
+        zset = self._zsets.setdefault(key, {})
+        added = 0
+        for member, score in mapping.items():
+            if member not in zset:
+                added += 1
+            zset[str(member)] = float(score)
+        return added
+
+    async def zrangebyscore(self, key: str, min=0, max=0, start: int = 0, num: int | None = None):
+        zset = self._zsets.get(key, {})
+
+        def _normalize(value):
+            if value in ("-inf", b"-inf"):
+                return float("-inf")
+            if value in ("+inf", "+infinity", b"+inf", b"+infinity"):
+                return float("inf")
+            return float(value)
+
+        lower = _normalize(min)
+        upper = _normalize(max)
+        ordered = [member for member, score in sorted(zset.items(), key=lambda item: (item[1], item[0])) if lower <= score <= upper]
+        if start:
+            ordered = ordered[start:]
+        if num is not None:
+            ordered = ordered[:num]
+        return ordered
+
+    async def zrem(self, key: str, *members):
+        zset = self._zsets.get(key, {})
+        removed = 0
+        for member in members:
+            member_key = str(member)
+            if member_key in zset:
+                removed += 1
+                del zset[member_key]
+        return removed
+
+    async def zscore(self, key: str, member: str):
+        zset = self._zsets.get(key, {})
+        return zset.get(str(member))
 
     async def aclose(self):
         return None
@@ -74,6 +118,7 @@ def patch_test_settings(monkeypatch, fake_redis):
     settings.WX_APP_SECRET = "test-wx-app-secret"
 
     monkeypatch.setattr("app.db.redis", fake_redis, raising=False)
+    monkeypatch.setattr("app.db.base.redis", fake_redis, raising=False)
     monkeypatch.setattr("app.main.redis", fake_redis, raising=False)
     monkeypatch.setattr("app.api.auth.redis", fake_redis, raising=False)
     monkeypatch.setattr("app.services.auth_service.redis", fake_redis, raising=False)

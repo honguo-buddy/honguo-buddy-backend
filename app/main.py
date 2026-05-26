@@ -9,7 +9,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from app.core import BEIJING_TZ
 
 from app.api import auth, user, attachment, category, post, order, comment, chat
-from app.core import register_exception_handlers, LogMiddleware, settings, create_cleanup_task
+from app.core import register_exception_handlers, LogMiddleware, settings, watch_delayed_queues_task
 from app.db import engine, Base, redis, AsyncSessionLocal
 
 # 确保 logs 文件夹存在
@@ -28,13 +28,12 @@ if not root_logger.handlers:
     )
 logger = logging.getLogger(__name__)
 
-# 全局变量存储清理任务和调度器
-cleanup_task = None
+# 全局变量存储调度器
 scheduler = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global cleanup_task, scheduler
+    global scheduler
 
     try:
         # 仅检测 base.py 中的全局 Redis 连接，不在此处重复创建实例
@@ -54,6 +53,9 @@ async def lifespan(app: FastAPI):
         # TODO: 添加具体定时任务
         scheduler.start()
         logger.info("✓ APScheduler 已启动")
+
+        app.state.delay_worker = asyncio.create_task(watch_delayed_queues_task())
+        logger.info("✓ Redis delayed queue worker 已启动")
 
         logger.info(" Application startup complete")
         yield  # 应用正常运行
@@ -86,13 +88,14 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning(f"DB engine dispose failed: {e}")
 
-        # 停止清理任务（如果有）
-        if cleanup_task:
-            cleanup_task.cancel()
+        # 停止延迟队列任务（如果有）
+        delay_worker = getattr(app.state, "delay_worker", None)
+        if delay_worker:
+            delay_worker.cancel()
             try:
-                await cleanup_task
+                await delay_worker
             except asyncio.CancelledError:
-                logger.info(" Cleanup task cancelled")
+                logger.info(" Delayed queue worker cancelled")
 
         logger.info("Application shutdown complete")
 
