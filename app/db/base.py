@@ -8,7 +8,7 @@ from app.core import settings
 engine = create_async_engine(
     settings.DATABASE_URL,
     echo=True,
-    pool_pre_ping=True,        # 每次从连接池获取连接时先 ping 测试是否有效
+    pool_pre_ping=False,        # 封死 aiomysql.ping() 签名报错
     pool_recycle=3600,          # 连接回收时间（秒），避免使用超时的连接
     pool_size=10,               # 连接池大小
     max_overflow=20,            # 超出 pool_size 后最多再创建的连接数
@@ -33,6 +33,8 @@ from app.models import (  # noqa: E402,F401
     Attachment,
     Category,
     Comment,
+    ChatMessage,
+    ChatSession,
     CreditLog,
     Goods,
     ItemType,
@@ -65,9 +67,5 @@ async def get_redis():
 
     注意：不要在此处关闭全局客户端，否则会影响其他使用者。
     """
-    try:
-        yield redis
-    finally:
-        # 不在这里关闭全局 redis 客户端
-        return
+    yield redis
  

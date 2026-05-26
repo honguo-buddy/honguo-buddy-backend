@@ -26,6 +26,12 @@ class AuthService:
     EMAIL_VERIFY_RATE_LIMIT_SECONDS: int = 60
 
     @staticmethod
+    def _is_campus_email(email: str) -> bool:
+        domain = (email or "").strip().lower().split("@", 1)[-1]
+        campus_suffixes = ("bjtu.edu.cn",)
+        return any(domain.endswith(suffix) for suffix in campus_suffixes)
+
+    @staticmethod
     async def _persist_user_token(user_id: int, token: str) -> None:
         ttl_seconds = settings.TOKEN_EXPIRE_TIME * 60
         old_token = await redis.get(f"user_token:{user_id}")
@@ -367,6 +373,7 @@ class AuthService:
             )
 
         user.email = email
+        user.is_verified = AuthService._is_campus_email(email)
         await db.commit()
         await db.refresh(user)
 

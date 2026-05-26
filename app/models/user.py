@@ -61,6 +61,9 @@ class User(Base):
     credit_logs = relationship("CreditLog", back_populates="user", lazy="selectin")
     user_access_logs = relationship("UserAccessLog", back_populates="user", lazy="selectin")
     avatar_attachment = relationship("Attachment", foreign_keys=[avatar_id], lazy="selectin")
+    chat_sessions_as_user_one = relationship("ChatSession", foreign_keys="ChatSession.user_one_id", lazy="selectin", overlaps="user_one")
+    chat_sessions_as_user_two = relationship("ChatSession", foreign_keys="ChatSession.user_two_id", lazy="selectin", overlaps="user_two")
+    chat_messages_sent = relationship("ChatMessage", foreign_keys="ChatMessage.sender_id", lazy="selectin", overlaps="sender")
 
 
 def parse_user_type(value: str) -> UserType:

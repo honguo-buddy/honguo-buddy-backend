@@ -28,7 +28,7 @@ from app.core.security import (
     pwd_context,
 )
 from app.core.log_middleware import LogMiddleware, save_log_to_db
-from app.core.cleantask import create_cleanup_task
+from app.core.cleantask import create_cleanup_task, watch_delayed_queues_task
 
 __all__ = [
     "Settings",
@@ -56,4 +56,5 @@ __all__ = [
     "LogMiddleware",
     "save_log_to_db",
     "create_cleanup_task",
+    "watch_delayed_queues_task",
 ]

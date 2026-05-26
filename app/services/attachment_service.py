@@ -4,10 +4,10 @@ from pathlib import Path
 from typing import Optional
 
 import aiofiles
-from fastapi import HTTPException
-from sqlalchemy import update
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core import BusinessHTTPException, ResourceHTTPException, settings
 from app.models import Attachment, AttachmentTargetType, User
 
 
@@ -19,17 +19,19 @@ class AttachmentService:
         filename = getattr(file, "filename", None) or "file"
         ext = os.path.splitext(filename)[1].lower()
         if ext not in allowed_ext:
-            raise HTTPException(status_code=400, detail="仅支持 jpg/jpeg/png 格式")
+            raise BusinessHTTPException(code=settings.REQ_ERROR_CODE, msg="仅支持 jpg/jpeg/png 格式")
 
         content = await file.read()
         if len(content) > 5 * 1024 * 1024:
-            raise HTTPException(status_code=400, detail="文件大小不能超过 5MB")
+            raise BusinessHTTPException(code=settings.REQ_ERROR_CODE, msg="文件大小不能超过 5MB")
 
         normalized_target_type = (target_type or "USER").upper()
         folder_map = {
             "USER": "avatar",
             "POST": "post",
             "GOODS": "goods",
+            "COMMENT": "comment",
+            "CHAT": "chat",
         }
         folder = folder_map.get(normalized_target_type, "avatar")
 
@@ -51,7 +53,7 @@ class AttachmentService:
             enum_type = AttachmentTargetType.USER
 
         resolved_target_id = target_id
-        if enum_type == AttachmentTargetType.USER and resolved_target_id is None:
+        if target_type is not None and enum_type == AttachmentTargetType.USER and resolved_target_id is None:
             resolved_target_id = current_user.user_id
 
         attachment = Attachment(
@@ -73,6 +75,64 @@ class AttachmentService:
 
         await db.commit()
         return attachment
+
+    @staticmethod
+    async def bind_attachments_to_target(
+        db: AsyncSession,
+        attachment_ids: list[int],
+        target_type: str,
+        target_id: int,
+        creator_id: int,
+    ) -> None:
+        if not attachment_ids:
+            return
+
+        normalized_target_type = target_type.upper()
+        try:
+            AttachmentTargetType[normalized_target_type]
+        except KeyError as exc:
+            raise BusinessHTTPException(code=settings.REQ_ERROR_CODE, msg=f"无效的附件目标类型: {target_type}") from exc
+
+        stmt = select(Attachment.attachment_id).where(
+            Attachment.attachment_id.in_(attachment_ids),
+            Attachment.creator_id == creator_id,
+            Attachment.is_deleted == False,
+        )
+        result = await db.execute(stmt)
+        allowed_ids = {row[0] for row in result.all()}
+        if allowed_ids != set(attachment_ids):
+            raise ResourceHTTPException(code=settings.DATA_GET_FAILED_CODE, msg="附件不存在或无权绑定")
+
+        await db.execute(
+            update(Attachment)
+            .where(Attachment.attachment_id.in_(attachment_ids))
+            .values(target_type=AttachmentTargetType[normalized_target_type], target_id=target_id)
+            .execution_options(synchronize_session=False)
+        )
+
+    @staticmethod
+    async def get_urls_by_target(db: AsyncSession, target_type: str, target_ids: list[int]) -> dict[int, list[str]]:
+        if not target_ids:
+            return {}
+
+        try:
+            enum_type = AttachmentTargetType[target_type.upper()]
+        except KeyError as exc:
+            raise BusinessHTTPException(code=settings.REQ_ERROR_CODE, msg=f"无效的附件目标类型: {target_type}") from exc
+
+        result = await db.execute(
+            select(Attachment.target_id, Attachment.url).where(
+                Attachment.target_type == enum_type,
+                Attachment.target_id.in_(target_ids),
+                Attachment.is_deleted == False,
+            )
+        )
+        url_map: dict[int, list[str]] = {target_id: [] for target_id in target_ids}
+        for target_id, url in result.all():
+            if target_id is None:
+                continue
+            url_map.setdefault(int(target_id), []).append(AttachmentService.to_public_url(url) or url)
+        return url_map
 
     @staticmethod
     def to_public_url(rel_url: Optional[str]) -> Optional[str]:

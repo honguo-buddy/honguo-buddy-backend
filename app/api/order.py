@@ -8,10 +8,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api import get_current_user
 from app.core import BusinessHTTPException, settings
-from app.db import get_db
+from app.db import get_db, get_redis
 from app.models import Goods, Post
-from app.schemas import OrderItemList, OrderList, OrderRead, ResponseModel, UserRead
-from app.services import OrderService
+from app.schemas import (
+    OrderItemList,
+    OrderList,
+    OrderRead,
+    OrderReviewCreateRequest,
+    OrderReviewListResponse,
+    OrderReviewRead,
+    ResponseModel,
+    UserRead,
+)
+from app.services import OrderReviewService, OrderService
 
 router = APIRouter()
 
@@ -121,13 +130,79 @@ async def reject_order(
     return ResponseModel(code=settings.SUCCESS_CODE, message=_order_to_read(order))
 
 
+@router.post("/reviews", response_model=ResponseModel[OrderReviewRead])
+async def create_order_review(
+    payload: OrderReviewCreateRequest,
+    current_user: UserRead = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    redis_client = Depends(get_redis),
+):
+    review = await OrderReviewService.create_review(
+        db,
+        current_user_id=current_user.user_id,
+        order_id=payload.order_id,
+        reviewee_id=payload.reviewee_id,
+        review_type=payload.review_type,
+        parent_id=payload.parent_id,
+        rating=payload.rating,
+        content=payload.content,
+        is_anonymous=payload.is_anonymous,
+        redis_client=redis_client,
+    )
+    return ResponseModel(code=settings.SUCCESS_CODE, message=OrderReviewRead.model_validate(review))
+
+
+@router.get("/{order_id}/reviews", response_model=ResponseModel[OrderReviewListResponse])
+async def list_order_reviews(
+    order_id: int,
+    current_user: UserRead = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    reviews = await OrderReviewService.list_reviews_for_order(
+        db,
+        order_id=order_id,
+        current_user_id=current_user.user_id,
+        is_admin=bool(current_user.is_admin),
+    )
+    return ResponseModel(
+        code=settings.SUCCESS_CODE,
+        message=OrderReviewListResponse(items=[OrderReviewRead.model_validate(item) for item in reviews]),
+    )
+
+
+@router.post("/{order_id}/submit-delivery", response_model=ResponseModel[OrderRead])
+async def submit_delivery(
+    order_id: int,
+    current_user: UserRead = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    redis_client = Depends(get_redis),
+):
+    order = await OrderService.submit_delivery(db, order_id, current_user.user_id, redis_client=redis_client)
+    return ResponseModel(code=settings.SUCCESS_CODE, message=_order_to_read(order))
+
+
+@router.post("/{order_id}/accept-delivery", response_model=ResponseModel[OrderRead])
+async def accept_delivery(
+    order_id: int,
+    current_user: UserRead = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    order = await OrderService.accept_delivery(db, order_id, current_user.user_id)
+    return ResponseModel(code=settings.SUCCESS_CODE, message=_order_to_read(order))
+
+
 @router.post("/{order_id}/complete", response_model=ResponseModel[OrderRead])
 async def complete_order(
     order_id: int,
     current_user: UserRead = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    order = await OrderService.complete_order(db, order_id, current_user.user_id)
+    """兼容/弃用接口：管理员手动完结走强制完成，普通买家确认仍走验收流程。"""
+
+    if current_user.is_admin:
+        order = await OrderService.force_complete_order_by_admin(db, order_id, current_user.user_id)
+    else:
+        order = await OrderService.accept_delivery(db, order_id, current_user.user_id)
     return ResponseModel(code=settings.SUCCESS_CODE, message=_order_to_read(order))
 
 

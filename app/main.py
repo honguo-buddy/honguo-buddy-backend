@@ -8,9 +8,10 @@ import os
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from app.core import BEIJING_TZ
 
-from app.api import auth, user, attachment, category, post, order
-from app.core import register_exception_handlers, LogMiddleware, settings, create_cleanup_task
+from app.api import auth, user, attachment, category, post, order, comment, chat
+from app.core import register_exception_handlers, LogMiddleware, settings, watch_delayed_queues_task
 from app.db import engine, Base, redis, AsyncSessionLocal
+from app.services import OrderReviewService
 
 # 确保 logs 文件夹存在
 os.makedirs("logs", exist_ok=True)
@@ -28,13 +29,29 @@ if not root_logger.handlers:
     )
 logger = logging.getLogger(__name__)
 
-# 全局变量存储清理任务和调度器
-cleanup_task = None
+# 全局变量存储调度器
 scheduler = None
+
+
+async def _auto_release_expired_double_blind_reviews_job():
+    async with AsyncSessionLocal() as db:
+        await OrderReviewService.auto_release_expired_double_blind_reviews(db)
+
+
+def register_scheduler_jobs(scheduler: AsyncIOScheduler) -> None:
+    scheduler.add_job(
+        _auto_release_expired_double_blind_reviews_job,
+        "interval",
+        hours=1,
+        id="auto_release_expired_double_blind_reviews",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global cleanup_task, scheduler
+    global scheduler
 
     try:
         # 仅检测 base.py 中的全局 Redis 连接，不在此处重复创建实例
@@ -51,9 +68,12 @@ async def lifespan(app: FastAPI):
 
         # 启动 APScheduler 并注册候补队列同步任务（强制使用北京时间时区）
         scheduler = AsyncIOScheduler(timezone=BEIJING_TZ)
-        # TODO: 添加具体定时任务
+        register_scheduler_jobs(scheduler)
         scheduler.start()
         logger.info("✓ APScheduler 已启动")
+
+        app.state.delay_worker = asyncio.create_task(watch_delayed_queues_task())
+        logger.info("✓ Redis delayed queue worker 已启动")
 
         logger.info(" Application startup complete")
         yield  # 应用正常运行
@@ -86,13 +106,14 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning(f"DB engine dispose failed: {e}")
 
-        # 停止清理任务（如果有）
-        if cleanup_task:
-            cleanup_task.cancel()
+        # 停止延迟队列任务（如果有）
+        delay_worker = getattr(app.state, "delay_worker", None)
+        if delay_worker:
+            delay_worker.cancel()
             try:
-                await cleanup_task
+                await delay_worker
             except asyncio.CancelledError:
-                logger.info(" Cleanup task cancelled")
+                logger.info(" Delayed queue worker cancelled")
 
         logger.info("Application shutdown complete")
 
@@ -126,6 +147,8 @@ try:
     app.include_router(router=category.router, prefix="/categories", tags=["categories"])
     app.include_router(router=post.router, prefix="/posts", tags=["posts"])
     app.include_router(router=order.router, prefix="/orders", tags=["orders"])
+    app.include_router(router=comment.router, prefix="/comments", tags=["comments"])
+    app.include_router(router=chat.router, prefix="/chats", tags=["chats"])
     logger.info("All routers registered successfully")
 except Exception as e:
     logger.error(f"Failed to register routers: {e}", exc_info=True)

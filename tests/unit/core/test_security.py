@@ -23,6 +23,10 @@ async def test_generate_and_verify_email_token():
     assert result == email
 
 
+async def test_verify_email_token_invalid_returns_none():
+    assert verify_email_token("not-a-valid-token") is None
+
+
 async def test_hash_and_verify_password(monkeypatch):
     # passlib bcrypt backend in some CI/envs can raise on internal checks;
     # mock pwd_context to keep this unit test isolated and deterministic
@@ -64,3 +68,40 @@ async def test_get_user_id_from_request_success(monkeypatch):
     req = FakeRequest()
     user_id = await get_user_id_from_request(req)
     assert user_id == 5001
+
+
+async def test_get_user_id_from_request_cookie_fallback(monkeypatch):
+    token = create_access_token({"sub": "5002"})
+
+    class FakeRequest:
+        def __init__(self):
+            self.headers = {}
+            self.cookies = {"token": token}
+            self.query_params = {}
+
+    async def _get(k):
+        return "5002"
+
+    import app.core.security as sec
+
+    sec.redis.get = _get
+
+    user_id = await get_user_id_from_request(FakeRequest())
+    assert user_id == 5002
+
+
+async def test_get_user_id_from_request_invalid_token_returns_none(monkeypatch):
+    class FakeRequest:
+        def __init__(self):
+            self.headers = {"authorization": "Bearer broken-token"}
+            self.cookies = {}
+            self.query_params = {}
+
+    async def _get(k):
+        return None
+
+    import app.core.security as sec
+
+    sec.redis.get = _get
+
+    assert await get_user_id_from_request(FakeRequest()) is None

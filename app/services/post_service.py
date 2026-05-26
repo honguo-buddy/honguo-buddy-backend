@@ -301,6 +301,7 @@ class PostService:
     async def list_posts(
         db: AsyncSession,
         keyword: Optional[str] = None,
+        category_id: Optional[int] = None,
         urgency: Optional[str] = None,
         direction: Optional[str] = None,
         price_min: Optional[float] = None,
@@ -339,6 +340,8 @@ class PostService:
         
         # 基础查询条件
         conditions = [Post.is_deleted == False]
+        if category_id is not None:
+            conditions.append(Post.category_id == category_id)
         
         # 状态过滤（默认 OPEN）
         if status:

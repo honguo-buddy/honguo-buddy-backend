@@ -8,14 +8,14 @@ from httpx import AsyncClient
 
 from app.core import settings
 from app.models import User
+from tests.helpers import assert_api_error, assert_api_success
 
 pytestmark = pytest.mark.asyncio
 
 
 def _assert_success_payload(response_json: dict):
     if "code" in response_json:
-        assert response_json["code"] == settings.SUCCESS_CODE
-        return response_json.get("message", {})
+        return assert_api_success(response_json)
     return response_json
 
 
@@ -29,6 +29,16 @@ class TestSwaggerLogin:
         assert response.status_code == 200
         payload = _assert_success_payload(response.json())
         assert "access_token" in payload or "token" in payload
+
+    async def test_swagger_login_blank_wx_id_returns_business_error(self, client: AsyncClient):
+        response = await client.post(
+            "/auth/swagger-login",
+            json={"wx_id": "", "password": settings.DEBUG_MASTER_PASSWORD},
+        )
+
+        assert response.status_code == 200
+        message = assert_api_error(response.json(), code=settings.REQ_ERROR_CODE)
+        assert "wx_id 不能为空" in message["msg"]
 
     async def test_swagger_login_invalid_openid(self, client: AsyncClient):
         response = await client.post(
@@ -179,7 +189,7 @@ class TestWxLogin:
             response = await client.post("/auth/wxLogin", json={"code": "test_code_123"})
 
             assert response.status_code == 200
-            assert response.json()["code"] == settings.SUCCESS_CODE
+            assert_api_success(response.json())
 
     async def test_wx_login_existing_user(self, client: AsyncClient, test_user: User):
         with patch("app.services.auth_service.httpx.AsyncClient") as mock_http_client:
@@ -196,7 +206,13 @@ class TestWxLogin:
             response = await client.post("/auth/wxLogin", json={"code": "test_code_123"})
 
             assert response.status_code == 200
-            assert response.json()["code"] == settings.SUCCESS_CODE
+            assert_api_success(response.json())
+
+    async def test_wx_login_empty_code_is_validation_error(self, client: AsyncClient):
+        response = await client.post("/auth/wxLogin", json={"code": ""})
+
+        assert response.status_code == 200
+        assert_api_error(response.json(), code=settings.REQ_ERROR_CODE)
 
 
 class TestEmailVerification:
@@ -218,7 +234,7 @@ class TestEmailVerification:
             )
 
         assert response.status_code == 200
-        assert response.json()["code"] == settings.SUCCESS_CODE
+        assert_api_success(response.json())
 
     async def test_send_email_verify_code_without_token(self, client: AsyncClient):
         response = await client.post("/auth/email/send-verify-code", json={"email": "newemail@example.com"})
@@ -247,7 +263,7 @@ class TestEmailVerification:
         )
 
         assert response.status_code == 200
-        assert response.json()["code"] == settings.SUCCESS_CODE
+        assert_api_success(response.json())
 
     async def test_verify_email_code_without_token(self, client: AsyncClient):
         response = await client.post(
@@ -257,3 +273,31 @@ class TestEmailVerification:
 
         assert response.status_code == 200
         assert response.json()["code"] == settings.TOKEN_INVALID_CODE
+
+    async def test_verify_email_code_marks_campus_email_verified(
+        self,
+        client: AsyncClient,
+        test_user: User,
+        test_user_token: str,
+        fake_redis,
+        db_session,
+    ):
+        await fake_redis.set(f"token:{test_user_token}", str(test_user.user_id))
+        await fake_redis.set(f"user_token:{test_user.user_id}", test_user_token)
+        campus_email = "student@bjtu.edu.cn"
+        await fake_redis.set(
+            f"email_verify_code:{campus_email}",
+            json.dumps({"code": "654321", "timestamp": 9999999999, "attempts": 0, "user_id": test_user.user_id}),
+        )
+
+        response = await client.post(
+            "/auth/email/verify-code",
+            headers={"Authorization": f"Bearer {test_user_token}"},
+            json={"email": campus_email, "code": "654321"},
+        )
+
+        assert response.status_code == 200
+        assert_api_success(response.json())
+        await db_session.refresh(test_user)
+        assert test_user.email == campus_email
+        assert test_user.is_verified is True

@@ -278,6 +278,9 @@ DATA_GET_FAILED: 301
 
 用途: 已登录用户提交验证码并完成邮箱绑定。
 
+说明：
+- 若绑定的是校内邮箱，系统会在验证码校验通过后自动将当前用户标记为 `is_verified=true`。
+
 请求头: Authorization: Bearer <token>。
 
 请求示例:
@@ -773,8 +776,32 @@ DATA_GET_FAILED: 301
     "code": 0,
     "message": {
         "post_id": 1001,
+        "category_id": 3,
         "title": "代取外卖",
-        "price": 10.5
+        "description": "帮我从食堂取一份外卖",
+        "price": 10.5,
+        "direction": "SELL",
+        "urgency": "NORMAL",
+        "status": "OPEN",
+        "template_data": {
+            "pickup_address": "教学楼A楼",
+            "max_accepters": 1
+        },
+        "max_accepters": 1,
+        "publisher": {
+            "user_id": 1001,
+            "user_uuid": "...",
+            "user_name": "测试用户",
+            "avatar": "/static/avatar/avatar_1001.png",
+            "sex": "未知",
+            "credit_score": 100,
+            "is_verified": false,
+            "user_type": "user"
+        },
+        "publisher_id": 1001,
+        "current_accepters": 0,
+        "create_time": "2025-09-01T12:00:00",
+        "attachment_urls": []
     }
 }
 ```
@@ -787,13 +814,14 @@ DATA_GET_FAILED: 301
 
 #### 4.5.2 获取帖子列表 (GET: /posts)
 
-用途: 获取帖子列表，支持关键词、状态、价格、时间等筛选。
+用途: 获取帖子列表，支持关键词、模板/分类ID、状态、价格、时间等筛选。
 
 请求示例:
 
 ```json
 {
     "keyword": "外卖",
+    "category_id": 9201,
     "status": "OPEN",
     "page": 1,
     "page_size": 20
@@ -812,6 +840,7 @@ DATA_GET_FAILED: 301
         "list": [
             {
                 "post_id": 1001,
+                "category_id": 9201,
                 "title": "二手书转让",
                 "description": "九成新教辅",
                 "price": 15.0,
@@ -869,6 +898,7 @@ DATA_GET_FAILED: 301
         "list": [
             {
                 "post_id": 1001,
+                "category_id": 3,
                 "title": "二手书转让",
                 "description": "九成新教辅",
                 "price": 15.0,
@@ -929,6 +959,7 @@ DATA_GET_FAILED: 301
         "list": [
             {
                 "post_id": 1002,
+                "category_id": 3,
                 "title": "帮跑外卖",
                 "description": "今天帮取外卖",
                 "price": 8.0,
@@ -965,7 +996,7 @@ DATA_GET_FAILED: 301
 
 #### 4.5.5 帖子详情 (GET: /posts/{post_id})
 
-用途: 获取帖子详情，包含前 N 条评论。
+用途: 获取帖子详情，包含前 N 条评论，并返回模板/分类 ID。
 
 请求示例:
 
@@ -983,6 +1014,7 @@ DATA_GET_FAILED: 301
     "code": 0,
     "message": {
         "post_id": 1001,
+        "category_id": 9201,
         "title": "二手书转让",
         "description": "九成新教辅",
         "price": 15.0,
@@ -1042,6 +1074,7 @@ DATA_GET_FAILED: 301
     "code": 0,
     "message": {
         "post_id": 1001,
+        "category_id": 3,
         "title": "2025版二手书低价出售",
         "description": "九成新教辅",
         "price": 15.0,
@@ -1107,6 +1140,105 @@ DATA_GET_FAILED: 301
 - code: 102 - 权限不足。
 - code: 103 - 帖子不存在或已被删除。
 - code: 301 - 删除操作失败。
+
+#### 4.5.8 批量接单 (POST: /posts/batch-accept)
+
+用途: 供顺路接单用户一次性申请多个 `BUY` 方向帖子。支持部分成功、部分失败返回。仅登录用户可操作。
+
+请求头: Authorization: Bearer <token>。
+
+请求示例:
+
+```json
+{
+    "post_ids": [1, 2, 3]
+}
+```
+
+说明：
+- 仅支持 `BUY` 方向帖子。
+- 单次最多提交 5 个帖子 ID，超过上限后端会直接返回业务错误。
+- 若同一帖子重复提交，会在 `errors` 中返回 `ALREADY_ACCEPTED`。
+
+成功响应:
+
+```json
+{
+    "code": 0,
+    "message": {
+        "results": [
+            {
+                "post_id": 1,
+                "order_id": 201,
+                "status": "PENDING"
+            }
+        ],
+        "errors": [
+            {
+                "post_id": 3,
+                "error": "ALREADY_ACCEPTED",
+                "message": "该帖子已申请过"
+            }
+        ]
+    }
+}
+```
+
+常见错误:
+
+- code: 105 - Token 失效或缺失。
+- code: 99 - 请求帖子数量超过 5 个，或参数不合法。
+
+#### 4.5.9 查看接单申请列表 (GET: /posts/{post_id}/applications)
+
+用途: 帖子发布者查看当前帖子下的申请列表，用于同意/拒绝接单。仅帖子拥有者可访问。
+
+请求头: Authorization: Bearer <token>。
+
+请求示例:
+
+```json
+{
+    "post_id": 1
+}
+```
+
+成功响应:
+
+```json
+{
+    "code": 0,
+    "message": {
+        "applications": [
+            {
+                "application_id": 301,
+                "post_id": 1,
+                "applicant": {
+                    "user_id": 201,
+                    "user_name": "李同学",
+                    "avatar": "https://...",
+                    "credit_score": 98,
+                    "is_verified": true,
+                    "completed_order_count": 24
+                },
+                "note": "我现在就在南区菜鸟旁边，15 分钟内可以送到",
+                "status": "PENDING",
+                "created_at": "2026-05-25T16:08:00"
+            }
+        ]
+    }
+}
+```
+
+说明：
+- 申请列表直接复用 `order` 表中的 `PENDING` 记录。
+- `completed_order_count` 为申请人的历史已完成订单数，后端会一次性聚合返回。
+
+常见错误:
+
+- code: 105 - Token 失效或缺失。
+- code: 102 - 仅帖子拥有者可查看申请列表。
+- code: 103 - 帖子不存在。
 
 ### 4.6 Order 订单模块
 
@@ -1331,12 +1463,15 @@ JSON
 - POST /orders/{order_id}/approve
 - POST /orders/{order_id}/reject
 - POST /orders/{order_id}/complete
+- POST /orders/{order_id}/submit-delivery
+- POST /orders/{order_id}/accept-delivery
 - POST /orders/{order_id}/cancel
 
 权限说明:
 
 - `approve` 和 `reject` 仅限卖家（帖子发布者）操作。
-- `complete` 仅限卖家确认完成。
+- `submit-delivery` 由卖家提交已交付状态。
+- `accept-delivery` 由买家确认收货并完成订单；`complete` 为兼容接口，内部等价于 `accept-delivery`。
 - `cancel` 仅限买家或卖家取消，若订单为 PENDING，则发起人也可取消。
 
 成功响应示例:
@@ -1363,4 +1498,438 @@ JSON
 }
 ```
 
+
+
+#### 4.6.5 发布订单评价 (POST: /orders/reviews)
+
+用途: 对已完成订单发起双盲评价。仅订单相关方可操作。
+
+请求头: Authorization: Bearer <token>。
+
+请求示例:
+
+```json
+{
+    "order_id": 5001,
+    "reviewee_id": 3001,
+    "review_type": "FIRST",
+    "rating": 5,
+    "content": "对方响应很快，沟通顺畅",
+    "is_anonymous": true,
+    "parent_id": null
+}
+```
+
+说明：
+- `review_type` 支持 `FIRST`、`FOLLOW_UP`、`REPLY`。
+- `is_anonymous=true` 表示评价内容在双盲期内匿名展示。
+- `parent_id` 为可选，用于追评/回评关联上一条评价。
+
+成功响应:
+
+```json
+{
+    "code": 0,
+    "message": {
+        "review_id": 9001,
+        "order_id": 5001,
+        "reviewer_id": 2001,
+        "reviewee_id": 3001,
+        "review_type": "FIRST",
+        "parent_id": null,
+        "rating": 5,
+        "content": "对方响应很快，沟通顺畅",
+        "is_anonymous": true,
+        "is_visible": false,
+        "create_time": "2025-09-05T12:00:00Z",
+        "update_time": "2025-09-05T12:00:00Z"
+    }
+}
+```
+
 常见错误:
+
+- code: 105 - Token 失效或缺失。
+- code: 99 - 请求参数不合法，或评价内容不完整。
+- code: 102 - 仅订单相关方可评价。
+- code: 301 - 订单不存在或订单未完成。
+
+#### 4.6.6 获取订单评价列表 (GET: /orders/{order_id}/reviews)
+
+用途: 查看某个订单下的评价树。仅订单相关方可查看。
+
+请求头: Authorization: Bearer <token>。
+
+请求示例:
+
+```json
+{
+    "order_id": 5001
+}
+```
+
+说明：
+- 返回结果按订单维度组织为树状结构。
+- 双盲期到期后，系统会自动解封可见性。
+
+成功响应:
+
+```json
+{
+    "code": 0,
+    "message": {
+        "items": [
+            {
+                "review_id": 9001,
+                "order_id": 5001,
+                "reviewer_id": 2001,
+                "reviewee_id": 3001,
+                "review_type": "FIRST",
+                "parent_id": null,
+                "rating": 5,
+                "content": "对方响应很快，沟通顺畅",
+                "is_anonymous": true,
+                "is_visible": false,
+                "create_time": "2025-09-05T12:00:00Z",
+                "update_time": "2025-09-05T12:00:00Z"
+            }
+        ]
+    }
+}
+```
+
+常见错误:
+
+- code: 105 - Token 失效或缺失。
+- code: 102 - 仅订单相关方可查看评价。
+- code: 301 - 订单不存在、订单未完成，或评价查询失败。
+
+
+### 4.7 评论模块 (Comments)
+
+说明：评论模块支持对帖子/商品/订单的多层回复（盖楼）机制。所有响应遵循统一返回格式 `{ "code": int, "message": ... }`。
+
+#### 4.7.1 发布评论/回复 (POST: /comments)
+
+用途：发布根评论或对已有评论进行回复（盖楼）。
+
+请求头：Authorization: Bearer <token>（必须登录）
+
+请求示例:
+
+```json
+{
+    "target_type": "POST",     
+    "target_id": 1001,
+    "parent_id": null,          
+    "content": "这是一个评论内容",
+    "attachment_ids": [123]
+}
+```
+
+说明：
+- `parent_id` 可选，传 `null` 或不传表示发布根评论；传入 `parent_id` 表示回复该父评论（请确保父评论存在）。
+- `attachment_ids` 可选，评论图片会先上传到附件接口，再在评论落库后自动绑定到当前评论。
+
+成功响应:
+
+```json
+{
+    "code": 0,
+    "message": {
+        "comment_id": 2001,
+        "user_id": 1001,
+        "target_type": "POST",
+        "target_id": 1001,
+        "parent_id": null,
+        "content": "这是一个评论内容",
+        "is_deleted": false,
+        "create_time": "2026-05-21T12:00:00",
+        "update_time": "2026-05-21T12:00:00",
+        "attachment_urls": ["/static/comment/comment-1.png"]
+    }
+}
+```
+
+常见错误:
+- code: 105 - Token 无效或已失效（未登录）。
+- code: 99  - 请求参数校验失败（例如 `target_id` 类型不正确、`content` 为空）。
+- code: 301 - 父评论不存在或已被删除（当 `parent_id` 指向的评论不可用时）。
+
+#### 4.7.2 软删除评论 (DELETE: /comments/{comment_id})
+
+用途：对指定评论执行软删除。仅评论所有者或管理员可操作。
+
+请求头：Authorization: Bearer <token>（必须登录）
+
+请求示例:
+
+```
+(请求不需要 body)
+```
+
+成功响应:
+
+```json
+{
+    "code": 0,
+    "message": { "message": "评论已删除" }
+}
+```
+
+说明：删除操作不会物理删除记录，而是将 `is_deleted` 置为 `true` 并将被删除评论的 `content` 替换为 `"该评论已由用户删除"`，以保留树状结构和回复上下文。
+
+常见错误:
+- code: 105 - Token 无效或已失效。
+- code: 102 - 权限不足（非所有者且非管理员）。
+- code: 301 - 评论不存在（无法找到指定 `comment_id`）。
+
+#### 4.7.3 获取目标的根评论列表（游标分页） (GET: /comments/{target_type}/{target_id})
+
+用途：获取指定目标（帖子/商品/订单）的顶级根评论列表（不含被软删除的根评论），按 `comment_id` 倒序返回并支持游标分页。
+
+请求头：无（公开接口）
+
+查询参数（示例用 JSON 表示）：
+
+```json
+{
+    "cursor": null,   
+    "size": 20
+}
+```
+
+SQL 过滤核心：
+```
+WHERE target_type = :target_type
+    AND target_id = :target_id
+    AND parent_id IS NULL
+    AND is_deleted = FALSE
+    AND comment_id < :cursor  -- 可选
+ORDER BY comment_id DESC
+LIMIT :size
+```
+
+返回项说明：每个根评论节点同时携带 `reply_count`（该楼层的回复总数）和 `preview_replies`（最新 2~3 条子回复预览，供前端展示）。
+
+成功响应示例:
+
+```json
+{
+    "code": 0,
+    "message": {
+        "items": [
+            {
+                "comment_id": 2001,
+                "user_id": 1001,
+                "target_type": "POST",
+                "target_id": 1001,
+                "content": "楼主评论内容",
+                "is_deleted": false,
+                "create_time": "2026-05-21T12:00:00",
+                "update_time": "2026-05-21T12:00:00",
+                "attachment_urls": ["/static/comment/comment-1.png"],
+                "reply_count": 5,
+                "preview_replies": [
+                    {"comment_id": 2005, "user_id":1002, "content":"最新回复1", "create_time":"2026-05-21T12:05:00"},
+                    {"comment_id": 2004, "user_id":1003, "content":"最新回复2", "create_time":"2026-05-21T12:03:00"}
+                ]
+            }
+        ],
+        "next_cursor": 1990
+    }
+}
+```
+
+常见错误:
+- code: 99  - 请求参数校验失败（`size` 范围或 `target_type` 非允许值）。
+
+#### 4.7.4 获取单条根评论下的回复流（平铺、正序，游标分页） (GET: /comments/{comment_id}/replies)
+
+用途：当用户点击“查看全部回复”时，平铺拉取该根评论下的所有子回复，按创建时间正序返回，支持游标分页。
+
+请求头：无（公开接口）
+
+查询参数（示例用 JSON 表示）：
+
+```json
+{
+    "cursor": null,
+    "size": 20
+}
+```
+
+SQL 过滤核心：
+```
+WHERE parent_id = :comment_id
+    AND is_deleted = FALSE
+    AND comment_id > :cursor  -- 可选
+ORDER BY create_time ASC
+LIMIT :size
+```
+
+成功响应示例:
+
+```json
+{
+    "code": 0,
+    "message": {
+        "items": [
+            {"comment_id": 2002, "user_id":1002, "parent_id":2001, "content":"回复1", "create_time":"2026-05-21T12:01:00"},
+            {"comment_id": 2003, "user_id":1003, "parent_id":2001, "content":"回复2", "create_time":"2026-05-21T12:02:00"}
+        ],
+        "next_cursor": 2003
+    }
+}
+```
+
+常见错误:
+- code: 301 - 根评论不存在（`comment_id` 无对应记录）。
+- code: 99  - 请求参数校验失败。
+
+### 4.8 CHAT 私信模块
+
+说明：私信模块为双人会话制，支持会话初始化、消息发送、游标历史、一键已读、2 分钟撤回和单边本地删除。路由前缀固定为 `/chats`。消息体支持 `context_type` / `context_id`，可把聊天挂到帖子等业务上下文上。
+
+#### 4.8.1 会话初始化 (POST: /chats/sessions/init)
+
+用途：按用户 ID 自动排序创建或复用双人会话，可选附带业务上下文（例如帖子）。
+
+请求头：Authorization: Bearer <token>（必须登录）
+
+请求示例:
+
+```json
+{
+    "peer_id": 1002,
+    "context_type": "POST",
+    "context_id": 9202
+}
+```
+
+成功响应:
+
+```json
+{
+    "code": 0,
+    "message": {
+        "session_id": 3001,
+        "user_one_id": 1001,
+        "user_two_id": 1002,
+        "peer_id": 1002,
+        "context_type": "POST",
+        "context_id": 9202,
+        "last_message_content": null,
+        "last_message_time": null,
+        "unread_count": 0
+    }
+}
+```
+
+#### 4.8.2 会话列表 (GET: /chats/sessions)
+
+用途：获取当前用户的收件箱列表，并返回每个会话的未读数。
+
+请求头：Authorization: Bearer <token>（必须登录）
+
+成功响应:
+
+```json
+{
+    "code": 0,
+    "message": {
+        "items": [
+            {
+                "session_id": 3001,
+                "user_one_id": 1001,
+                "user_two_id": 1002,
+                "peer_id": 1002,
+                "context_type": "POST",
+                "context_id": 9202,
+                "last_message_content": "你好",
+                "last_message_time": "2026-05-21T12:10:00",
+                "unread_count": 1
+            }
+        ]
+    }
+}
+```
+
+#### 4.8.3 发送消息 (POST: /chats/messages)
+
+用途：发送文本消息，可选携带附件、引用消息和业务上下文。
+
+请求头：Authorization: Bearer <token>（必须登录）
+
+请求示例:
+
+```json
+{
+    "session_id": 3001,
+    "content": "我收到了",
+    "attachment_ids": [456],
+    "quote_message_id": 455,
+    "context_type": "POST",
+    "context_id": 9202
+}
+```
+
+成功响应:
+
+```json
+{
+    "code": 0,
+    "message": {
+        "message_id": 4001,
+        "session_id": 3001,
+        "sender_id": 1001,
+        "content": "我收到了",
+        "context_type": "POST",
+        "context_id": 9202,
+        "is_read": false,
+        "is_recalled": false,
+        "is_deleted_by_sender": false,
+        "is_deleted_by_receiver": false,
+        "quote_message_id": 455,
+        "create_time": "2026-05-21T12:11:00",
+        "attachment_urls": ["/static/chat/chat-1.png"]
+    }
+}
+```
+
+#### 4.8.4 历史消息拉取 (GET: /chats/sessions/{session_id}/messages)
+
+用途：按游标分页拉取消息历史，支持消息单边删除过滤，并返回消息上下文字段。
+
+请求头：Authorization: Bearer <token>（必须登录）
+
+请求示例:
+
+```json
+{
+    "cursor": null,
+    "size": 20
+}
+```
+
+#### 4.8.5 一键已读 (PATCH: /chats/sessions/{session_id}/read)
+
+用途：清除对方发来的未读红点。
+
+请求头：Authorization: Bearer <token>（必须登录）
+
+#### 4.8.6 撤回消息 (PATCH: /chats/messages/{message_id}/recall)
+
+用途：2 分钟内撤回自己发送的消息。
+
+请求头：Authorization: Bearer <token>（必须登录）
+
+#### 4.8.7 单边删除 (DELETE: /chats/messages/{message_id}/local)
+
+用途：仅删除当前用户一侧可见的消息，不影响对方视图。
+
+请求头：Authorization: Bearer <token>（必须登录）
+
+---
+
+文件位置：评论接口实现位于项目代码中：`app/api/comment.py`、`app/services/comment_service.py` 与 `app/schemas/comment.py`；聊天接口位于 `app/api/chat.py`、`app/services/chat_service.py` 与 `app/schemas/chat.py`。文档和实现保持一致。

@@ -60,6 +60,7 @@ class PostRead(BaseModel):
     """发布悬赏帖的响应模型。"""
     
     post_id: int
+    category_id: Optional[int] = Field(default=None, description="模板/分类ID")
     title: str
     description: Optional[str] = None
     price: Optional[float] = Field(default=None, description="悬赏金额（单位：元）")
@@ -90,3 +91,57 @@ class PostDetailRead(PostRead):
     """任务详情响应模型（扩展了 PostRead）。"""
     
     comments: List[Dict[str, Any]] = Field(default_factory=list, description="评论列表")
+
+
+class PostBatchAcceptRequest(BaseModel):
+    """批量接单请求模型。"""
+
+    post_ids: List[int] = Field(default_factory=list, description="待申请的帖子 ID 列表")
+
+    model_config = {"from_attributes": True}
+
+
+class PostBatchAcceptResultItem(BaseModel):
+    """批量接单成功项。"""
+
+    post_id: int
+    order_id: int
+    status: str
+
+
+class PostBatchAcceptErrorItem(BaseModel):
+    """批量接单失败项。"""
+
+    post_id: int
+    error: str
+    message: str
+
+
+class PostBatchAcceptResponse(BaseModel):
+    """批量接单响应模型。"""
+
+    results: List[PostBatchAcceptResultItem] = Field(default_factory=list)
+    errors: List[PostBatchAcceptErrorItem] = Field(default_factory=list)
+
+
+class PostApplicationApplicantRead(UserRead):
+    """帖子申请人信息。"""
+
+    completed_order_count: int = Field(default=0, description="历史已完成订单数")
+
+
+class PostApplicationItem(BaseModel):
+    """帖子接单申请记录。"""
+
+    application_id: int
+    post_id: int
+    applicant: PostApplicationApplicantRead
+    note: Optional[str] = Field(default=None, description="申请备注")
+    status: str
+    created_at: str
+
+
+class PostApplicationListResponse(BaseModel):
+    """帖子申请列表响应模型。"""
+
+    applications: List[PostApplicationItem] = Field(default_factory=list)
