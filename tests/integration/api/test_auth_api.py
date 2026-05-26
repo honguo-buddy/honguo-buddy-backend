@@ -273,3 +273,31 @@ class TestEmailVerification:
 
         assert response.status_code == 200
         assert response.json()["code"] == settings.TOKEN_INVALID_CODE
+
+    async def test_verify_email_code_marks_campus_email_verified(
+        self,
+        client: AsyncClient,
+        test_user: User,
+        test_user_token: str,
+        fake_redis,
+        db_session,
+    ):
+        await fake_redis.set(f"token:{test_user_token}", str(test_user.user_id))
+        await fake_redis.set(f"user_token:{test_user.user_id}", test_user_token)
+        campus_email = "student@bjtu.edu.cn"
+        await fake_redis.set(
+            f"email_verify_code:{campus_email}",
+            json.dumps({"code": "654321", "timestamp": 9999999999, "attempts": 0, "user_id": test_user.user_id}),
+        )
+
+        response = await client.post(
+            "/auth/email/verify-code",
+            headers={"Authorization": f"Bearer {test_user_token}"},
+            json={"email": campus_email, "code": "654321"},
+        )
+
+        assert response.status_code == 200
+        assert_api_success(response.json())
+        await db_session.refresh(test_user)
+        assert test_user.email == campus_email
+        assert test_user.is_verified is True
