@@ -57,6 +57,8 @@ class Settings(BaseSettings):
     # 业务常数配置 - 信用与订单管理
     USER_INITIAL_CREDIT_SCORE: int = 60  # 用户初始信用分
     ORDER_COMPLETE_CREDIT: int = 10      # 订单完成后卖家获得的积分奖励
+    ORDER_AUTO_CONFIRM_HOURS: int = 72    # CONFIRMED 状态超时自动完结时限（小时）
+    REVIEW_DOUBLE_BLIND_DAYS: int = 14    # 评价双盲期（天）
 
     #正确返回码
     SUCCESS_CODE: int = 0 #正确返回码

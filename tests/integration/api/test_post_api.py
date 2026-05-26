@@ -1,11 +1,67 @@
 """Post API 集成测试套件（使用真实 MySQL 通过 Testcontainers）。"""
 
+from uuid import uuid4
+
 import pytest
 from httpx import AsyncClient
 
-from app.models import Post, Category, Direction, UrgencyLevel, PostStatus, User, SexEnum, UserType
-from app.core import settings
-from tests.helpers import assert_api_error
+from app.core import create_access_token, settings
+from app.models import Attachment, AttachmentTargetType, Category, Direction, ItemType, Order, OrderStatus, OrderTriggerType, Post, PostStatus, SexEnum, UrgencyLevel, User, UserType
+from tests.helpers import assert_api_error, assert_api_success
+
+
+async def _create_user_with_avatar(
+	db_session,
+	*,
+	user_id: int,
+	user_name: str,
+	openid: str,
+	avatar_url: str,
+	is_verified: bool = True,
+):
+	user = User(
+		user_id=user_id,
+		user_uuid=uuid4().bytes,
+		user_name=user_name,
+		email=f"{user_name}@example.com",
+		phonenumber=f"138{user_id:08d}"[:11],
+		sex=SexEnum.UNKNOWN,
+		user_type=UserType.USER,
+		credit_score=100,
+		is_verified=is_verified,
+		is_active=True,
+		is_admin=False,
+		is_deleted=False,
+		wechat_openid=openid,
+	)
+	db_session.add(user)
+	await db_session.flush()
+
+	attachment = Attachment(
+		target_type=AttachmentTargetType.USER,
+		target_id=user.user_id,
+		url=avatar_url,
+		creator_id=user.user_id,
+	)
+	db_session.add(attachment)
+	await db_session.flush()
+
+	user.avatar_id = attachment.attachment_id
+	await db_session.flush()
+	return user
+
+
+async def _bind_user_token(fake_redis, user: User) -> str:
+	token = create_access_token(
+		{
+			"sub": str(user.user_id),
+			"user_name": user.user_name,
+			"user_type": user.user_type.value,
+		}
+	)
+	await fake_redis.set(f"token:{token}", str(user.user_id))
+	await fake_redis.set(f"user_token:{user.user_id}", token)
+	return token
 
 
 @pytest.mark.asyncio
@@ -405,4 +461,282 @@ async def test_update_post_rejects_non_owner(
 	assert resp.status_code == 200
 	message = assert_api_error(resp.json(), code=settings.INSUFFICIENT_AUTHORITY_CODE)
 	assert "只有帖子拥有者或管理员可以修改" in message["msg"]
+
+
+@pytest.mark.asyncio
+async def test_batch_accept_posts_returns_partial_success_and_errors(
+	client: AsyncClient,
+	db_session,
+	test_user,
+	test_user_token,
+	fake_redis,
+):
+	"""测试批量接单接口支持部分成功、部分失败。"""
+	await fake_redis.set(f"token:{test_user_token}", str(test_user.user_id))
+	await fake_redis.set(f"user_token:{test_user.user_id}", test_user_token)
+
+	category = Category(category_id=108, name="批量接单分类", config_json={})
+	db_session.add(category)
+	await db_session.flush()
+
+	publisher = await _create_user_with_avatar(
+		db_session,
+		user_id=3008,
+		user_name="publisher_batch",
+		openid="openid-publisher-batch",
+		avatar_url="/static/avatar/publisher_batch.png",
+	)
+
+	post_buy_1 = Post(
+		post_id=3001,
+		publisher_id=publisher.user_id,
+		category_id=category.category_id,
+		title="顺路任务1",
+		description="BUY 方向批量接单1",
+		price=10.0,
+		template_data={"max_accepters": 2},
+		direction=Direction.BUY,
+		urgency=UrgencyLevel.NORMAL,
+		status=PostStatus.OPEN,
+	)
+	post_buy_2 = Post(
+		post_id=3002,
+		publisher_id=publisher.user_id,
+		category_id=category.category_id,
+		title="顺路任务2",
+		description="BUY 方向批量接单2",
+		price=12.0,
+		template_data={"max_accepters": 2},
+		direction=Direction.BUY,
+		urgency=UrgencyLevel.NORMAL,
+		status=PostStatus.OPEN,
+	)
+	post_sell = Post(
+		post_id=3003,
+		publisher_id=publisher.user_id,
+		category_id=category.category_id,
+		title="SELL 方向任务",
+		description="用于熔断方向校验",
+		price=13.0,
+		template_data={"max_accepters": 2},
+		direction=Direction.SELL,
+		urgency=UrgencyLevel.NORMAL,
+		status=PostStatus.OPEN,
+	)
+	post_owned = Post(
+		post_id=3004,
+		publisher_id=test_user.user_id,
+		category_id=category.category_id,
+		title="自己的 BUY 帖子",
+		description="用于校验 OWN_POST",
+		price=14.0,
+		template_data={"max_accepters": 2},
+		direction=Direction.BUY,
+		urgency=UrgencyLevel.NORMAL,
+		status=PostStatus.OPEN,
+	)
+	db_session.add_all([post_buy_1, post_buy_2, post_sell, post_owned])
+	await db_session.flush()
+
+	resp = await client.post(
+		"/posts/batch-accept",
+		headers={"Authorization": f"Bearer {test_user_token}"},
+		json={"post_ids": [post_buy_1.post_id, post_buy_1.post_id, post_sell.post_id, post_owned.post_id]},
+	)
+
+	assert resp.status_code == 200
+	body = resp.json()
+	assert body["code"] == settings.SUCCESS_CODE
+	message = body["message"]
+	assert len(message["results"]) == 1
+	assert message["results"][0]["post_id"] == post_buy_1.post_id
+	assert message["results"][0]["status"] == "PENDING"
+	assert {item["error"] for item in message["errors"]} == {"ALREADY_ACCEPTED", "INVALID_DIRECTION", "OWN_POST"}
+
+
+@pytest.mark.asyncio
+async def test_batch_accept_posts_rejects_more_than_five(
+	client: AsyncClient,
+	db_session,
+	test_user,
+	test_user_token,
+	fake_redis,
+):
+	"""测试批量接单的后端 5 单上限熔断。"""
+	await fake_redis.set(f"token:{test_user_token}", str(test_user.user_id))
+	await fake_redis.set(f"user_token:{test_user.user_id}", test_user_token)
+
+	category = Category(category_id=109, name="批量接单上限分类", config_json={})
+	db_session.add(category)
+	await db_session.flush()
+
+	publisher = await _create_user_with_avatar(
+		db_session,
+		user_id=3009,
+		user_name="publisher_limit",
+		openid="openid-publisher-limit",
+		avatar_url="/static/avatar/publisher_limit.png",
+	)
+	posts = []
+	for index in range(6):
+		post = Post(
+			post_id=3100 + index,
+			publisher_id=publisher.user_id,
+			category_id=category.category_id,
+			title=f"顺路任务{index}",
+			description="超出 5 单限制",
+			price=10.0 + index,
+			template_data={"max_accepters": 2},
+			direction=Direction.BUY,
+			urgency=UrgencyLevel.NORMAL,
+			status=PostStatus.OPEN,
+		)
+		posts.append(post)
+	db_session.add_all(posts)
+	await db_session.flush()
+
+	resp = await client.post(
+		"/posts/batch-accept",
+		headers={"Authorization": f"Bearer {test_user_token}"},
+		json={"post_ids": [post.post_id for post in posts]},
+	)
+
+	assert resp.status_code == 200
+	message = assert_api_error(resp.json(), code=settings.REQ_ERROR_CODE)
+	assert "最多一次只能接 5 单" in message["msg"]
+
+
+@pytest.mark.asyncio
+async def test_post_applications_returns_owner_view_with_completed_count(
+	client: AsyncClient,
+	db_session,
+	test_user,
+	test_user_token,
+	fake_redis,
+):
+	"""测试帖子申请列表返回申请人、历史完成数与申请时间。"""
+	await fake_redis.set(f"token:{test_user_token}", str(test_user.user_id))
+	await fake_redis.set(f"user_token:{test_user.user_id}", test_user_token)
+
+	category = Category(category_id=110, name="申请列表分类", config_json={})
+	db_session.add(category)
+	await db_session.flush()
+
+	applicant = await _create_user_with_avatar(
+		db_session,
+		user_id=3010,
+		user_name="申请人",
+		openid="openid-applicant-apply",
+		avatar_url="/static/avatar/applicant.png",
+	)
+	applicant_token = await _bind_user_token(fake_redis, applicant)
+
+	post = Post(
+		post_id=3200,
+		publisher_id=test_user.user_id,
+		category_id=category.category_id,
+		title="待查看申请的 BUY 帖子",
+		description="用于申请列表测试",
+		price=15.0,
+		template_data={"max_accepters": 2},
+		direction=Direction.BUY,
+		urgency=UrgencyLevel.NORMAL,
+		status=PostStatus.OPEN,
+	)
+	db_session.add(post)
+	await db_session.flush()
+
+	completed_order_1 = Order(
+		buyer_id=applicant.user_id,
+		seller_id=test_user.user_id,
+		initiator_id=applicant.user_id,
+		item_type=ItemType.POST,
+		item_id=8001,
+		status=OrderStatus.COMPLETED,
+		trigger_type=OrderTriggerType.APPLICATION,
+	)
+	completed_order_2 = Order(
+		buyer_id=test_user.user_id,
+		seller_id=applicant.user_id,
+		initiator_id=applicant.user_id,
+		item_type=ItemType.POST,
+		item_id=8002,
+		status=OrderStatus.COMPLETED,
+		trigger_type=OrderTriggerType.COLLECTIVE,
+	)
+	db_session.add_all([completed_order_1, completed_order_2])
+	await db_session.flush()
+
+	apply_resp = await client.post(
+		f"/posts/{post.post_id}/accept",
+		headers={"Authorization": f"Bearer {applicant_token}"},
+	)
+	assert apply_resp.status_code == 200
+	apply_body = apply_resp.json()
+	assert apply_body["code"] == settings.SUCCESS_CODE
+
+	resp = await client.get(
+		f"/posts/{post.post_id}/applications",
+		headers={"Authorization": f"Bearer {test_user_token}"},
+	)
+
+	assert resp.status_code == 200
+	body = resp.json()
+	assert body["code"] == settings.SUCCESS_CODE
+	applications = body["message"]["applications"]
+	assert len(applications) == 1
+	application = applications[0]
+	assert application["post_id"] == post.post_id
+	assert application["status"] == "PENDING"
+	assert application["applicant"]["user_id"] == applicant.user_id
+	assert application["applicant"]["avatar"] == "/static/avatar/applicant.png"
+	assert application["applicant"]["completed_order_count"] == 2
+	assert application["note"] is None
+	assert application["created_at"]
+
+
+@pytest.mark.asyncio
+async def test_post_applications_rejects_non_owner(
+	client: AsyncClient,
+	db_session,
+	test_user,
+	fake_redis,
+):
+	"""测试申请列表仅帖子拥有者可查看。"""
+	category = Category(category_id=111, name="申请列表越权分类", config_json={})
+	db_session.add(category)
+	await db_session.flush()
+
+	applicant = await _create_user_with_avatar(
+		db_session,
+		user_id=3011,
+		user_name="越权申请人",
+		openid="openid-applicant-forbidden",
+		avatar_url="/static/avatar/applicant_forbidden.png",
+	)
+	applicant_token = await _bind_user_token(fake_redis, applicant)
+
+	post = Post(
+		post_id=3300,
+		publisher_id=test_user.user_id,
+		category_id=category.category_id,
+		title="越权查看申请列表的 BUY 帖子",
+		description="用于越权测试",
+		price=18.0,
+		template_data={"max_accepters": 2},
+		direction=Direction.BUY,
+		urgency=UrgencyLevel.NORMAL,
+		status=PostStatus.OPEN,
+	)
+	db_session.add(post)
+	await db_session.flush()
+
+	resp = await client.get(
+		f"/posts/{post.post_id}/applications",
+		headers={"Authorization": f"Bearer {applicant_token}"},
+	)
+
+	assert resp.status_code == 200
+	message = assert_api_error(resp.json(), code=settings.INSUFFICIENT_AUTHORITY_CODE)
+	assert "仅帖子拥有者可查看申请列表" in message["msg"]
 

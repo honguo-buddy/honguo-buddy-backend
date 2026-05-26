@@ -18,11 +18,20 @@ from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from app.api import get_current_user
-from app.core import BusinessHTTPException, settings
+from app.core import AuthHTTPException, BusinessHTTPException, ResourceHTTPException, settings
 from app.db import get_db
 from app.schemas import PostCreate, PostDetailRead, PostList, PostRead, PostUpdate, ResponseModel, UserRead
+from app.schemas import (
+    PostApplicationApplicantRead,
+    PostApplicationItem,
+    PostApplicationListResponse,
+    PostBatchAcceptErrorItem,
+    PostBatchAcceptRequest,
+    PostBatchAcceptResponse,
+    PostBatchAcceptResultItem,
+)
 from app.services import PostService, OrderService
-from app.models import Comment, TargetType
+from app.models import Comment, Post, TargetType
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +57,13 @@ def _build_post_read(post, current_accepters: int) -> PostRead:
         create_time=post.create_time.isoformat() if post.create_time else "",
         attachment_urls=attachment_urls,
     )
+
+
+def _build_application_applicant_read(applicant, completed_order_count: int) -> PostApplicationApplicantRead:
+    base_data = UserRead.model_validate(applicant).model_dump()
+    base_data["avatar"] = applicant.avatar_attachment.url if getattr(applicant, "avatar_attachment", None) else None
+    base_data["completed_order_count"] = int(completed_order_count)
+    return PostApplicationApplicantRead.model_validate(base_data)
 
 
 @router.post("/", response_model=ResponseModel[PostRead])
@@ -220,6 +236,66 @@ async def list_public_user_posts(
     return ResponseModel(
         code=settings.SUCCESS_CODE,
         message=PostList(total=total, page=page, page_size=size, list=post_list),
+    )
+
+
+@router.post("/batch-accept", response_model=ResponseModel[PostBatchAcceptResponse])
+async def batch_accept_posts(
+    payload: PostBatchAcceptRequest,
+    current_user: UserRead = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """批量接单入口：适用于顺路聚合场景，允许单次申请多个 BUY 帖子。"""
+
+    batch_result = await OrderService.batch_accept_posts(
+        db=db,
+        initiator_id=current_user.user_id,
+        post_ids=payload.post_ids,
+    )
+    return ResponseModel(
+        code=settings.SUCCESS_CODE,
+        message=PostBatchAcceptResponse(
+            results=[PostBatchAcceptResultItem.model_validate(item) for item in batch_result["results"]],
+            errors=[PostBatchAcceptErrorItem.model_validate(item) for item in batch_result["errors"]],
+        ),
+    )
+
+
+@router.get("/{post_id}/applications", response_model=ResponseModel[PostApplicationListResponse])
+async def list_post_applications(
+    post_id: int,
+    current_user: UserRead = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """查看指定帖子的接单申请列表，仅帖子发布者可访问。"""
+
+    stmt = select(Post.publisher_id).where(Post.post_id == post_id, Post.is_deleted == False)
+    res = await db.execute(stmt)
+    publisher_id = res.scalar_one_or_none()
+    if publisher_id is None:
+        raise ResourceHTTPException(code=settings.DATA_GET_FAILED_CODE, msg="帖子不存在")
+    if int(current_user.user_id) != int(publisher_id):
+        raise AuthHTTPException(code=settings.INSUFFICIENT_AUTHORITY_CODE, msg="仅帖子拥有者可查看申请列表")
+
+    applications_data = await OrderService.list_post_applications(db, post_id)
+    applications = []
+    for row in applications_data:
+        order = row["order"]
+        applicant = row["applicant"]
+        applications.append(
+            PostApplicationItem(
+                application_id=order.order_id,
+                post_id=order.item_id,
+                applicant=_build_application_applicant_read(applicant, row["completed_order_count"]),
+                note=row["note"],
+                status=order.status.value if getattr(order.status, "value", None) else str(order.status),
+                created_at=order.create_time.isoformat() if order.create_time else "",
+            )
+        )
+
+    return ResponseModel(
+        code=settings.SUCCESS_CODE,
+        message=PostApplicationListResponse(applications=applications),
     )
 
 

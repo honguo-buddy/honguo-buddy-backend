@@ -90,6 +90,11 @@ class Order(Base):
         viewonly=True,
         lazy="selectin",
     )
+    reviews = relationship(
+        "OrderReview",
+        back_populates="order",
+        lazy="selectin",
+    )
 
     __table_args__ = (
         # 索引 1：用于通过项目查订单（如查看某个商品下所有的历史单据）
