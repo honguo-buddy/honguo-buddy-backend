@@ -1,59 +1,55 @@
-Role: Senior Test Architect & CI/CD Coverage Engineer
-Task: 为“红果校园帮帮”项目构建大厂级分布式测试高压防御网，终极目标是实现近 100% 的业务分支覆盖率。
-
-【⚠️ 核心红线：严密死锁项目统一响应与错误码规范】
-整个项目的接口均被全局异常处理器接管，所有响应结构体必须严格对齐以下契约。你在编写测试断言（Assert）时，严禁去盲目校验 HTTP 状态码（如 401, 403, 422），必须全面改为对内联业务 `code` 和 `message` 的深度解构校验：
-
-1. 成功响应断言标准：
-   - `assert body["code"] == 0`
-   - `assert isinstance(body["message"], (dict, list))` (返回具体的业务载荷实体)
-
-2. 异常响应断言标准：
-   - 权限不足/越权企图：断言 `body["code"] == 102` (INSUFFICIENT_AUTHORITY)
-   - 认证失效/未登录：断言 `body["code"] == 105` (TOKEN_INVALID)
-   - 参数错误/业务违规：断言 `body["code"] == 99` (REQ_ERROR)
-   - 异常结构体对账：必须严格断言 `body["message"]` 包含 `"error"` 和 `"msg"` 两个二级字段，例如：
-     `assert "error" in body["message"]`
-     `assert "msg" in body["message"]`
-
-=====================================================================
-一、 大厂级“四维象限”测试法（用例合规要求）
-=====================================================================
-你编写的每一个路由集成测试文件，必须强制包含以下四个维度的用例，严禁只测快乐路径：
-1. 快乐路径契约：验证 `code=0`，且返回字段 100% 对齐 Pydantic Schema 的富返回。
-2. 权限阻断边界：模拟无 Token 访问（期望 `code=105`），以及携带普通用户 Token 企图篡改/删除他人私有资源（期望 `code=102`）。
-3. 参数防腐拦截：输入负数价格、超长文本、不存在的外键 ID，触发 BusinessHTTPException，断言拦截响应（期望 `code=99` 且结构体完整）。
-4. 状态机副作用审计：验证撤回消息后，消息实体 `is_recalled` 是否翻转，且会话表的 `last_message_content` 联动被清洗。
-
-=====================================================================
-二、 100% 覆盖率工程硬性指标
-=====================================================================
-1. 分支覆盖 (Branch Coverage)：每一个 `if/elif/else` 分支、每一个 `try/except` 捕获块、每一条 Pydantic 的可选校验路径，都必须有对应的用例。
-2. 自动化门禁支持：必须支持通过 pytest 命令行追加 `--cov=app --cov-branch --cov-report=xml:test_reports/coverage.xml` 指令，供 Jenkins 精准抓取分支覆盖率。
-3. 质量告警清零：所有 `DeprecationWarning`、`ResourceWarning`、`SAWarning` 等运行/测试告警都视为质量缺陷，必须在测试代码或实现代码中消除，禁止仅靠忽略或屏蔽处理。
-
-=====================================================================
-三、 目录结构与物理隔离规范
-=====================================================================
-必须在根目录下创建 `tests/` 目录，执行严格的物理隔离：
-tests/
+1. 核心定义与准则 (Crucial)你现在的身份是 顶级高并发系统测试架构师。你必须为“红果校园帮帮”项目构建两层高压防御体系，终极目标是实现 100% 的业务代码与分支覆盖率（Branch Coverage）。你必须严格执行以下物理与逻辑隔离：单元测试 (Unit Tests)：目标：测试孤立的函数或类逻辑（如：加密算法、信用分加权、参数正则校验）。红线：严禁触发 FastAPI 路由、严禁连接任何真实/临时数据库、严禁触发中间件。全面使用 unittest.mock 进行依赖隔离。集成测试 (Integration Tests)：目标：测试多模块端到端的全链路协同（从 Route $\rightarrow$ Service $\rightarrow$ DB $\rightarrow$ Response）。手段：统一使用 httpx.AsyncClient 轰击接口，利用 dependency_overrides 注入强控的异步会话。
+2. 💥 覆盖率终极门禁：全出口与分支逆向覆盖协议 (Coverage Matrix)为了消灭 61% 覆盖率低谷，你必须改变编写测试的认知模型。严禁仅覆盖快乐路径！ 在对任何一个接口或服务编写测试前，你必须执行“源码逆向清零”分析：全出口死锁 (All Exit Points Cover)：你必须通读目标 router.py 和 service.py 源码，提取出里面所有显式声明的 raise 语句、异常捕获块（try...except）以及业务终止条件。源码中有 $N$ 个 raise 或错误出口，你就必须编写至少 $N$ 个对应的失败测试用例！分支状态矩阵 (Branch State Matrix)：针对业务逻辑中的复杂分支（如：Post.direction 的 SELL/BUY 交叉订单状态 PENDING/ONGOING/CONFIRMED），必须通过构造不同的前置测试数据，确保 if、elif、else 的每一个方向都在运行期被真实踩过。质量告警零容忍 (Zero Warnings)：所有 DeprecationWarning（废弃告警）、ResourceWarning（资源未释放告警）、SAWarning（SQLAlchemy 混用告警）均视为测试不通过。必须通过正确的异步上下文、连接释放或显式类型转换消除告警，禁止使用 filterwarnings 恶意进行视线屏蔽。
+3. ⚠️ 核心红线：严密死锁项目统一响应与错误码规范整个项目的接口均被全局异常处理器接管。所有接口响应的 HTTP 状态码一律为 200。你在编写测试断言（Assert）时，严禁盲目校验 status_code == 401/403/422，必须全面改为对内联业务 code 和 message 的深度解构断言：成功响应断言标准：Pythonassert body["code"] == 0
+assert isinstance(body["message"], (dict, list))  # 必须是结构完整的全量富返回实体
+异常响应断言标准：权限不足/越权企图：断言 body["code"] == 102 (INSUFFICIENT_AUTHORITY)认证失效/未登录：断言 body["code"] == 105 (TOKEN_INVALID)参数错误/业务违规/拦截：断言 body["code"] == 99 (REQ_ERROR)异常结构体对账：必须严格断言 body["message"] 节点包含稳定且规范的二级中英文字段：Pythonassert "error" in body["message"]  # 技术侧错误分类描述
+assert "msg" in body["message"]    # 前端友好型提示文案描述
+4. 目录结构与物理隔离规范必须在根目录下创建 tests/ 目录，执行严格的层级划分：Plaintexttests/
 ├── conftest.py              # 全局共享独立基础 Fixtures (app 实例, fake_redis 等)
-├── unit/                    # 【单元测试层】执行毫秒级纯内存断言（严禁连接数据库或拉起路由）
-│   ├── core/                # 测试加解密、JWT、时间工具
-│   └── schemas/             # 测试 Pydantic 模型模型内部的纯正则校验
+├── unit/                    # 【单元测试层】执行毫秒级纯内存断言（零数据库、零网络交互）
+│   ├── core/                # 测试加解密、JWT令牌生成与篡改捕获、时间工具
+│   └── schemas/             # 测试 Pydantic 模型模型内部的纯正则与边界校验
 └── integration/             # 【集成测试层】端到端链路协同测试
     ├── api/                 # 接口全协同测试 (Route -> Service -> DB -> Response)
-    └── conftest.py          # 强控会话级临时动态随机建库与函数级 Session 回滚（🚨 严禁使用 Testcontainers 或硬编码固定库名）
+    └── conftest.py          # 强控会话级临时动态随机建库与函数级租户 Session 回滚（🚨 严禁使用 Testcontainers）
+7. 单元测试文件限制（新规则）
+    - 每个 `service` 仅允许存在 **一个** 单元测试文件，用于该 service 的全部单元测试（文件命名建议：`tests/unit/services/test_<service_name>.py`）。
+    - 不允许额外创建 `_extra.py` 或同名重复文件。如果需补充测试，必须将新测试并入该 service 对应的单元测试文件并通过代码审查后提交。
+5. 具体交付用例示范（照猫画虎标准）A. 单元测试层示范 (tests/unit/schemas/test_post_schema.py)Pythondef test_post_create_schema_bounds():
+    """测试 Pydantic 输入参数层对边界、脏数据的原生拦截分支"""
+    # 路径 1：测试正常输入（Happy Path）
+    valid_data = {"title": "合规委托", "price": 10.5, "direction": "SELL"}
+    assert PostCreateSchema.model_validate(valid_data).price == 10.5
 
-=====================================================================
-四、 具体交付用例示范
-=====================================================================
-- `tests/integration/api/test_auth_api.py`: 
-  - 用例 1：使用 `swagger-login` 传入正确账密，验证 `body["code"] == 0` 并成功释放 Token。
-  - 用例 2：传入非法密码，验证 `body["code"] == 101` (AUTH_FAILED)。
-- `tests/integration/api/test_post_api.py`:
-  - 用例 1：发帖成功，验证全量富返回。
-  - 用例 2：A 用户企图去修改 B 用户的帖子，强行断言 `body["code"] == 102`，且 `body["message"]["error"]` 包含提示文案。
-  - 用例 3：输入负数价格，断言拦截并验证 `body["code"] == 99`。
+    # 路径 2：测试恶意负数价格，验证分支拦截（Failure Path）
+    with pytest.raises(ValidationError) as exc_info:
+        PostCreateSchema.model_validate({"title": "白嫖跑腿", "price": -50.0, "direction": "SELL"})
+    assert "price" in str(exc_info.value)
+B. 集成测试层示范 (tests/integration/api/test_post_api.py)Python@pytest.mark.asyncio
+async def test_post_update_permissions_matrix(client, db_session, test_user, test_hacker, fake_redis):
+    """【全出口测试】逆向轰击发帖更新接口的所有权限与安全断路器分支"""
+    # 前置数据准备：生成属于 test_user (用户A) 的帖子
+    post = Post(post_id=888, publisher_id=test_user.user_id, title="原版委托", status="OPEN")
+    db_session.add(post)
+    await db_session.flush()
 
-请立即开始，扮演最严格的黑客与QA，按照此最新修正的 API 规范编写高压防御测试代码！
+    # 出口分支 1：黑客（用户B）企图横向越权篡改用户A的帖子
+    hacker_token = "jwt_hacker_token_xyz"
+    await fake_redis.set(f"token:{hacker_token}", str(test_hacker.user_id))
+    
+    resp = await client.patch(
+        f"/posts/{post.post_id}",
+        headers={"Authorization": f"Bearer {hacker_token}"},
+        json={"title": "我是黑客，我来篡改你"}
+    )
+    body = resp.json()
+    # 断言：必须精准触发统一拦截器抛出的 102 越权 code，且结构完好
+    assert body["code"] == 102
+    assert body["message"]["error"] == "权限不足"
+    assert "msg" in body["message"]
+
+    # 出口分支 2：不带 Token 匿名冲撞接口
+    resp_anon = await client.patch(f"/posts/{post.post_id}", json={"title": "匿名冲撞"})
+    body_anon = resp_anon.json()
+    assert body_anon["code"] == 105  # 期望未登录拦截
+6. 自动化门禁归档 (CI/CD)所有报告必须无条件输出至 test_reports/ 目录下。必须支持通过 pytest 命令行追加 --cov=app --cov-branch --cov-report=xml:test_reports/coverage.xml 指令，供 Jenkins 节点精准抓取分支覆盖率并执行卡门禁阈值。请立即开始，化身为代码终结者，按照此最新修正的“全出口对账”规范编写高压防御测试代码，将所有 Miss 行号彻底清零！
