@@ -107,16 +107,16 @@ class PostService:
         
         # 如果提供了附件 ID，绑定附件
         if attachment_ids:
-            for attachment_id in attachment_ids:
-                try:
-                    await AttachmentService.bind_attachment_to_target(
-                        db, 
-                        attachment_id, 
-                        target_type="POST",
-                        target_id=post.post_id,
-                    )
-                except Exception as e:
-                    logger.warning(f"绑定附件 {attachment_id} 到帖子 {post.post_id} 失败: {e}")
+            try:
+                await AttachmentService.bind_attachments_to_target(
+                    db=db,
+                    attachment_ids=attachment_ids,
+                    target_type="POST",
+                    target_id=post.post_id,
+                    creator_id=publisher_id,
+                )
+            except Exception as e:
+                logger.warning(f"绑定附件 {attachment_ids} 到帖子 {post.post_id} 失败: {e}")
         
         await db.commit()
         await db.refresh(post)
@@ -172,6 +172,19 @@ class PostService:
             post.template_data = template_data
 
         await db.flush()
+
+        if payload.attachment_ids:
+            try:
+                await AttachmentService.bind_attachments_to_target(
+                    db=db,
+                    attachment_ids=payload.attachment_ids,
+                    target_type="POST",
+                    target_id=post.post_id,
+                    creator_id=operator_id,
+                )
+            except Exception as e:
+                logger.warning(f"绑定附件 {payload.attachment_ids} 到帖子 {post.post_id} 失败: {e}")
+
         await db.refresh(post)
         await db.commit()
         return post

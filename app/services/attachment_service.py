@@ -32,6 +32,7 @@ class AttachmentService:
             "GOODS": "goods",
             "COMMENT": "comment",
             "CHAT": "chat",
+            "ORDERREVIEW": "order_review",
         }
         folder = folder_map.get(normalized_target_type, "avatar")
 

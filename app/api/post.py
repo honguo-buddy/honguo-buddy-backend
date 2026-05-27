@@ -81,6 +81,7 @@ async def publish_post(
             db,
             publisher_id=current_user.user_id,
             post_create=post_create,
+            attachment_ids=post_create.attachment_ids,
         )
         current_accepters = await OrderService.get_current_accepters_count(
             db,

@@ -11,49 +11,45 @@ from app.schemas.post import PostCreate
 from tests.unit.fake_sqlalchemy import FakeResult
 
 
-def test_resolve_default_category_id_success():
+@pytest.mark.asyncio
+async def test_resolve_default_category_id_success():
     class FakeDB:
         async def execute(self, stmt):
             return FakeResult(scalar_value=5)
 
-    import asyncio
-
     db = FakeDB()
-    val = asyncio.get_event_loop().run_until_complete(PostService._resolve_default_category_id(db))
+    val = await PostService._resolve_default_category_id(db)
     assert val == 5
 
 
-def test_resolve_default_category_id_none_raises():
+@pytest.mark.asyncio
+async def test_resolve_default_category_id_none_raises():
     class FakeDB:
         async def execute(self, stmt):
             return FakeResult(scalar_value=None)
 
-    import asyncio
-
     with pytest.raises(ResourceHTTPException):
-        asyncio.get_event_loop().run_until_complete(PostService._resolve_default_category_id(FakeDB()))
+        await PostService._resolve_default_category_id(FakeDB())
 
 
-def test_get_post_for_update_found():
+@pytest.mark.asyncio
+async def test_get_post_for_update_found():
     class FakeDB:
         async def execute(self, stmt):
             return FakeResult(items=[SimpleNamespace(post_id=1)])
 
-    import asyncio
-
-    post = asyncio.get_event_loop().run_until_complete(PostService._get_post_for_update(FakeDB(), 1))
+    post = await PostService._get_post_for_update(FakeDB(), 1)
     assert post.post_id == 1
 
 
-def test_get_post_for_update_not_found_raises():
+@pytest.mark.asyncio
+async def test_get_post_for_update_not_found_raises():
     class FakeDB:
         async def execute(self, stmt):
             return FakeResult(items=[])
 
-    import asyncio
-
     with pytest.raises(ResourceHTTPException):
-        asyncio.get_event_loop().run_until_complete(PostService._get_post_for_update(FakeDB(), 999))
+        await PostService._get_post_for_update(FakeDB(), 999)
 
 
 @pytest.mark.asyncio
@@ -83,17 +79,21 @@ async def test_create_post_with_attachments_and_bind(monkeypatch):
 
     called = {"count": 0}
 
-    async def fake_bind(db, attachment_id, target_type, target_id):
+    async def fake_bind(db, attachment_ids, target_type, target_id, creator_id):
+        assert attachment_ids == [1, 2]
+        assert target_type == "POST"
+        assert target_id == 123
+        assert creator_id == 88
         called["count"] += 1
 
-    monkeypatch.setattr("app.services.attachment_service.AttachmentService.bind_attachment_to_target", fake_bind, raising=False)
+    monkeypatch.setattr("app.services.attachment_service.AttachmentService.bind_attachments_to_target", fake_bind, raising=False)
 
     pc = PostCreate(title="t", description="d", price=1.0)
     db = FakeDB2()
     post = await PostService.create_post(db, publisher_id=88, post_create=pc, attachment_ids=[1, 2])
     assert post.post_id == 123
     assert post.status == PostStatus.OPEN
-    assert called["count"] == 2
+    assert called["count"] == 1
 
 
 @pytest.mark.asyncio
@@ -118,11 +118,11 @@ async def test_create_post_bind_raises_logs(monkeypatch):
         async def execute(self, stmt):
             return FakeResult(scalar_value=11)
 
-    async def fake_bind_raising(db, attachment_id, target_type, target_id):
-        if attachment_id == 1:
+    async def fake_bind_raising(db, attachment_ids, target_type, target_id, creator_id):
+        if 1 in attachment_ids:
             raise Exception("boom")
 
-    monkeypatch.setattr("app.services.attachment_service.AttachmentService.bind_attachment_to_target", fake_bind_raising, raising=False)
+    monkeypatch.setattr("app.services.attachment_service.AttachmentService.bind_attachments_to_target", fake_bind_raising, raising=False)
 
     pc = PostCreate(title="x", description=None, price=3.0)
     db3 = FakeDB3()
@@ -198,7 +198,7 @@ async def test_create_post_with_fallback_enums_and_attachment_binding(monkeypatc
 
     db.refresh = AsyncMock(side_effect=refresh_side_effect)
     bind_mock = AsyncMock(side_effect=[None, RuntimeError("bind failed")])
-    monkeypatch.setattr(AttachmentService, "bind_attachment_to_target", bind_mock, raising=False)
+    monkeypatch.setattr(AttachmentService, "bind_attachments_to_target", bind_mock, raising=False)
 
     payload = PostCreate.model_validate(
         {
@@ -218,7 +218,7 @@ async def test_create_post_with_fallback_enums_and_attachment_binding(monkeypatc
     assert post.urgency == UrgencyLevel.NORMAL
     assert post.category_id == 3
     assert post.template_data["max_accepters"] == 2
-    assert bind_mock.await_count == 2
+    assert bind_mock.await_count == 1
     assert db.commit.await_count == 1
 
 
@@ -261,6 +261,25 @@ async def test_update_post_permission_status_pending_and_field_updates(monkeypat
     assert updated.urgency == UrgencyLevel.URGENT
     assert updated.template_data["b"] == 2
     assert updated.template_data["max_accepters"] == 3
+
+
+async def test_update_post_binds_attachments(monkeypatch):
+    post = build_post_obj()
+    monkeypatch.setattr(PostService, "_get_post_for_update", AsyncMock(return_value=post))
+    db = build_db(execute_side_effect=[FakeResult(scalar_value=0)])
+    bind_mock = AsyncMock()
+    monkeypatch.setattr(AttachmentService, "bind_attachments_to_target", bind_mock, raising=False)
+
+    payload = PostUpdate.model_validate({"attachment_ids": [99, 100]})
+    await PostService.update_post(db, post_id=1, payload=payload, operator_id=1001)
+
+    bind_mock.assert_awaited_once_with(
+        db=db,
+        attachment_ids=[99, 100],
+        target_type="POST",
+        target_id=post.post_id,
+        creator_id=1001,
+    )
 
 
 async def test_update_post_rejects_invalid_direction_and_urgency(monkeypatch):

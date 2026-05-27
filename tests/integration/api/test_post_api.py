@@ -109,6 +109,54 @@ async def test_create_post_returns_full_post_info(
 
 
 @pytest.mark.asyncio
+async def test_create_post_accepts_attachment_ids(
+	client: AsyncClient,
+	db_session,
+	test_user,
+	test_user_token,
+	fake_redis,
+):
+	await fake_redis.set(f"token:{test_user_token}", str(test_user.user_id))
+
+	category = Category(category_id=101, name="附件分类", config_json={})
+	db_session.add(category)
+	await db_session.flush()
+
+	attachment = Attachment(
+		target_type=AttachmentTargetType.USER,
+		target_id=test_user.user_id,
+		url="/static/user_attachment.png",
+		creator_id=test_user.user_id,
+	)
+	db_session.add(attachment)
+	await db_session.flush()
+
+	resp = await client.post(
+		"/posts/",
+		headers={"Authorization": f"Bearer {test_user_token}"},
+		json={
+			"title": "带附件发布帖子",
+			"description": "帖子包含附件绑定",
+			"price": 8.8,
+			"direction": "SELL",
+			"urgency": "NORMAL",
+			"max_accepters": 1,
+			"category_id": category.category_id,
+			"attachment_ids": [attachment.attachment_id],
+		},
+	)
+	assert resp.status_code == 200
+	body = resp.json()
+	assert body["code"] == settings.SUCCESS_CODE
+	message = body["message"]
+	assert message["attachment_urls"] == ["/static/user_attachment.png"]
+
+	await db_session.refresh(attachment)
+	assert attachment.target_type == AttachmentTargetType.POST
+	assert attachment.target_id == message["post_id"]
+
+
+@pytest.mark.asyncio
 async def test_create_post_rejects_negative_price(
 	client: AsyncClient,
 	db_session,

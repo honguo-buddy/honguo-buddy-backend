@@ -749,7 +749,7 @@ DATA_GET_FAILED: 301
 
 说明：
 - `title` 为必填字段。
-- `description`、`price`、`category_id`、`template_filters` 均为可选字段。
+- `description`、`price`、`category_id`、`template_filters`、`attachment_ids` 均为可选字段。
 - `direction` 默认为 `SELL`，`urgency` 默认为 `NORMAL`，`max_accepters` 默认为 `1`。
 
 请求头: Authorization: Bearer <token>。
@@ -765,7 +765,8 @@ DATA_GET_FAILED: 301
     "urgency": "NORMAL",
     "max_accepters": 1,
     "category_id": 3,
-    "template_filters": {"pickup_address": "教学楼A楼"}
+    "template_filters": {"pickup_address": "教学楼A楼"},
+    "attachment_ids": [123]
 }
 ```
 
@@ -1512,17 +1513,19 @@ JSON
 {
     "order_id": 5001,
     "reviewee_id": 3001,
-    "review_type": "FIRST",
+    "review_type": "INITIAL",
     "rating": 5,
     "content": "对方响应很快，沟通顺畅",
     "is_anonymous": true,
+    "attachment_ids": [456],
     "parent_id": null
 }
 ```
 
 说明：
-- `review_type` 支持 `FIRST`、`FOLLOW_UP`、`REPLY`。
+- `review_type` 支持 `INITIAL`、`ADDITIONAL`、`REPLY`。
 - `is_anonymous=true` 表示评价内容在双盲期内匿名展示。
+- `attachment_ids` 可选，先上传附件后再将附件绑定到当前评价。
 - `parent_id` 为可选，用于追评/回评关联上一条评价。
 
 成功响应:
@@ -1541,6 +1544,7 @@ JSON
         "content": "对方响应很快，沟通顺畅",
         "is_anonymous": true,
         "is_visible": false,
+        "attachment_urls": [],
         "create_time": "2025-09-05T12:00:00Z",
         "update_time": "2025-09-05T12:00:00Z"
     }

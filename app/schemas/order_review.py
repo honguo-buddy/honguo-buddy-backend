@@ -16,6 +16,7 @@ class OrderReviewCreateRequest(BaseModel):
     rating: Optional[int] = Field(default=None, ge=1, le=5, description="评分，首评时必填")
     content: Optional[str] = Field(default=None, max_length=2000, description="评价内容")
     is_anonymous: bool = Field(default=False, description="是否匿名")
+    attachment_ids: Optional[List[int]] = Field(default=None, description="评价附件 ID 列表，可在评价创建后自动绑定")
 
     @field_validator("review_type")
     @classmethod
@@ -42,6 +43,7 @@ class OrderReviewRead(BaseModel):
     is_anonymous: bool
     is_visible: bool
     create_time: datetime
+    attachment_urls: List[str] = Field(default_factory=list, description="评价附件 URL 列表")
 
     model_config = ConfigDict(from_attributes=True)
 

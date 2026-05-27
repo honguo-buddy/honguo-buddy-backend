@@ -13,6 +13,7 @@ class AttachmentTargetType(enum.Enum):
     GOODS = "GOODS"
     COMMENT = "COMMENT"
     CHAT = "CHAT"
+    ORDERREVIEW = "ORDERREVIEW"
 
 
 class Attachment(Base):
