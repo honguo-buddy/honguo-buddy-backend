@@ -1190,6 +1190,33 @@ DATA_GET_FAILED: 301
 - code: 105 - Token 失效或缺失。
 - code: 99 - 请求帖子数量超过 5 个，或参数不合法。
 
+#### 4.5.8.1 单个帖子接单 (POST: /posts/{post_id}/accept)
+
+用途: 当前用户对指定帖子发起接单申请。
+
+请求头: Authorization: Bearer <token>。
+
+说明：
+- `BUY` 方向帖子为申请制，申请后须等待发布者同意；该帖的 `PENDING` 订单不计入当前接单数。
+- `SELL` 方向帖子为征集制，`PENDING` 订单即时计入当前接单数。
+- 若用户刚刚取消过该帖子的申请，后端会返回 99 并提示冷静期。
+
+成功响应:
+
+```json
+{
+    "code": 0,
+    "message": {
+        "order_id": 1001,
+        "post_id": 2001,
+        "current_accepters": 1,
+        "max_accepters": 3,
+        "accepted": true,
+        "status": "PENDING"
+    }
+}
+```
+
 #### 4.5.9 查看接单申请列表 (GET: /posts/{post_id}/applications)
 
 用途: 帖子发布者查看当前帖子下的申请列表，用于同意/拒绝接单。仅帖子拥有者可访问。
@@ -1474,6 +1501,7 @@ JSON
 - `submit-delivery` 由卖家提交已交付状态。
 - `accept-delivery` 由买家确认收货并完成订单；`complete` 为兼容接口，内部等价于 `accept-delivery`。
 - `cancel` 仅限买家或卖家取消，若订单为 PENDING，则发起人也可取消。
+- `cancel` 接口会额外返回 `curr_accepters`，用于客户端更新当前帖子接单数。
 
 成功响应示例:
 

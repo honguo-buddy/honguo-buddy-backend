@@ -19,7 +19,7 @@ from sqlalchemy.orm import selectinload
 
 from app.api import get_current_user
 from app.core import AuthHTTPException, BusinessHTTPException, ResourceHTTPException, settings
-from app.db import get_db
+from app.db import get_db, get_redis
 from app.schemas import PostCreate, PostDetailRead, PostList, PostRead, PostUpdate, ResponseModel, UserRead
 from app.schemas import (
     PostApplicationApplicantRead,
@@ -245,6 +245,7 @@ async def batch_accept_posts(
     payload: PostBatchAcceptRequest,
     current_user: UserRead = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    redis_client = Depends(get_redis),
 ):
     """批量接单入口：适用于顺路聚合场景，允许单次申请多个 BUY 帖子。"""
 
@@ -252,6 +253,7 @@ async def batch_accept_posts(
         db=db,
         initiator_id=current_user.user_id,
         post_ids=payload.post_ids,
+        redis_client=redis_client,
     )
     return ResponseModel(
         code=settings.SUCCESS_CODE,
@@ -425,6 +427,7 @@ async def accept_post(
     post_id: int,
     current_user: UserRead = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    redis_client = Depends(get_redis),
 ):
     """
     接单（创建订单）
@@ -436,6 +439,7 @@ async def accept_post(
             item_type="POST",
             item_id=post_id,
             initiator_id=current_user.user_id,
+            redis_client=redis_client,
         )
         
         # 查询更新后的接单数

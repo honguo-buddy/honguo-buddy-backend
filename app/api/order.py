@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api import get_current_user
 from app.core import BusinessHTTPException, settings
 from app.db import get_db, get_redis
-from app.models import AttachmentTargetType, Goods, Post
+from app.models import AttachmentTargetType, Goods, ItemType, Post
 from app.schemas import (
     OrderItemList,
     OrderList,
@@ -233,6 +233,14 @@ async def cancel_order(
     order_id: int,
     current_user: UserRead = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    redis_client = Depends(get_redis),
 ):
-    order = await OrderService.cancel_order(db, order_id, current_user.user_id)
-    return ResponseModel(code=settings.SUCCESS_CODE, message=_order_to_read(order))
+    order = await OrderService.cancel_order(db, order_id, current_user.user_id, redis_client=redis_client)
+    result = OrderService._serialize_order(order)
+    if order.item_type == ItemType.POST:
+        result["curr_accepters"] = await OrderService.get_current_accepters_count(
+            db,
+            item_type="POST",
+            item_id=order.item_id,
+        )
+    return ResponseModel(code=settings.SUCCESS_CODE, message=OrderRead.model_validate(result))

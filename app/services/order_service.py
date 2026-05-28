@@ -66,6 +66,7 @@ class OrderService:
             "meta_data": order.meta_data,
             "buyer": order.buyer,
             "seller": order.seller,
+            "curr_accepters": getattr(order, "curr_accepters", None),
         }
 
     @staticmethod
@@ -140,10 +141,52 @@ class OrderService:
                 goods.template_data = td
 
     @staticmethod
+    def _post_accept_cooldown_key(user_id: int, post_id: int) -> str:
+        return f"lock:cooldown:user:{user_id}:post:{post_id}"
+
+    @staticmethod
+    def _post_cancel_count_key(user_id: int, post_id: int, today: str | None = None) -> str:
+        if today is None:
+            today = get_now_naive().date().isoformat()
+        return f"lock:cancel_count:user:{user_id}:post:{post_id}:{today}"
+
+    @staticmethod
+    async def _raise_post_accept_rate_limit(redis_client, user_id: int, post_id: int) -> None:
+        cooldown_key = OrderService._post_accept_cooldown_key(user_id, post_id)
+        if await redis_client.get(cooldown_key):
+            raise BusinessHTTPException(
+                code=settings.REQ_ERROR_CODE,
+                msg=f"你刚刚取消了该帖子的申请，请冷静 {settings.ORDER_ACCEPT_COOLDOWN_SECONDS // 60} 分钟后再试",
+            )
+        count_key = OrderService._post_cancel_count_key(user_id, post_id)
+        count = await redis_client.get(count_key)
+        if count is not None and int(count) >= settings.ORDER_ACCEPT_CANCEL_DAILY_LIMIT:
+            raise BusinessHTTPException(
+                code=settings.REQ_ERROR_CODE,
+                msg="今日取消次数已达上限，无法继续接该帖子",
+            )
+
+    @staticmethod
+    async def _record_post_cancel(redis_client, user_id: int, post_id: int) -> None:
+        cooldown_key = OrderService._post_accept_cooldown_key(user_id, post_id)
+        count_key = OrderService._post_cancel_count_key(user_id, post_id)
+
+        await redis_client.set(cooldown_key, "1", ex=settings.ORDER_ACCEPT_COOLDOWN_SECONDS)
+        cancel_count = await redis_client.incr(count_key)
+        if cancel_count == 1:
+            await redis_client.expire(count_key, 86400)
+
+    @staticmethod
     async def _load_goods_for_update(db: AsyncSession, goods_id: int) -> Goods | None:
         stmt = select(Goods).where(Goods.goods_id == goods_id, Goods.is_deleted == False).with_for_update()
         res = await db.execute(stmt)
         return res.scalars().first()
+
+    @staticmethod
+    def _post_accept_valid_statuses(direction: Direction) -> list[OrderStatus]:
+        if direction == Direction.BUY:
+            return [OrderStatus.ONGOING, OrderStatus.CONFIRMED, OrderStatus.COMPLETED]
+        return [OrderStatus.PENDING, OrderStatus.ONGOING, OrderStatus.CONFIRMED, OrderStatus.COMPLETED]
 
     @staticmethod
     async def get_current_accepters_count(db: AsyncSession, item_type: str, item_id: int) -> int:
@@ -159,16 +202,22 @@ class OrderService:
         Returns:
             有效接单人数（不包括已取消的订单）
         """
-        valid_statuses = [
-            OrderStatus.PENDING,
-            OrderStatus.ONGOING,
-            OrderStatus.CONFIRMED,
-            OrderStatus.COMPLETED,
-        ]
-        
-        # 支持大小写不敏感的项目类型
         item_type_enum = OrderService._normalize_item_type(item_type)
-        
+        if item_type_enum == ItemType.POST:
+            post_stmt = select(Post.direction).where(Post.post_id == item_id, Post.is_deleted == False)
+            post_res = await db.execute(post_stmt)
+            direction = post_res.scalar_one_or_none()
+            if direction is None:
+                return 0
+            valid_statuses = OrderService._post_accept_valid_statuses(direction)
+        else:
+            valid_statuses = [
+                OrderStatus.PENDING,
+                OrderStatus.ONGOING,
+                OrderStatus.CONFIRMED,
+                OrderStatus.COMPLETED,
+            ]
+
         cnt_stmt = select(func.count()).select_from(Order).where(
             Order.item_type == item_type_enum,
             Order.item_id == item_id,
@@ -189,14 +238,52 @@ class OrderService:
         if not unique_item_ids:
             return {}
 
+        item_type_enum = OrderService._normalize_item_type(item_type)
+        if item_type_enum == ItemType.POST:
+            post_stmt = select(Post.post_id, Post.direction).where(Post.post_id.in_(unique_item_ids), Post.is_deleted == False)
+            post_res = await db.execute(post_stmt)
+            direction_map = {int(post_id): direction for post_id, direction in post_res.all()}
+
+            results: dict[int, int] = {}
+            buy_ids = [post_id for post_id, direction in direction_map.items() if direction == Direction.BUY]
+            sell_ids = [post_id for post_id, direction in direction_map.items() if direction != Direction.BUY]
+
+            if sell_ids:
+                sell_stmt = (
+                    select(Order.item_id, func.count())
+                    .where(
+                        Order.item_type == item_type_enum,
+                        Order.item_id.in_(sell_ids),
+                        Order.status.in_(OrderService._post_accept_valid_statuses(Direction.SELL)),
+                        Order.is_deleted == False,
+                    )
+                    .group_by(Order.item_id)
+                )
+                sell_res = await db.execute(sell_stmt)
+                results.update({int(item_id): int(count or 0) for item_id, count in sell_res.all()})
+
+            if buy_ids:
+                buy_stmt = (
+                    select(Order.item_id, func.count())
+                    .where(
+                        Order.item_type == item_type_enum,
+                        Order.item_id.in_(buy_ids),
+                        Order.status.in_(OrderService._post_accept_valid_statuses(Direction.BUY)),
+                        Order.is_deleted == False,
+                    )
+                    .group_by(Order.item_id)
+                )
+                buy_res = await db.execute(buy_stmt)
+                results.update({int(item_id): int(count or 0) for item_id, count in buy_res.all()})
+
+            return results
+
         valid_statuses = [
             OrderStatus.PENDING,
             OrderStatus.ONGOING,
             OrderStatus.CONFIRMED,
             OrderStatus.COMPLETED,
         ]
-        item_type_enum = OrderService._normalize_item_type(item_type)
-
         stmt = (
             select(Order.item_id, func.count())
             .where(
@@ -218,6 +305,7 @@ class OrderService:
         initiator_id: int,
         trigger_type: Optional[str] = None,
         post: Optional[Post] = None,
+        redis_client=None,
         commit: bool = True,
     ) -> Order:
         """统一下单入口。
@@ -237,10 +325,21 @@ class OrderService:
             if post.status != PostStatus.OPEN:
                 raise BusinessHTTPException(code=settings.REQ_ERROR_CODE, msg="当前帖子状态不允许接单")
 
+            if redis_client is not None:
+                await OrderService._raise_post_accept_rate_limit(redis_client, initiator_id, item_id)
+
             duplicate_stmt = select(Order.order_id).where(
                 Order.item_type == ItemType.POST,
                 Order.item_id == item_id,
                 Order.is_deleted == False,
+                Order.status.in_(
+                    [
+                        OrderStatus.PENDING,
+                        OrderStatus.ONGOING,
+                        OrderStatus.CONFIRMED,
+                        OrderStatus.COMPLETED,
+                    ]
+                ),
                 or_(
                     Order.initiator_id == initiator_id,
                     Order.buyer_id == initiator_id,
@@ -342,6 +441,10 @@ class OrderService:
             return "ALREADY_ACCEPTED", msg
         if "接单已满" in msg:
             return "FULL", msg
+        if "冷静" in msg:
+            return "COOLDOWN", msg
+        if "今日取消次数已达上限" in msg:
+            return "DAILY_LIMIT", msg
         if "仅支持 BUY 方向" in msg:
             return "INVALID_DIRECTION", msg
         if "当前帖子状态不允许接单" in msg:
@@ -355,6 +458,7 @@ class OrderService:
         db: AsyncSession,
         initiator_id: int,
         post_ids: list[int],
+        redis_client=None,
     ) -> dict:
         """批量申请多个 BUY 方向帖子，允许部分成功、部分失败。"""
 
@@ -379,6 +483,7 @@ class OrderService:
                         item_id=post_id,
                         initiator_id=initiator_id,
                         post=post,
+                        redis_client=redis_client,
                         commit=False,
                     )
                     results.append(
@@ -771,7 +876,7 @@ class OrderService:
         return await OrderService.accept_delivery(db, order_id, operator_id)
 
     @staticmethod
-    async def cancel_order(db: AsyncSession, order_id: int, operator_id: int) -> Order:
+    async def cancel_order(db: AsyncSession, order_id: int, operator_id: int, redis_client=None) -> Order:
         order = await OrderService._get_order_for_update(db, order_id)
         if order.status not in {OrderStatus.PENDING, OrderStatus.ONGOING, OrderStatus.CONFIRMED}:
             raise BusinessHTTPException(code=settings.REQ_ERROR_CODE, msg="该状态不允许取消订单")
@@ -801,6 +906,9 @@ class OrderService:
                 locked = dict(goods.template_data)
                 locked.pop("locked", None)
                 goods.template_data = locked
+
+        if order.item_type == ItemType.POST and operator_id == order.initiator_id and redis_client is not None:
+            await OrderService._record_post_cancel(redis_client, operator_id, order.item_id)
 
         await db.flush()
         await db.refresh(order)

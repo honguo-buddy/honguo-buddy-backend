@@ -58,6 +58,8 @@ class Settings(BaseSettings):
     USER_INITIAL_CREDIT_SCORE: int = 60  # 用户初始信用分
     ORDER_COMPLETE_CREDIT: int = 10      # 订单完成后卖家获得的积分奖励
     ORDER_AUTO_CONFIRM_HOURS: int = 12    # CONFIRMED 状态超时自动完结时限（小时）
+    ORDER_ACCEPT_COOLDOWN_SECONDS: int = 300  # 申请取消后冷静期（秒）
+    ORDER_ACCEPT_CANCEL_DAILY_LIMIT: int = 3  # 同一用户同一帖子每天允许取消次数
     REVIEW_DOUBLE_BLIND_DAYS: int = 1    # 评价双盲期（天）
 
     #正确返回码

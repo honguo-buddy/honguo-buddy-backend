@@ -104,7 +104,15 @@ async def test_helper_functions_cover_multiple_branches():
 
 
 async def test_get_current_accepters_count_and_map():
-    db = build_db(execute_side_effect=[FakeResult(scalar_value=3), FakeResult(rows=[(2001, 2), (2002, 1)])])
+    db = build_db(
+        execute_side_effect=[
+            FakeResult(scalar_value=Direction.SELL),
+            FakeResult(scalar_value=3),
+            FakeResult(rows=[(2001, Direction.SELL), (2002, Direction.BUY)]),
+            FakeResult(rows=[(2001, 2)]),
+            FakeResult(rows=[(2002, 1)]),
+        ]
+    )
 
     count = await OrderService.get_current_accepters_count(db, "posts", 2001)
     empty_map = await OrderService.get_current_accepters_count_map(db, "POST", [])
@@ -133,14 +141,35 @@ async def test_create_order_post_error_branches():
         await OrderService.create_order(db, "POST", 2001, 1002, post=build_post())
     assert "该帖子已申请过" in duplicate_err.value.detail["msg"]
 
-    db = build_db(execute_side_effect=[FakeResult(items=[None]), FakeResult(scalar_value=2)])
+    db = build_db(execute_side_effect=[FakeResult(items=[None]), FakeResult(scalar_value=Direction.SELL), FakeResult(scalar_value=2)])
     with pytest.raises(BusinessHTTPException) as full_err:
         await OrderService.create_order(db, "POST", 2001, 1002, post=build_post(max_accepters=2))
     assert "接单已满" in full_err.value.detail["msg"]
 
 
+async def test_create_order_post_allows_retry_after_canceled(monkeypatch):
+    post = build_post(direction=Direction.BUY, publisher_id=3001, max_accepters=3)
+    db = build_db(execute_side_effect=[FakeResult(scalar_value=None), FakeResult(scalar_value=Direction.BUY), FakeResult(scalar_value=0)])
+
+    order = await OrderService.create_order(db, "POST", 2001, 4001, post=post)
+    assert order.status == OrderStatus.PENDING
+
+
+async def test_create_order_post_blocked_by_cooldown(monkeypatch):
+    class FakeRedis:
+        async def get(self, key):
+            return "1"
+
+    post = build_post(direction=Direction.BUY, publisher_id=3001, max_accepters=3)
+    db = build_db(execute_side_effect=[FakeResult(scalar_value=None), FakeResult(scalar_value=0)])
+
+    with pytest.raises(BusinessHTTPException) as exc:
+        await OrderService.create_order(db, "POST", 2001, 4001, post=post, redis_client=FakeRedis())
+    assert "冷静" in exc.value.detail["msg"]
+
+
 async def test_create_order_post_success(monkeypatch):
-    db = build_db(execute_side_effect=[FakeResult(items=[None]), FakeResult(scalar_value=0)])
+    db = build_db(execute_side_effect=[FakeResult(items=[None]), FakeResult(scalar_value=Direction.BUY), FakeResult(scalar_value=0)])
     post = build_post(direction=Direction.BUY, publisher_id=3001, max_accepters=3)
 
     order = await OrderService.create_order(
@@ -413,6 +442,61 @@ async def test_cancel_order_goods_unlocks_template(monkeypatch):
     db = FakeDB()
     res = await OrderService.cancel_order(db, order_id=555, operator_id=1)
     assert res.status == OrderStatus.CANCELED
+
+
+@pytest.mark.asyncio
+async def test_cancel_order_records_post_cooldown_and_daily_limit(monkeypatch):
+    class FakeRedis:
+        def __init__(self):
+            self.data = {}
+            self.expiries = {}
+
+        async def set(self, key, value, ex=None):
+            self.data[key] = value
+            if ex is not None:
+                self.expiries[key] = ex
+
+        async def incr(self, key):
+            self.data[key] = int(self.data.get(key, 0)) + 1
+            return self.data[key]
+
+        async def expire(self, key, seconds):
+            self.expiries[key] = seconds
+
+        async def get(self, key):
+            return self.data.get(key)
+
+    order = build_order(status=OrderStatus.PENDING, buyer_id=1, seller_id=2, initiator_id=1, item_type=ItemType.POST, item_id=2001)
+    post = build_post()
+
+    async def fake_get_order(db, oid):
+        return order
+
+    async def fake_get_post(db, pid):
+        return post
+
+    monkeypatch.setattr(OrderService, "_get_order_for_update", fake_get_order)
+    monkeypatch.setattr(OrderService, "_get_post_for_update", fake_get_post)
+
+    class FakeDB:
+        async def execute(self, stmt):
+            return FakeResult(items=[])
+
+        async def flush(self):
+            pass
+
+        async def refresh(self, o):
+            pass
+
+        async def commit(self):
+            pass
+
+    fake_redis = FakeRedis()
+    res = await OrderService.cancel_order(FakeDB(), order_id=order.order_id, operator_id=1, redis_client=fake_redis)
+    assert res.status == OrderStatus.CANCELED
+    assert await fake_redis.get(OrderService._post_accept_cooldown_key(1, 2001)) is not None
+    assert fake_redis.data[OrderService._post_cancel_count_key(1, 2001)] == 1
+    assert fake_redis.expiries[OrderService._post_cancel_count_key(1, 2001)] == 86400
 
 
 @pytest.mark.asyncio
@@ -812,7 +896,7 @@ async def test_lookup_helpers_and_create_order_edge_paths(monkeypatch):
     assert db.commit.await_count == 0
 
     post = build_post(direction=Direction.SELL)
-    db_post = build_db(execute_side_effect=[FakeResult(items=[None]), FakeResult(scalar_value=0)])
+    db_post = build_db(execute_side_effect=[FakeResult(items=[None]), FakeResult(scalar_value=Direction.SELL), FakeResult(scalar_value=0)])
     order_post = await OrderService.create_order(db_post, "POST", 2001, 4001, trigger_type="APPLICATION", post=post, commit=False)
     assert order_post.trigger_type == OrderTriggerType.APPLICATION
     assert db_post.commit.await_count == 0
