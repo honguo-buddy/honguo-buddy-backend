@@ -65,3 +65,19 @@ class Goods(Base):
     __table_args__ = (
         Index("idx_goods_is_sold_deleted_create_time", "is_sold", "is_deleted", create_time.desc()),
     )
+
+class GoodsMetrics(Base):
+    """商品计数器分表：物理隔离 goods 主表，避免写放大污染业务查询。
+
+    与 goods 表通过 goods_id 保持 1:1 锁死关联。
+    """
+    __tablename__ = "goods_metrics"
+
+    goods_id = Column(BigInteger, ForeignKey("goods.goods_id", ondelete="CASCADE"), primary_key=True, comment="商品ID（1:1关联goods表）")
+    view_count = Column(BigInteger, default=0, nullable=False, comment="浏览次数")
+    favorite_count = Column(BigInteger, default=0, nullable=False, comment="收藏次数")
+    comment_count = Column(BigInteger, default=0, nullable=False, comment="评论次数")
+    sales_count = Column(BigInteger, default=0, nullable=False, comment="销售次数")
+    cart_count = Column(BigInteger, default=0, nullable=False, comment="加入购物车次数")
+    create_time = Column(DateTime, default=beijing_now_for_model, nullable=False, comment="创建时间")
+    update_time = Column(DateTime, default=beijing_now_for_model, onupdate=beijing_now_for_model, nullable=False, comment="更新时间")
