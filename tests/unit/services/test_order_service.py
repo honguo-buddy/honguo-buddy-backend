@@ -465,6 +465,10 @@ async def test_cancel_order_records_post_cooldown_and_daily_limit(monkeypatch):
 
         async def get(self, key):
             return self.data.get(key)
+        
+        async def ttl(self, name: str) -> int:
+            #默认返回 -2 (代表 key 不存在/已过期)，让测试顺畅通过冷却期判定
+            return -2
 
     order = build_order(status=OrderStatus.PENDING, buyer_id=1, seller_id=2, initiator_id=1, item_type=ItemType.POST, item_id=2001)
     post = build_post()

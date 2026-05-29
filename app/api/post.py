@@ -17,11 +17,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
-from app.api import get_current_user
+from app.api import get_current_user, get_current_user_optional
 from app.core import AuthHTTPException, BusinessHTTPException, ResourceHTTPException, settings
-from app.db import get_db, get_redis
-from app.schemas import PostCreate, PostDetailRead, PostList, PostRead, PostUpdate, ResponseModel, UserRead
+from app.db import get_db, get_redis, redis
 from app.schemas import (
+    FavoriteRequest,
+    FavoriteResponse,
     PostApplicationApplicantRead,
     PostApplicationItem,
     PostApplicationListResponse,
@@ -29,8 +30,15 @@ from app.schemas import (
     PostBatchAcceptRequest,
     PostBatchAcceptResponse,
     PostBatchAcceptResultItem,
+    PostCreate,
+    PostDetailRead,
+    PostList,
+    PostRead,
+    PostUpdate,
+    ResponseModel,
+    UserRead,
 )
-from app.services import PostService, OrderService
+from app.services import PostService, OrderService, SocialService
 from app.models import Comment, Post, TargetType
 
 logger = logging.getLogger(__name__)
@@ -343,6 +351,7 @@ async def delete_post(
 async def get_post_detail(
     post_id: int,
     db: AsyncSession = Depends(get_db),
+    current_user: Optional[UserRead] = Depends(get_current_user_optional),
     comments_limit: int = Query(5, ge=0, le=100, description="返回的评论条数，0 表示不返回（建议使用独立分页接口）"),
 ):
     """
@@ -409,6 +418,14 @@ async def get_post_detail(
             attachment_urls=attachment_urls,
             comments=comments,
         )
+
+        if current_user:
+            await SocialService.record_history(
+                redis_client=redis,
+                user_id=current_user.user_id,
+                target_type="POST",
+                target_id=post_id,
+            )
 
         # 注意：可在此处添加 Redis 缓存层（key: post_detail:{post_id}:{comments_limit}），
         # 当 Post 变更（更新/新接单/新增评论）时应触发缓存失效。

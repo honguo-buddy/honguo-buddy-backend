@@ -7,16 +7,23 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api import get_current_user, get_current_user_optional
 from app.core import settings, AuthHTTPException
-from app.db import get_db
+from app.db import get_db, redis
 from app.schemas import (
     AuthErrorResponse,
+    FavoriteListResponse,
+    FavoriteRequest,
+    FavoriteResponse,
+    HistoryListResponse,
     ResponseModel,
+    UserFollowListResponse,
+    UserFollowToggleRequest,
+    UserFollowToggleResponse,
     user as UserSchema,
     UserProfileResponse,
     UserPublicResponse,
     UserSelfUpdateRequest,
 )
-from app.services import UserService
+from app.services import SocialService, UserService
 
 router = APIRouter()
 
@@ -81,6 +88,88 @@ async def delete_me(
         code=settings.SUCCESS_CODE,
         message={"message": "账号已注销"},
     )
+
+
+@router.post("/follow", response_model=ResponseModel[UserFollowToggleResponse])
+async def toggle_follow(
+    request: UserFollowToggleRequest,
+    current_user: UserSchema = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """关注 / 取消关注用户。"""
+    result = await SocialService.toggle_follow(db, current_user.user_id, request.following_id)
+    return ResponseModel(code=settings.SUCCESS_CODE, message=UserFollowToggleResponse.model_validate(result))
+
+
+@router.post("/favorite", response_model=ResponseModel[FavoriteResponse])
+async def toggle_favorite(
+    request: FavoriteRequest,
+    current_user: UserSchema = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """收藏 / 取消收藏帖子或商品。"""
+    result = await SocialService.toggle_favorite(db, current_user.user_id, request.target_type, request.target_id)
+    return ResponseModel(code=settings.SUCCESS_CODE, message=FavoriteResponse.model_validate(result))
+
+
+@router.get("/me/followings", response_model=ResponseModel[UserFollowListResponse])
+async def list_my_followings(
+    current_user: UserSchema = Depends(get_current_user),
+    page: int = 1,
+    page_size: int = 20,
+    db: AsyncSession = Depends(get_db),
+):
+    """获取我的关注列表。"""
+    offset = (page - 1) * page_size
+    result = await SocialService.list_followings(db, current_user.user_id, offset, page_size)
+    result["page"] = page
+    result["page_size"] = page_size
+    return ResponseModel(code=settings.SUCCESS_CODE, message=UserFollowListResponse.model_validate(result))
+
+
+@router.get("/me/followers", response_model=ResponseModel[UserFollowListResponse])
+async def list_my_followers(
+    current_user: UserSchema = Depends(get_current_user),
+    page: int = 1,
+    page_size: int = 20,
+    db: AsyncSession = Depends(get_db),
+):
+    """获取我的粉丝列表。"""
+    offset = (page - 1) * page_size
+    result = await SocialService.list_followers(db, current_user.user_id, offset, page_size)
+    result["page"] = page
+    result["page_size"] = page_size
+    return ResponseModel(code=settings.SUCCESS_CODE, message=UserFollowListResponse.model_validate(result))
+
+
+@router.get("/me/favorites", response_model=ResponseModel[FavoriteListResponse])
+async def list_my_favorites(
+    current_user: UserSchema = Depends(get_current_user),
+    page: int = 1,
+    page_size: int = 20,
+    db: AsyncSession = Depends(get_db),
+):
+    """获取我的收藏列表。"""
+    offset = (page - 1) * page_size
+    result = await SocialService.list_favorites(db, current_user.user_id, offset, page_size)
+    result["page"] = page
+    result["page_size"] = page_size
+    return ResponseModel(code=settings.SUCCESS_CODE, message=FavoriteListResponse.model_validate(result))
+
+
+@router.get("/me/histories", response_model=ResponseModel[HistoryListResponse])
+async def list_my_histories(
+    current_user: UserSchema = Depends(get_current_user),
+    page: int = 1,
+    page_size: int = 20,
+    db: AsyncSession = Depends(get_db),
+):
+    """获取我的历史墙（最近浏览记录）。"""
+    offset = (page - 1) * page_size
+    result = await SocialService.list_history(redis, db, current_user.user_id, offset, page_size)
+    result["page"] = page
+    result["page_size"] = page_size
+    return ResponseModel(code=settings.SUCCESS_CODE, message=HistoryListResponse.model_validate(result))
 
 
 @router.get("/info", response_model=ResponseModel[Union[dict, AuthErrorResponse]])

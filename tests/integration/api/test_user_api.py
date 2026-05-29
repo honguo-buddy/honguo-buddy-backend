@@ -4,10 +4,11 @@
 """
 
 import pytest
+import uuid
 from httpx import AsyncClient
 
 from app.core import settings
-from app.models import User, Attachment, AttachmentTargetType
+from app.models import User, Attachment, AttachmentTargetType, Category, Post
 from tests.helpers import assert_api_error
 
 pytestmark = pytest.mark.asyncio
@@ -208,6 +209,165 @@ class TestUserEndpoints:
         body = resp.json()
         assert body["code"] == settings.SUCCESS_CODE
         assert "avatar" in body["message"]
+
+    async def test_follow_unfollow_and_list_followings(
+        self,
+        client: AsyncClient,
+        db_session,
+        test_user: User,
+        test_user_token: str,
+        fake_redis,
+    ):
+        """目的：关注 / 取消关注用户，并能在关注列表中查询到对方。"""
+        other_user = User(
+            user_id=2002,
+            user_uuid=uuid.uuid4().bytes,
+            user_name="other_user",
+            wechat_openid="openid-other-user",
+        )
+        db_session.add(other_user)
+        await db_session.flush()
+
+        await fake_redis.set(f"token:{test_user_token}", str(test_user.user_id))
+        await fake_redis.set(f"user_token:{test_user.user_id}", test_user_token)
+
+        follow_resp = await client.post(
+            "/users/follow",
+            headers={"Authorization": f"Bearer {test_user_token}"},
+            json={"following_id": other_user.user_id},
+        )
+        assert follow_resp.status_code == 200
+        follow_body = follow_resp.json()
+        assert follow_body["code"] == settings.SUCCESS_CODE
+        assert follow_body["message"]["is_following"] is True
+
+        list_resp = await client.get(
+            "/users/me/followings",
+            headers={"Authorization": f"Bearer {test_user_token}"},
+        )
+        assert list_resp.status_code == 200
+        list_body = list_resp.json()
+        assert list_body["code"] == settings.SUCCESS_CODE
+        assert list_body["message"]["total"] == 1
+        assert list_body["message"]["list"][0]["user"]["user_id"] == other_user.user_id
+
+        unfollow_resp = await client.post(
+            "/users/follow",
+            headers={"Authorization": f"Bearer {test_user_token}"},
+            json={"following_id": other_user.user_id},
+        )
+        assert unfollow_resp.status_code == 200
+        unfollow_body = unfollow_resp.json()
+        assert unfollow_body["code"] == settings.SUCCESS_CODE
+        assert unfollow_body["message"]["is_following"] is False
+
+    async def test_post_favorite_and_list_favorites(
+        self,
+        client: AsyncClient,
+        db_session,
+        test_user: User,
+        test_user_token: str,
+        fake_redis,
+    ):
+        """目的：收藏帖子后能在我的收藏列表中查到该帖子。"""
+        category = Category(category_id=9001, name="收藏分类", config_json={})
+        db_session.add(category)
+        await db_session.flush()
+
+        post = Post(
+            post_id=9001,
+            publisher_id=test_user.user_id,
+            category_id=category.category_id,
+            title="收藏测试帖子",
+            description="这是一个用于测试收藏功能的帖子",
+        )
+        db_session.add(post)
+        await db_session.flush()
+
+        await fake_redis.set(f"token:{test_user_token}", str(test_user.user_id))
+        await fake_redis.set(f"user_token:{test_user.user_id}", test_user_token)
+
+        favorite_resp = await client.post(
+            "/users/favorite",
+            headers={"Authorization": f"Bearer {test_user_token}"},
+            json={"target_type": "POST", "target_id": post.post_id},
+        )
+        assert favorite_resp.status_code == 200
+        favorite_body = favorite_resp.json()
+        assert favorite_body["code"] == settings.SUCCESS_CODE
+        assert favorite_body["message"]["is_favorite"] is True
+
+        list_resp = await client.get(
+            "/users/me/favorites",
+            headers={"Authorization": f"Bearer {test_user_token}"},
+        )
+        assert list_resp.status_code == 200
+        list_body = list_resp.json()
+        assert list_body["code"] == settings.SUCCESS_CODE
+        assert list_body["message"]["total"] == 1
+        fav_item = list_body["message"]["list"][0]
+        assert fav_item["target_id"] == post.post_id
+        # 验证新字段
+        assert "is_full" in fav_item
+        assert "create_time" in fav_item
+        assert isinstance(fav_item["create_time"], int)  # 13位毫秒时间戳
+        assert 1000000000000 <= fav_item["create_time"] <= 9999999999999  # 13位范围
+        assert "publisher" in fav_item
+        if fav_item["publisher"]:
+            assert "user_name" in fav_item["publisher"]
+            assert "avatar" in fav_item["publisher"]
+
+    async def test_view_post_detail_records_history(
+        self,
+        client: AsyncClient,
+        db_session,
+        test_user: User,
+        test_user_token: str,
+        fake_redis,
+    ):
+        """目的：浏览帖子详情后生成历史记录。"""
+        category = Category(category_id=9002, name="历史分类", config_json={})
+        db_session.add(category)
+        await db_session.flush()
+
+        post = Post(
+            post_id=9002,
+            publisher_id=test_user.user_id,
+            category_id=category.category_id,
+            title="历史测试帖子",
+            description="这是一个用于测试历史功能的帖子",
+        )
+        db_session.add(post)
+        await db_session.flush()
+
+        await fake_redis.set(f"token:{test_user_token}", str(test_user.user_id))
+        await fake_redis.set(f"user_token:{test_user.user_id}", test_user_token)
+
+        detail_resp = await client.get(
+            f"/posts/{post.post_id}",
+            headers={"Authorization": f"Bearer {test_user_token}"},
+        )
+        assert detail_resp.status_code == 200
+
+        history_resp = await client.get(
+            "/users/me/histories",
+            headers={"Authorization": f"Bearer {test_user_token}"},
+        )
+        assert history_resp.status_code == 200
+        history_body = history_resp.json()
+        assert history_body["code"] == settings.SUCCESS_CODE
+        assert history_body["message"]["total"] == 1
+        hist_item = history_body["message"]["list"][0]
+        assert hist_item["target_id"] == post.post_id
+        # 验证新字段
+        assert "is_full" in hist_item
+        assert "view_time" in hist_item
+        assert isinstance(hist_item["view_time"], int)  # 13位毫秒时间戳
+        assert 1000000000000 <= hist_item["view_time"] <= 9999999999999  # 13位范围
+        assert "publisher" in hist_item
+        if hist_item["publisher"]:
+            assert "user_name" in hist_item["publisher"]
+            assert "avatar" in hist_item["publisher"]
 
     async def test_admin_put_update_user(self, client: AsyncClient, db_session, test_admin_user, test_admin_token, test_user, fake_redis):
         """目的：管理员能通过 PUT /users/{user_id} 修改用户并返回 avatar URL。"""

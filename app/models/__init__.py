@@ -9,6 +9,8 @@ from app.models.orderreview import OrderReview, ReviewType
 from app.models.post import Direction, Post, PostStatus, UrgencyLevel
 from app.models.user import SexEnum, User, UserType, parse_user_type
 from app.models.user_access_log import UserAccessLog
+from app.models.user_follow import UserFollow
+from app.models.user_favorite import FavoriteTargetType, UserFavorite
 
 __all__ = [
     "Attachment",

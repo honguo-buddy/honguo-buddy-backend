@@ -877,6 +877,13 @@ class OrderService:
 
     @staticmethod
     async def cancel_order(db: AsyncSession, order_id: int, operator_id: int, redis_client=None) -> Order:
+        # 检查全局每日10次取消限制
+        if redis_client is not None:
+            cancel_key = f"user:global_cancel:count:{operator_id}"
+            cancel_count = await redis_client.get(cancel_key)
+            if cancel_count is not None and int(cancel_count) >= settings.GLOBAL_CANCEL_DAILY_LIMIT:
+                raise BusinessHTTPException(code=settings.REQ_ERROR_CODE, msg="您今日取消申请过于频繁，请明天再试")
+        
         order = await OrderService._get_order_for_update(db, order_id)
         if order.status not in {OrderStatus.PENDING, OrderStatus.ONGOING, OrderStatus.CONFIRMED}:
             raise BusinessHTTPException(code=settings.REQ_ERROR_CODE, msg="该状态不允许取消订单")
@@ -909,6 +916,19 @@ class OrderService:
 
         if order.item_type == ItemType.POST and operator_id == order.initiator_id and redis_client is not None:
             await OrderService._record_post_cancel(redis_client, operator_id, order.item_id)
+
+        # 成功取消后增加全局计数
+        if redis_client is not None:
+            cancel_key = f"user:global_cancel:count:{operator_id}"
+            await redis_client.incr(cancel_key)
+            # 首次增加时设置过期时间为今天午夜
+            ttl = await redis_client.ttl(cancel_key)
+            if ttl == -1:  # 新建的 key，还没有设置过期时间
+                from app.core.datetime_utils import get_now_naive
+                now = get_now_naive()
+                midnight = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+                seconds_until_midnight = int((midnight - now).total_seconds())
+                await redis_client.expire(cancel_key, seconds_until_midnight)
 
         await db.flush()
         await db.refresh(order)

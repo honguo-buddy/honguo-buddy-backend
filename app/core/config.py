@@ -61,7 +61,12 @@ class Settings(BaseSettings):
     ORDER_ACCEPT_COOLDOWN_SECONDS: int = 300  # 申请取消后冷静期（秒）
     ORDER_ACCEPT_CANCEL_DAILY_LIMIT: int = 3  # 同一用户同一帖子每天允许取消次数
     REVIEW_DOUBLE_BLIND_DAYS: int = 1    # 评价双盲期（天）
-
+    HISTORY_TTL_SECONDS: int = 30 * 86400 # 历史记录过期时间（秒），默认30天
+    HISTORY_MAX_SIZE: int = 100 # 历史记录最大条数
+    GLOBAL_CANCEL_DAILY_LIMIT: int = 10 # 全局取消申请每日限制次数
+    
+    # 业务常数配置 - 错误码
+    
     #正确返回码
     SUCCESS_CODE: int = 0 #正确返回码
     #错误码

@@ -1,7 +1,9 @@
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, field_serializer
 from pydantic_extra_types.phone_numbers import PhoneNumber
 from typing import Optional
 from uuid import UUID
+from datetime import datetime
+import time
 
 # USER 数据模型
 
@@ -157,6 +159,78 @@ class UserUpdate(BaseModel):
 
 class UserRoleUpdate(BaseModel):
     is_admin: bool
+
+
+class UserFollowToggleRequest(BaseModel):
+    following_id: int
+
+
+class UserFollowToggleResponse(BaseModel):
+    following_id: int
+    is_following: bool
+
+
+class UserFollowItem(BaseModel):
+    user: UserPublicResponse
+    is_mutual: bool
+
+
+class UserFollowListResponse(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    list: list[UserFollowItem]
+
+
+class FavoriteRequest(BaseModel):
+    target_type: str
+    target_id: int
+
+
+class FavoriteResponse(BaseModel):
+    target_type: str
+    target_id: int
+    is_favorite: bool
+
+
+class FavoriteItem(BaseModel):
+    target_type: str
+    target_id: int
+    title: str | None = None
+    description: str | None = None
+    price: float | None = None
+    target_status: str | None = None
+    is_effective: bool
+    is_full: bool = False
+    create_time: int = Field(description="13位毫秒级时间戳")
+    publisher: dict | None = Field(default=None, description="发布者简影：{user_name, avatar}")
+
+
+class FavoriteListResponse(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    list: list[FavoriteItem]
+
+
+class HistoryItem(BaseModel):
+    target_type: str
+    target_id: int
+    title: str | None = None
+    description: str | None = None
+    price: float | None = None
+    target_status: str | None = None
+    is_effective: bool
+    is_full: bool = False
+    view_time: int = Field(description="13位毫秒级时间戳")
+    publisher: dict | None = Field(default=None, description="发布者简影：{user_name, avatar}")
+
+
+class HistoryListResponse(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    list: list[HistoryItem]
 
 
 # 别名：用于 API 响应中的用户信息

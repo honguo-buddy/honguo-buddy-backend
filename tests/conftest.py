@@ -46,7 +46,11 @@ class FakeRedis:
     async def setex(self, key: str, ex, value):
         self._data[key] = str(value)
         return True
-
+    
+    async def ttl(self, name: str) -> int:
+        #默认返回 -2 (代表 key 不存在/已过期)，让测试顺畅通过冷却期判定
+        return -2
+    
     async def delete(self, *keys):
         for key in keys:
             self._data.pop(key, None)
@@ -87,6 +91,32 @@ class FakeRedis:
             ordered = ordered[:num]
         return ordered
 
+    async def zremrangebyrank(self, key: str, start: int, end: int):
+        zset = self._zsets.get(key, {})
+        if not zset:
+            return 0
+        ordered = sorted(zset.items(), key=lambda item: (item[1], item[0]))
+        if end < 0:
+            end = len(ordered) + end
+        to_remove = [member for idx, (member, _) in enumerate(ordered) if idx >= start and idx <= end]
+        for member in to_remove:
+            zset.pop(member, None)
+        return len(to_remove)
+
+    async def zcard(self, key: str):
+        return len(self._zsets.get(key, {}))
+
+    async def zrevrange(self, key: str, start: int, end: int, withscores: bool = False):
+        zset = self._zsets.get(key, {})
+        ordered = sorted(zset.items(), key=lambda item: (-item[1], item[0]))
+        sliced = ordered[start:end + 1 if end is not None else None]
+        if withscores:
+            return [(member, score) for member, score in sliced]
+        return [member for member, _ in sliced]
+
+    async def expire(self, key: str, seconds: int):
+        return True
+
     async def zrem(self, key: str, *members):
         zset = self._zsets.get(key, {})
         removed = 0
@@ -121,7 +151,13 @@ def patch_test_settings(monkeypatch, fake_redis):
     monkeypatch.setattr("app.db.base.redis", fake_redis, raising=False)
     monkeypatch.setattr("app.main.redis", fake_redis, raising=False)
     monkeypatch.setattr("app.api.auth.redis", fake_redis, raising=False)
+    monkeypatch.setattr("app.api.post.redis", fake_redis, raising=False)
+    monkeypatch.setattr("app.api.user.redis", fake_redis, raising=False)
     monkeypatch.setattr("app.services.auth_service.redis", fake_redis, raising=False)
+    try:
+        monkeypatch.setattr("app.services.sms_service.redis", fake_redis, raising=False)
+    except ImportError:
+        pass
     monkeypatch.setattr("app.core.security.redis", fake_redis, raising=False)
     monkeypatch.setattr("app.core.log_middleware.redis", fake_redis, raising=False)
 

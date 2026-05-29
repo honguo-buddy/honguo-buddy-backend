@@ -64,6 +64,9 @@ class User(Base):
     chat_sessions_as_user_one = relationship("ChatSession", foreign_keys="ChatSession.user_one_id", lazy="selectin", overlaps="user_one")
     chat_sessions_as_user_two = relationship("ChatSession", foreign_keys="ChatSession.user_two_id", lazy="selectin", overlaps="user_two")
     chat_messages_sent = relationship("ChatMessage", foreign_keys="ChatMessage.sender_id", lazy="selectin", overlaps="sender")
+    followings = relationship("UserFollow", foreign_keys="UserFollow.follower_id", back_populates="follower", lazy="selectin")
+    followers = relationship("UserFollow", foreign_keys="UserFollow.following_id", back_populates="following", lazy="selectin")
+    favorites = relationship("UserFavorite", back_populates="user", lazy="selectin")
 
 
 def parse_user_type(value: str) -> UserType:

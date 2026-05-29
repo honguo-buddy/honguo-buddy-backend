@@ -510,6 +510,376 @@ DATA_GET_FAILED: 301
 - code: 103 - 用户不存在。
 - code: 301 - 查询公开资料失败。
 
+#### 4.2.5 注销本人账号 (DELETE: /users/me)
+
+用途: 注销当前登录用户账号（逻辑删除）。注销后无法登录，数据保留在数据库。
+
+请求头: Authorization: Bearer <token>。
+
+请求示例:
+
+```json
+{}
+```
+
+成功响应:
+
+```json
+{
+    "code": 0,
+    "message": {
+        "message": "账号已注销"
+    }
+}
+```
+
+常见错误:
+
+- code: 105 - Token 失效或缺失。
+- code: 103 - 用户不存在。
+
+#### 4.2.6 关注/取消关注用户 (POST: /users/follow)
+
+用途: 对指定用户执行关注/取消关注双态翻转。未关注则创建关注，已关注则取消关注。禁止自己关注自己。
+
+请求头: Authorization: Bearer <token>。
+
+请求示例:
+
+```json
+{
+    "following_id": 1002
+}
+```
+
+成功响应:
+
+```json
+{
+    "code": 0,
+    "message": {
+        "following_id": 1002,
+        "is_following": true
+    }
+}
+```
+
+常见错误:
+
+- code: 105 - Token 失效或缺失。
+- code: 99 - 尝试自己关注自己，或关注的目标用户不存在。
+
+#### 4.2.7 获取我的关注列表 (GET: /users/me/followings)
+
+用途: 分页拉取当前登录用户的关注人列表，返回关注对象的公开资料及互关标志。
+
+请求头: Authorization: Bearer <token>。
+
+请求示例:
+
+```json
+{
+    "page": 1,
+    "page_size": 20
+}
+```
+
+成功响应:
+
+```json
+{
+    "code": 0,
+    "message": {
+        "total": 1,
+        "page": 1,
+        "page_size": 20,
+        "list": [
+            {
+                "user": {
+                    "user_id": 1002,
+                    "user_uuid": "6f7d2f9c-4f5f-4de5-a2b2-6f8d6e4ce100",
+                    "user_name": "关注用户",
+                    "avatar": "/static/avatar/avatar_1002.png",
+                    "sex": "男",
+                    "credit_score": 80,
+                    "is_verified": false,
+                    "user_type": "user"
+                },
+                "is_mutual": true
+            }
+        ]
+    }
+}
+```
+
+常见错误:
+
+- code: 105 - Token 失效或缺失。
+
+#### 4.2.8 获取我的粉丝列表 (GET: /users/me/followers)
+
+用途: 分页拉取当前登录用户的粉丝列表，返回粉丝的公开资料及互关标志。
+
+请求头: Authorization: Bearer <token>。
+
+请求示例:
+
+```json
+{
+    "page": 1,
+    "page_size": 20
+}
+```
+
+成功响应:
+
+```json
+{
+    "code": 0,
+    "message": {
+        "total": 1,
+        "page": 1,
+        "page_size": 20,
+        "list": [
+            {
+                "user": {
+                    "user_id": 1003,
+                    "user_uuid": "...",
+                    "user_name": "粉丝用户",
+                    "avatar": "/static/avatar/avatar_1003.png",
+                    "sex": "女",
+                    "credit_score": 90,
+                    "is_verified": true,
+                    "user_type": "user"
+                },
+                "is_mutual": false
+            }
+        ]
+    }
+}
+```
+
+常见错误:
+
+- code: 105 - Token 失效或缺失。
+
+#### 4.2.9 收藏/取消收藏 (POST: /users/favorite)
+
+用途: 对指定帖子或商品执行收藏/取消收藏双态翻转。`target_type` 支持 `POST` 与 `GOODS`。
+
+请求头: Authorization: Bearer <token>。
+
+请求示例:
+
+```json
+{
+    "target_type": "POST",
+    "target_id": 1001
+}
+```
+
+成功响应:
+
+```json
+{
+    "code": 0,
+    "message": {
+        "target_type": "POST",
+        "target_id": 1001,
+        "is_favorite": true
+    }
+}
+```
+
+常见错误:
+
+- code: 105 - Token 失效或缺失。
+- code: 99 - `target_type` 非法或目标实体不存在。
+
+#### 4.2.10 获取我的收藏列表 (GET: /users/me/favorites)
+
+用途: 分页拉取当前登录用户的收藏列表。采用批量灌水机制补齐帖子/商品详情，联动返回原资产的生存状态（`is_effective`）与满员状态（`is_full`），并附带发布者简影。
+
+请求头: Authorization: Bearer <token>。
+
+请求示例:
+
+```json
+{
+    "page": 1,
+    "page_size": 20
+}
+```
+
+成功响应:
+
+```json
+{
+    "code": 0,
+    "message": {
+        "total": 1,
+        "page": 1,
+        "page_size": 20,
+        "list": [
+            {
+                "target_type": "POST",
+                "target_id": 1001,
+                "title": "帮忙代拿快递",
+                "description": "从东门快递站拿到宿舍楼",
+                "price": 5.0,
+                "target_status": "OPEN",
+                "is_effective": true,
+                "is_full": false,
+                "create_time": 1680000000123,
+                "publisher": {
+                    "user_name": "发帖用户",
+                    "avatar": "/static/avatar/avatar_1002.png"
+                }
+            }
+        ]
+    }
+}
+```
+
+说明：
+- `is_effective` 为 `false` 表示原帖子已删除或状态为 CLOSED，前端可据此置灰。
+- `is_full` 为 `true` 表示当前接单人数已达上限。
+- `create_time` 为 13 位毫秒级时间戳。
+- `publisher` 为发布者脱敏简影，仅包含 `user_name` 与 `avatar`。
+
+常见错误:
+
+- code: 105 - Token 失效或缺失。
+
+#### 4.2.11 获取我的历史浏览足迹 (GET: /users/me/histories)
+
+用途: 分页拉取当前登录用户的历史浏览足迹（基于 Redis ZSET 纯内存存储）。返回最近浏览的帖子/商品列表，采用批量灌水机制补齐详情、满员状态与发布者简影。最多保留最近 100 条记录，自动滚动淘汰。
+
+请求头: Authorization: Bearer <token>。
+
+请求示例:
+
+```json
+{
+    "page": 1,
+    "page_size": 20
+}
+```
+
+成功响应:
+
+```json
+{
+    "code": 0,
+    "message": {
+        "total": 1,
+        "page": 1,
+        "page_size": 20,
+        "list": [
+            {
+                "target_type": "POST",
+                "target_id": 1001,
+                "title": "帮忙代拿快递",
+                "description": "从东门快递站拿到宿舍楼",
+                "price": 5.0,
+                "target_status": "OPEN",
+                "is_effective": true,
+                "is_full": false,
+                "view_time": 1680000000456,
+                "publisher": {
+                    "user_name": "发帖用户",
+                    "avatar": "/static/avatar/avatar_1002.png"
+                }
+            }
+        ]
+    }
+}
+```
+
+说明：
+- 历史足迹通过 Redis ZSET 以 `user:history:{user_id}` 为 Key 存储，不写入 MySQL。
+- 用户浏览详情页时自动异步刷入足迹，Redis 自动去重并置顶最新浏览。
+- 系统自动裁剪保留最新 100 条，有效期 30 天滚动过期。
+- `view_time` 为 13 位毫秒级时间戳。
+- `is_effective` 与 `is_full` 含义同收藏列表。
+
+常见错误:
+
+- code: 105 - Token 失效或缺失。
+
+#### 4.2.12 [管理员] 修改用户信息 (PUT: /users/{user_id})
+
+用途: 管理员修改指定用户信息（用户名、头像、性别）。请求体字段均为可选，可只提交部分字段进行局部更新。
+
+请求头: Authorization: Bearer <token>（需管理员权限）。
+
+请求示例:
+
+```json
+{
+    "user_name": "新昵称",
+    "avatar_id": 123,
+    "sex": "男"
+}
+```
+
+成功响应:
+
+```json
+{
+    "code": 0,
+    "message": {
+        "user_id": 1002,
+        "user_uuid": "...",
+        "user_name": "新昵称",
+        "avatar": "/static/avatar/avatar_1002.png",
+        "sex": "男",
+        "email": "...",
+        "phonenumber": "...",
+        "user_type": "user",
+        "credit_score": 100,
+        "is_verified": false,
+        "is_active": true,
+        "is_admin": false,
+        "last_login_ip": "127.0.0.1",
+        "last_login_time": 1700000000,
+        "wechat_unionid": null
+    }
+}
+```
+
+常见错误:
+
+- code: 105 - Token 失效或缺失。
+- code: 102 - 权限不足，仅管理员可操作。
+
+#### 4.2.13 [管理员] 禁用/删除用户 (DELETE: /users/{user_id})
+
+用途: 管理员禁用或删除指定用户（逻辑删除）。管理员无法删除自己的账号。
+
+请求头: Authorization: Bearer <token>（需管理员权限）。
+
+请求示例:
+
+```json
+{}
+```
+
+成功响应:
+
+```json
+{
+    "code": 0,
+    "message": {
+        "message": "用户 1002 已被禁用/删除"
+    }
+}
+```
+
+常见错误:
+
+- code: 105 - Token 失效或缺失。
+- code: 102 - 权限不足或尝试删除自己的账号。
 ### 4.3 附件上传模块
 
 #### 4.3.1 上传附件 (POST: /attachments/upload)
@@ -1050,6 +1420,15 @@ DATA_GET_FAILED: 301
     }
 }
 ```
+
+说明：
+- 已登录用户访问帖子详情时会自动将浏览记录异步写入 Redis 历史足迹（`user:history:{user_id}`），供 4.2.11 历史浏览足迹接口使用。未登录用户不会记录。
+- 返回的 `comments` 仅包含最近若干条热评，按创建时间倒序排列，由 `comments_limit` 控制条数（默认 5 条）。
+
+常见错误:
+
+- code: 99 - 帖子 ID 或路径参数不合法。
+- code: 103 - 帖子不存在或已被软删除。
 
 #### 4.5.6 局部更新 (PATCH: /posts/{post_id})
 
