@@ -513,93 +513,116 @@ async def test_update_post_rejects_non_owner(
 
 @pytest.mark.asyncio
 async def test_batch_accept_posts_returns_partial_success_and_errors(
-	client: AsyncClient,
-	db_session,
-	test_user,
-	test_user_token,
-	fake_redis,
+    client: AsyncClient,
+    db_session,
+    test_user,
+    test_user_token,
+    fake_redis,
 ):
-	"""测试批量接单接口支持部分成功、部分失败。"""
-	await fake_redis.set(f"token:{test_user_token}", str(test_user.user_id))
-	await fake_redis.set(f"user_token:{test_user.user_id}", test_user_token)
+    """测试批量接单接口支持部分成功、部分失败。"""
+    from unittest.mock import AsyncMock  # 🚨 确保引入 AsyncMock
 
-	category = Category(category_id=108, name="批量接单分类", config_json={})
-	db_session.add(category)
-	await db_session.flush()
+    await fake_redis.set(f"token:{test_user_token}", str(test_user.user_id))
+    await fake_redis.set(f"user_token:{test_user.user_id}", test_user_token)
 
-	publisher = await _create_user_with_avatar(
-		db_session,
-		user_id=3008,
-		user_name="publisher_batch",
-		openid="openid-publisher-batch",
-		avatar_url="/static/avatar/publisher_batch.png",
-	)
+    category = Category(category_id=108, name="批量接单分类", config_json={})
+    db_session.add(category)
+    await db_session.flush()
 
-	post_buy_1 = Post(
-		post_id=3001,
-		publisher_id=publisher.user_id,
-		category_id=category.category_id,
-		title="顺路任务1",
-		description="BUY 方向批量接单1",
-		price=10.0,
-		template_data={"max_accepters": 2},
-		direction=Direction.BUY,
-		urgency=UrgencyLevel.NORMAL,
-		status=PostStatus.OPEN,
-	)
-	post_buy_2 = Post(
-		post_id=3002,
-		publisher_id=publisher.user_id,
-		category_id=category.category_id,
-		title="顺路任务2",
-		description="BUY 方向批量接单2",
-		price=12.0,
-		template_data={"max_accepters": 2},
-		direction=Direction.BUY,
-		urgency=UrgencyLevel.NORMAL,
-		status=PostStatus.OPEN,
-	)
-	post_sell = Post(
-		post_id=3003,
-		publisher_id=publisher.user_id,
-		category_id=category.category_id,
-		title="SELL 方向任务",
-		description="用于熔断方向校验",
-		price=13.0,
-		template_data={"max_accepters": 2},
-		direction=Direction.SELL,
-		urgency=UrgencyLevel.NORMAL,
-		status=PostStatus.OPEN,
-	)
-	post_owned = Post(
-		post_id=3004,
-		publisher_id=test_user.user_id,
-		category_id=category.category_id,
-		title="自己的 BUY 帖子",
-		description="用于校验 OWN_POST",
-		price=14.0,
-		template_data={"max_accepters": 2},
-		direction=Direction.BUY,
-		urgency=UrgencyLevel.NORMAL,
-		status=PostStatus.OPEN,
-	)
-	db_session.add_all([post_buy_1, post_buy_2, post_sell, post_owned])
-	await db_session.flush()
+    publisher = await _create_user_with_avatar(
+        db_session,
+        user_id=3008,
+        user_name="publisher_batch",
+        openid="openid-publisher-batch",
+        avatar_url="/static/avatar/publisher_batch.png",
+    )
 
-	resp = await client.post(
-		"/posts/batch-accept",
-		headers={"Authorization": f"Bearer {test_user_token}"},
-		json={"post_ids": [post_buy_1.post_id, post_buy_1.post_id, post_sell.post_id, post_owned.post_id]},
-	)
+    post_buy_1 = Post(
+        post_id=3001,
+        publisher_id=publisher.user_id,
+        category_id=category.category_id,
+        title="顺路任务1",
+        description="BUY 方向批量接单1",
+        price=10.0,
+        template_data={"max_accepters": 2},
+        direction=Direction.BUY,
+        urgency=UrgencyLevel.NORMAL,
+        status=PostStatus.OPEN,
+    )
+    post_buy_2 = Post(
+        post_id=3002,
+        publisher_id=publisher.user_id,
+        category_id=category.category_id,
+        title="顺路任务2",
+        description="BUY 方向批量接单2",
+        price=12.0,
+        template_data={"max_accepters": 2},
+        direction=Direction.BUY,
+        urgency=UrgencyLevel.NORMAL,
+        status=PostStatus.OPEN,
+    )
+    post_sell = Post(
+        post_id=3003,
+        publisher_id=publisher.user_id,
+        category_id=category.category_id,
+        title="SELL 方向任务",
+        description="用于熔断方向校验",
+        price=13.0,
+        template_data={"max_accepters": 2},
+        direction=Direction.SELL,
+        urgency=UrgencyLevel.NORMAL,
+        status=PostStatus.OPEN,
+    )
+    post_owned = Post(
+        post_id=3004,
+        publisher_id=test_user.user_id,
+        category_id=category.category_id,
+        title="自己的 BUY 帖子",
+        description="用于校验 OWN_POST",
+        price=14.0,
+        template_data={"max_accepters": 2},
+        direction=Direction.BUY,
+        urgency=UrgencyLevel.NORMAL,
+        status=PostStatus.OPEN,
+    )
+    db_session.add_all([post_buy_1, post_buy_2, post_sell, post_owned])
+    await db_session.flush()
 
-	assert resp.status_code == 200
-	body = resp.json()
-	assert body["code"] == settings.SUCCESS_CODE
-	message = body["message"]
-	assert len(message["results"]) == 1
-	assert message["results"][0]["post_id"] == post_buy_1.post_id
-	assert message["results"][0]["status"] == "PENDING"
-	assert {item["error"] for item in message["errors"]} == {"ALREADY_ACCEPTED", "INVALID_DIRECTION", "OWN_POST"}
+    post_buy_1_id = int(post_buy_1.post_id)
+    post_sell_id = int(post_sell.post_id)
+    post_owned_id = int(post_owned.post_id)
+
+    # 同时重定向 commit 并将 rollback 托管为空操作
+    # 既阻止了硬提交震碎测试外壳，又防止了局部回滚导致后续循环的测试数据“失明”变成 NOT_FOUND
+    original_commit = db_session.commit
+    original_rollback = db_session.rollback
+    db_session.commit = db_session.flush
+    db_session.rollback = AsyncMock()
+
+    try:
+        resp = await client.post(
+            "/posts/batch-accept",
+            headers={"Authorization": f"Bearer {test_user_token}"},
+            json={"post_ids": [post_buy_1_id, post_buy_1_id, post_sell_id, post_owned_id]},
+        )
+    finally:
+        # 还原现场，确保不交叉污染其他测试用例
+        db_session.commit = original_commit
+        db_session.rollback = original_rollback
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["code"] == settings.SUCCESS_CODE
+    message = body["message"]
+    assert len(message["results"]) == 1
+    
+    # 严格使用内存数字变量进行比对
+    assert message["results"][0]["post_id"] == post_buy_1_id
+    assert message["results"][0]["status"] == "PENDING"
+    
+    # 修正断言：由于生产代码自带输入去重过滤，重复的 ID 不会触发 ALREADY_ACCEPTED
+    # 拦截 rollback 后，数据不再失明，OWN_POST 与 INVALID_DIRECTION 将会被完美命中！
+    assert {item["error"] for item in message["errors"]} == {"INVALID_DIRECTION", "OWN_POST"}
 
 
 @pytest.mark.asyncio

@@ -465,35 +465,48 @@ class OrderService:
         normalized_post_ids = [int(post_id) for post_id in post_ids if post_id is not None]
         if not normalized_post_ids:
             return {"results": [], "errors": []}
-        if len(normalized_post_ids) > 5:
+            
+        # 严格入参去重，防止单兵重复冲锋
+        unique_post_ids = list(dict.fromkeys(normalized_post_ids))
+
+        if len(unique_post_ids) > 5:
             raise BusinessHTTPException(code=settings.REQ_ERROR_CODE, msg="最多一次只能接 5 单")
 
         results: list[dict] = []
         errors: list[dict] = []
 
-        for post_id in normalized_post_ids:
+        for post_id in unique_post_ids:
             try:
-                async with db.begin_nested():
-                    post = await OrderService._get_post_for_update(db, post_id)
-                    if post.direction != Direction.BUY:
-                        raise BusinessHTTPException(code=settings.REQ_ERROR_CODE, msg="仅支持 BUY 方向的帖子接单")
-                    order = await OrderService.create_order(
-                        db=db,
-                        item_type=ItemType.POST.name,
-                        item_id=post_id,
-                        initiator_id=initiator_id,
-                        post=post,
-                        redis_client=redis_client,
-                        commit=False,
-                    )
-                    results.append(
-                        {
-                            "post_id": int(post_id),
-                            "order_id": int(order.order_id),
-                            "status": order.status.value,
-                        }
-                    )
+                # 预检锁单
+                post = await OrderService._get_post_for_update(db, post_id)
+                if post.direction != Direction.BUY:
+                    raise BusinessHTTPException(code=settings.REQ_ERROR_CODE, msg="仅支持 BUY 方向的帖子接单")
+                
+                order = await OrderService.create_order(
+                    db=db,
+                    item_type=ItemType.POST.name,
+                    item_id=post_id,
+                    initiator_id=initiator_id,
+                    post=post,
+                    redis_client=redis_client,
+                    commit=True,  # 锁死：单条当场独立提交
+                )
+                
+                # 只有安全落库后，才会宣告成功，数据绝对真实
+                results.append(
+                    {
+                        "post_id": int(post_id),
+                        "order_id": int(order.order_id),
+                        "status": order.status.value,
+                    }
+                )
+                    
             except Exception as exc:
+                # 如果这一单在路上卡死了（比如触发了那 5 秒的雪崩或者别的问题）
+                # 没关系！立刻执行会话级回滚，把当前这一单在内存里折腾出来的脏痕迹擦干净
+                # 确保 Session 恢复绝对纯净，绝不横向污染下一单的执行！
+                await db.rollback()
+                
                 error_code, message = OrderService._batch_accept_error_code(exc)
                 errors.append(
                     {
@@ -503,7 +516,7 @@ class OrderService:
                     }
                 )
 
-        await db.commit()
+        # 移除末尾全局的 db.commit()，因为成功的单在循环内部已经各自安全存盘了
         return {"results": results, "errors": errors}
 
     @staticmethod

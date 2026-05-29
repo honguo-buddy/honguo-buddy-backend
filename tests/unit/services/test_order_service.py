@@ -21,6 +21,7 @@ def build_db(*, execute_side_effect=None):
     db.execute = AsyncMock(side_effect=execute_side_effect or [])
     db.add = MagicMock()
     db.flush = AsyncMock()
+    db.rollback = AsyncMock()  # 修复：batch_accept 异常分支需要 rollback
     db.refresh = AsyncMock()
     db.commit = AsyncMock()
     db.begin_nested = MagicMock(return_value=AsyncContextManager())
