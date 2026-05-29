@@ -33,6 +33,10 @@ from app.schemas.response import (
     UserRoleResponse,
     UpdateUserRoleResponse,
 )
+from app.schemas.history import (
+    HistoryDeletePayload,
+    HistoryDeleteResponse,
+)
 from app.schemas.user import (
     userBase,
     userCreate,

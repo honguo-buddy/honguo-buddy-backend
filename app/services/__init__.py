@@ -10,6 +10,8 @@ from app.services.post_service import PostService
 from app.services.comment_service import CommentService
 from app.services.chat_service import ChatService
 from app.services.social_service import SocialService
+from app.services.metrics_service import MetricsService
+from app.services.reputation_service import ReputationService
 try:
     from app.services.sms_service import SMSService
 except ImportError:
@@ -27,4 +29,6 @@ __all__ = [
     "CommentService",
     "ChatService",
     "SocialService",
+    "MetricsService",
+    "ReputationService",
 ]

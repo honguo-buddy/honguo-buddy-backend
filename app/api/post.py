@@ -38,7 +38,7 @@ from app.schemas import (
     ResponseModel,
     UserRead,
 )
-from app.services import PostService, OrderService, SocialService
+from app.services import MetricsService, PostService, OrderService, SocialService
 from app.models import Comment, Post, TargetType
 
 logger = logging.getLogger(__name__)
