@@ -27,7 +27,6 @@ def build_db(*, execute_side_effect=None):
     db.begin_nested = MagicMock(return_value=AsyncContextManager())
     return db
 
-
 def build_post(**overrides):
     payload = {
         "post_id": 2001,

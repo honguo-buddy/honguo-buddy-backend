@@ -428,3 +428,325 @@ class TestUserEndpoints:
         assert resp.status_code == 200
         message = assert_api_error(resp.json(), code=settings.INSUFFICIENT_AUTHORITY_CODE)
         assert "无法删除自己的账号" in message["msg"]
+
+
+class TestHistoryDelete:
+    """历史足迹多维清理集成测试。"""
+
+    async def test_delete_history_single(
+        self,
+        client,
+        db_session,
+        test_user: "User",
+        test_user_token: str,
+        fake_redis,
+    ):
+        """目的：SINGLE 模式应能删除单条历史足迹。"""
+        from app.models import Category, Post
+        import time as _time
+
+        category = Category(category_id=9001, name="历史测试分类", config_json={})
+        db_session.add(category)
+        await db_session.flush()
+
+        post = Post(
+            post_id=9001,
+            publisher_id=test_user.user_id,
+            category_id=category.category_id,
+            title="测试清理帖子",
+        )
+        db_session.add(post)
+        await db_session.flush()
+
+        await fake_redis.set(f"token:{test_user_token}", str(test_user.user_id))
+        await fake_redis.set(f"user_token:{test_user.user_id}", test_user_token)
+
+        timestamp = int(_time.time() * 1000)
+        await fake_redis.zadd(f"user:history:{test_user.user_id}", {f"POST:{post.post_id}": timestamp})
+
+        resp = await client.post(
+            "/users/me/histories/delete",
+            headers={"Authorization": f"Bearer {test_user_token}"},
+            json={
+                "action_type": "SINGLE",
+                "target_type": "POST",
+                "target_id": post.post_id,
+            },
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["code"] == 0
+        assert body["message"]["action_type"] == "SINGLE"
+        assert body["message"]["deleted_count"] == 1
+
+    async def test_delete_history_range(
+        self,
+        client,
+        test_user,
+        test_user_token,
+        fake_redis,
+    ):
+        """目的：RANGE 模式应能按时间段批量删除。"""
+        await fake_redis.set(f"token:{test_user_token}", str(test_user.user_id))
+        await fake_redis.set(f"user_token:{test_user.user_id}", test_user_token)
+
+        # Add 3 entries with different timestamps
+        base_ts = 1700000000000
+        key = f"user:history:{test_user.user_id}"
+        await fake_redis.zadd(key, {"POST:1": base_ts})
+        await fake_redis.zadd(key, {"POST:2": base_ts + 1000})
+        await fake_redis.zadd(key, {"POST:3": base_ts + 2000})
+
+        resp = await client.post(
+            "/users/me/histories/delete",
+            headers={"Authorization": f"Bearer {test_user_token}"},
+            json={
+                "action_type": "RANGE",
+                "start_time": base_ts,
+                "end_time": base_ts + 1000,
+            },
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["code"] == 0
+        # Should have deleted POST:1 and POST:2 (2 entries in range)
+        assert body["message"]["deleted_count"] >= 2
+
+    async def test_delete_history_clear_all(
+        self,
+        client,
+        test_user,
+        test_user_token,
+        fake_redis,
+    ):
+        """目的：CLEAR_ALL 模式应清空所有历史。"""
+        await fake_redis.set(f"token:{test_user_token}", str(test_user.user_id))
+        await fake_redis.set(f"user_token:{test_user.user_id}", test_user_token)
+
+        key = f"user:history:{test_user.user_id}"
+        await fake_redis.zadd(key, {"POST:1": 1700000000000})
+        await fake_redis.zadd(key, {"POST:2": 1700000001000})
+
+        resp = await client.post(
+            "/users/me/histories/delete",
+            headers={"Authorization": f"Bearer {test_user_token}"},
+            json={"action_type": "CLEAR_ALL"},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["code"] == 0
+        assert body["message"]["action_type"] == "CLEAR_ALL"
+        assert body["message"]["deleted_count"] == 2
+
+        # Verify key is deleted
+        remaining = await fake_redis.zcard(key)
+        assert remaining == 0
+
+    async def test_delete_history_no_token(
+        self,
+        client,
+    ):
+        """目的：无 Token 应返回 105。"""
+        resp = await client.post(
+            "/users/me/histories/delete",
+            json={
+                "action_type": "SINGLE",
+                "target_type": "POST",
+                "target_id": 1,
+            },
+        )
+        assert resp.status_code == 200
+        assert resp.json()["code"] == 105
+
+
+class TestUserReputation:
+    """用户声誉画像与评价系统集成测试。"""
+
+    async def test_get_user_profile_reputation(
+        self,
+        client,
+        db_session,
+        test_user,
+        fake_redis,
+    ):
+        """目的：GET /users/{user_id}/profile 应返回声誉画像。"""
+        # Pre-populate Redis cache with mock data
+        cache_key = f"user:reputation:{test_user.user_id}"
+        import json
+        await fake_redis.set(cache_key, json.dumps({
+            "user_id": test_user.user_id,
+            "carrier_score": 4.5,
+            "carrier_order_count": 10,
+            "client_score": 4.8,
+            "client_order_count": 5,
+            "tags_json": "{}",
+        }))
+
+        resp = await client.get(f"/users/{test_user.user_id}/profile")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["code"] == 0
+        assert body["message"]["user_id"] == test_user.user_id
+        assert body["message"]["carrier_score"] == 4.5
+        assert body["message"]["client_score"] == 4.8
+
+    async def test_get_user_reviews(
+        self,
+        client,
+        db_session,
+        test_user,
+        test_admin_user,
+    ):
+        """目的：GET /users/{user_id}/reviews 应返回脱敏评价列表。"""
+        from app.models import Order, OrderReview, ReviewType
+
+        # Create a test order and review
+        order = Order(
+            order_id=7001,
+            item_type="POST",
+            item_id=1,
+            buyer_id=test_user.user_id,
+            seller_id=test_admin_user.user_id,
+            initiator_id=test_user.user_id,
+        )
+        db_session.add(order)
+        await db_session.flush()
+
+        review = OrderReview(
+            review_id=8001,
+            order_id=order.order_id,
+            reviewer_id=test_admin_user.user_id,
+            reviewee_id=test_user.user_id,
+            review_type=ReviewType.INITIAL,
+            rating=5,
+            content="非常好",
+            is_visible=True,
+        )
+        db_session.add(review)
+        await db_session.flush()
+
+        resp = await client.get(
+            f"/users/{test_user.user_id}/reviews",
+            params={"role": "CARRIER", "offset": 0, "limit": 20},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["code"] == 0
+        assert body["message"]["total"] >= 1
+        assert body["message"]["role"] == "CARRIER"
+        item = body["message"]["list"][0]
+        assert item["rating"] == 5
+        # 验证脱敏
+        assert item["reviewer"]["avatar"] is None
+        if item["reviewer"]["user_name"] != "匿名用户":
+            assert "**" in item["reviewer"]["user_name"]
+
+    async def test_get_user_reviews_client_role(
+        self,
+        client,
+        db_session,
+        test_user,
+        test_admin_user,
+    ):
+        """目的：CLIENT 角色应返回用户作为发单人时接受到的脱敏评价。"""
+        from app.models import Order, OrderReview, ReviewType
+
+        order = Order(
+            order_id=7002,
+            item_type="POST",
+            item_id=2,
+            buyer_id=test_admin_user.user_id,
+            seller_id=test_user.user_id,
+            initiator_id=test_admin_user.user_id,
+        )
+        db_session.add(order)
+        await db_session.flush()
+
+        review = OrderReview(
+            review_id=8002,
+            order_id=order.order_id,
+            reviewer_id=test_admin_user.user_id,
+            reviewee_id=test_user.user_id,
+            review_type=ReviewType.INITIAL,
+            rating=4,
+            content="不错",
+            is_visible=True,
+        )
+        db_session.add(review)
+        await db_session.flush()
+
+        resp = await client.get(
+            f"/users/{test_user.user_id}/reviews",
+            params={"role": "CLIENT"},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["code"] == 0
+        assert body["message"]["role"] == "CLIENT"
+
+    async def test_get_user_reviews_not_visible_filtered(
+        self,
+        client,
+        db_session,
+        test_user,
+        test_admin_user,
+    ):
+        """目的：未释放（is_visible=False）的评价不应展示。"""
+        from app.models import Order, OrderReview, ReviewType
+
+        order = Order(
+            order_id=7003,
+            item_type="POST",
+            item_id=3,
+            buyer_id=test_user.user_id,
+            seller_id=test_admin_user.user_id,
+            initiator_id=test_user.user_id,
+        )
+        db_session.add(order)
+        await db_session.flush()
+
+        visible_review = OrderReview(
+            review_id=8003,
+            order_id=order.order_id,
+            reviewer_id=test_admin_user.user_id,
+            reviewee_id=test_user.user_id,
+            review_type=ReviewType.INITIAL,
+            rating=5,
+            content="可见评价",
+            is_visible=True,
+        )
+        hidden_review = OrderReview(
+            review_id=8004,
+            order_id=order.order_id,
+            reviewer_id=test_admin_user.user_id,
+            reviewee_id=test_user.user_id,
+            review_type=ReviewType.INITIAL,
+            rating=1,
+            content="双盲中不可见",
+            is_visible=False,
+        )
+        db_session.add_all([visible_review, hidden_review])
+        await db_session.flush()
+
+        resp = await client.get(
+            f"/users/{test_user.user_id}/reviews",
+            params={"role": "CARRIER"},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["code"] == 0
+        # 只有 1 条可见
+        assert body["message"]["total"] == 1
+        assert body["message"]["list"][0]["rating"] == 5
+
+    async def test_get_user_profile_user_not_exists(self, client):
+        """目的：查询不存在用户的评价应返回 103。"""
+        resp = await client.get("/users/99999/profile")
+        assert resp.status_code == 200
+        assert resp.json()["code"] == 103
+
+    async def test_get_user_reviews_user_not_exists(self, client):
+        """目的：查询不存在用户的评价应返回 103。"""
+        resp = await client.get("/users/99999/reviews", params={"role": "CARRIER"})
+        assert resp.status_code == 200
+        assert resp.json()["code"] == 103

@@ -131,6 +131,31 @@ class FakeRedis:
         zset = self._zsets.get(key, {})
         return zset.get(str(member))
 
+    async def hincrby(self, key: str, field: str, amount: int = 1):
+        bucket = self._data.setdefault(f"_hash:{key}", {})
+        current = int(str(bucket.get(field, "0")))
+        current += int(amount)
+        bucket[field] = str(current)
+        return current
+
+    async def hgetall(self, key: str):
+        """返回字典形式的哈希字段映射。"""
+        return self._data.get(f"_hash:{key}") or {}
+
+    def pipeline(self):
+        """返回一个支持批量命令收集和批量执行的 Pipe 对象。"""
+        pipe = _FakeRedisPipe(self)
+        return pipe
+
+    async def zremrangebyscore(self, key: str, min_val, max_val):
+        zset = self._zsets.get(key, {})
+        if not zset:
+            return 0
+        to_remove = [k for k, v in zset.items() if min_val <= v <= max_val]
+        for k in to_remove:
+            del zset[k]
+        return len(to_remove)
+
     async def aclose(self):
         return None
 
@@ -159,6 +184,7 @@ def patch_test_settings(monkeypatch, fake_redis):
     except ImportError:
         pass
     monkeypatch.setattr("app.core.security.redis", fake_redis, raising=False)
+    monkeypatch.setattr("app.services.social_service.redis", fake_redis, raising=False)
     monkeypatch.setattr("app.core.log_middleware.redis", fake_redis, raising=False)
 
     async def noop_save_log_to_db(log_data: dict):

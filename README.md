@@ -880,6 +880,159 @@ DATA_GET_FAILED: 301
 
 - code: 105 - Token 失效或缺失。
 - code: 102 - 权限不足或尝试删除自己的账号。
+
+#### 4.2.14 多维清理历史足迹 (POST: /users/me/histories/delete)
+
+用途: 按照指定模式清理用户的历史浏览足迹。支持三种清理模式：SINGLE（单条删除）、RANGE（按时间段删除）、CLEAR_ALL（全量清空）。禁止使用 DELETE 带 Body，故采用 POST 承载清理载荷。
+
+请求头: Authorization: Bearer <token>。
+
+请求示例（SINGLE 模式）:
+
+```json
+{
+    "action_type": "SINGLE",
+    "target_type": "POST",
+    "target_id": 1001
+}
+```
+
+请求示例（RANGE 模式）:
+
+```json
+{
+    "action_type": "RANGE",
+    "start_time": 1700000000000,
+    "end_time": 1700000100000
+}
+```
+
+请求示例（CLEAR_ALL 模式）:
+
+```json
+{
+    "action_type": "CLEAR_ALL"
+}
+```
+
+说明：
+- `action_type` 为必填，可选值 `SINGLE` / `RANGE` / `CLEAR_ALL`。
+- SINGLE 模式下 `target_type` 与 `target_id` 均为必填。
+- RANGE 模式下 `start_time` 与 `end_time` 均为必填（13位毫秒级时间戳），且 `start_time` 不大于 `end_time`。
+- CLEAR_ALL 模式下无需额外参数，一键清空当前用户全部足迹。
+
+成功响应:
+
+```json
+{
+    "code": 0,
+    "message": {
+        "action_type": "SINGLE",
+        "message": "清理意图已成功接收并在后台异步蒸发",
+        "deleted_count": 1
+    }
+}
+```
+
+常见错误:
+
+- code: 105 - Token 失效或缺失。
+- code: 99 - 请求参数校验失败（如 SINGLE 缺少 target_type，或 RANGE 起止时间不合法）。
+
+#### 4.2.15 用户主页声誉画像 (GET: /users/{user_id}/profile)
+
+用途: 获取指定用户的双角色星级评分与印象标签。优先读取 Redis 缓存，击穿时回数据库重算。
+
+请求头: 无（公开接口）。
+
+请求示例:
+
+```json
+{
+    "user_id": 1001
+}
+```
+
+成功响应:
+
+```json
+{
+    "code": 0,
+    "message": {
+        "user_id": 1001,
+        "carrier_score": 4.5,
+        "carrier_order_count": 10,
+        "client_score": 4.8,
+        "client_order_count": 5,
+        "tags_json": "{}"
+    }
+}
+```
+
+说明：
+- `carrier_score` / `carrier_order_count`：「接单人」角色维度的平均评分与订单数。
+- `client_score` / `client_order_count`：「发单人」角色维度的平均评分与订单数。
+- `tags_json`：高频印象标签（JSON 字符串），如 `{"好评": 12, "快速响应": 8}`。
+
+常见错误:
+
+- code: 103 - 用户不存在或已被删除。
+
+#### 4.2.16 用户评价详情列表 (GET: /users/{user_id}/reviews)
+
+用途: 延迟加载指定用户的评价列表，支持按角色分页（CARRIER 接单人 / CLIENT 发单人）。执行严格双向脱敏：评价发表人头像置 None，姓名打码。仅展示已通过双盲释放机制（`is_visible=True`）的评价。
+
+请求头: 无（公开接口）。
+
+请求示例:
+
+```json
+{
+    "role": "CARRIER",
+    "offset": 0,
+    "limit": 20
+}
+```
+
+成功响应:
+
+```json
+{
+    "code": 0,
+    "message": {
+        "total": 1,
+        "offset": 0,
+        "limit": 20,
+        "role": "CARRIER",
+        "list": [
+            {
+                "review_id": 8001,
+                "order_id": 7001,
+                "rating": 5,
+                "content": "非常好",
+                "is_anonymous": false,
+                "reviewer": {
+                    "user_id": 1002,
+                    "user_name": "张**",
+                    "avatar": null
+                },
+                "create_time": 1700000000000
+            }
+        ]
+    }
+}
+```
+
+说明：
+- `role`：`CARRIER` 查看用户作为接单人收到的评价，`CLIENT` 查看用户作为发单人收到的评价。
+- 评价发表人强制执行脱敏：`avatar` 始终为 `null`，`user_name` 打码（如「张学长」→「张**」）。
+- 仅展示 `is_visible=True` 的评价（双盲机制释放后）。
+- `create_time` 为 13 位毫秒级时间戳。
+
+常见错误:
+
+- code: 103 - 用户不存在。
+
 ### 4.3 附件上传模块
 
 #### 4.3.1 上传附件 (POST: /attachments/upload)
