@@ -2512,6 +2512,235 @@ LIMIT :size
 
 请求头：Authorization: Bearer <token>（必须登录）
 
+
+### 4.9 Goods 商品模块
+
+说明：商品模块为闲置交易大厅，支持发布、列表筛选、详情浏览、更新上下架状态和软删除。所有列表/详情卡片均通过 Redis 计数器中心实时注入 view_count、favorite_count、comment_count。路由前缀固定为 `/goods`。
+
+#### 4.9.1 发布商品 (POST: /goods/)
+
+用途：发布一个新的闲置商品，可选绑定附件图片。
+
+请求头：Authorization: Bearer <token>（必须登录）
+
+请求示例：
+
+```json
+{
+    "category_id": 1,
+    "name": "二手 MacBook Pro",
+    "description": "95 成新，电池循环 50 次以内",
+    "price": 6999.00,
+    "condition": "准新/99新",
+    "template_data": {"brand": "Apple", "model": "M3 Pro"},
+    "attachment_ids": [10, 11]
+}
+```
+
+字段说明：
+- `category_id`: 必填，模板分类 ID
+- `name`: 必填，商品名称
+- `description`: 可选，详细描述
+- `price`: 可选，价格（NULL 表示面议）
+- `condition`: 必填，成色等级：`"全新"` / `"准新/99新"` / `"常用/无明显瑕疵"` / `"陈旧/明显瑕疵"`
+- `template_data`: 可选，由分类驱动的扩展字段
+- `attachment_ids`: 可选，已上传的附件 ID 列表
+
+成功响应：
+
+```json
+{
+    "code": 0,
+    "message": {
+        "goods_id": 5001,
+        "category_id": 1,
+        "name": "二手 MacBook Pro",
+        "price": 6999.00,
+        "condition": "准新/99新",
+        "status": "上架中",
+        "create_time": "2026-05-30T12:00:00",
+        "attachment_urls": ["/static/attachments/img-10.jpg"],
+        "publisher": {"user_id": 1001, "user_name": "张三", "avatar": "/static/avatar/av-1.jpg"},
+        "view_count": 0,
+        "favorite_count": 0,
+        "comment_count": 0
+    }
+}
+```
+
+常见错误：
+
+- code: 99 - 请求参数校验失败（如缺少 category_id 或 name）。
+- code: 105 - Token 无效。
+
+#### 4.9.2 商品大厅列表 (GET: /goods)
+
+用途：分页查询商品大厅，支持关键词、分类、状态筛选。返回卡片均携带 Redis 实时灌水计数器。
+
+请求头：无（公开接口）
+
+请求示例：
+
+```json
+{
+    "keyword": "MacBook",
+    "category_id": 1,
+    "status": "上架中",
+    "page": 1,
+    "page_size": 20
+}
+```
+
+字段说明：
+- `keyword`: 可选，按商品名称模糊匹配
+- `category_id`: 可选，按分类筛选
+- `status`: 可选，状态筛选：`"上架中"` / `"已下架"` / `"已售出"`
+- `page`: 可选，默认 1
+- `page_size`: 可选，默认 20，最大 100
+
+成功响应：
+
+```json
+{
+    "code": 0,
+    "message": {
+        "total": 15,
+        "page": 1,
+        "page_size": 20,
+        "list": [
+            {
+                "goods_id": 5001,
+                "category_id": 1,
+                "name": "二手 MacBook Pro",
+                "price": 6999.00,
+                "condition": "准新/99新",
+                "status": "上架中",
+                "create_time": "2026-05-30T12:00:00",
+                "attachment_urls": [],
+                "publisher": {"user_id": 1001, "user_name": "张三", "avatar": null},
+                "view_count": 128,
+                "favorite_count": 3,
+                "comment_count": 0
+            }
+        ]
+    }
+}
+```
+
+常见错误：
+
+- code: 301 - 数据获取失败。
+
+#### 4.9.3 我的商品 (GET: /goods/me)
+
+用途：分页查询当前用户发布的商品列表。
+
+请求头：Authorization: Bearer <token>（必须登录）
+
+请求示例：
+
+```json
+{
+    "page": 1,
+    "page_size": 20
+}
+```
+
+成功响应：同 4.9.2 商品大厅列表响应结构。
+
+常见错误：
+
+- code: 105 - Token 无效。
+
+#### 4.9.4 商品详情 (GET: /goods/{goods_id})
+
+用途：获取单个商品完整详情，自动触发浏览计数自增（Redis），并注入实时计数器到卡片。
+
+请求头：无（公开接口）
+
+成功响应：
+
+```json
+{
+    "code": 0,
+    "message": {
+        "goods_id": 5001,
+        "category_id": 1,
+        "name": "二手 MacBook Pro",
+        "description": "95 成新，电池循环 50 次以内",
+        "price": 6999.00,
+        "condition": "准新/99新",
+        "status": "上架中",
+        "create_time": "2026-05-30T12:00:00",
+        "attachment_urls": ["/static/attachments/img-10.jpg"],
+        "publisher": {"user_id": 1001, "user_name": "张三", "avatar": "/static/avatar/av-1.jpg"},
+        "comments": [],
+        "view_count": 129,
+        "favorite_count": 3,
+        "comment_count": 0
+    }
+}
+```
+
+常见错误：
+
+- code: 103 - 商品不存在或已删除。
+
+#### 4.9.5 更新商品 (PATCH: /goods/{goods_id})
+
+用途：局部更新商品字段（名称、价格、描述、成色、状态、附件等）。可执行上架 ⇄ 下架状态流转。仅商品发布者可操作。
+
+请求头：Authorization: Bearer <token>（必须登录）
+
+请求示例：
+
+```json
+{
+    "name": "二手 MacBook Pro M3",
+    "price": 6499.00,
+    "status": "已下架"
+}
+```
+
+字段说明：全部字段可选，请求体可以只包含需要更新的字段。
+- `name`: 可选，商品名称
+- `description`: 可选，详细描述
+- `price`: 可选，价格
+- `condition`: 可选，成色等级
+- `status`: 可选，`"上架中"` / `"已下架"` / `"已售出"`
+- `attachment_ids`: 可选，替换附件列表
+- `template_data`: 可选，扩展字段
+
+成功响应：同 4.9.1 发布商品响应结构。
+
+常见错误：
+
+- code: 102 - 非发布者无权修改。
+- code: 103 - 商品不存在。
+
+#### 4.9.6 删除商品 (DELETE: /goods/{goods_id})
+
+用途：软删除一个商品（标记 is_deleted，大厅不再可见）。仅商品发布者可操作。
+
+请求头：Authorization: Bearer <token>（必须登录）
+
+成功响应：
+
+```json
+{
+    "code": 0,
+    "message": {
+        "goods_id": 5001,
+        "deleted": true
+    }
+}
+```
+
+常见错误：
+
+- code: 102 - 非发布者无权删除。
+- code: 103 - 商品不存在。
+
 ---
 
-文件位置：评论接口实现位于项目代码中：`app/api/comment.py`、`app/services/comment_service.py` 与 `app/schemas/comment.py`；聊天接口位于 `app/api/chat.py`、`app/services/chat_service.py` 与 `app/schemas/chat.py`。文档和实现保持一致。
+文件位置：评论接口位于 `app/api/comment.py`、`app/services/comment_service.py` 与 `app/schemas/comment.py`；聊天接口位于 `app/api/chat.py`、`app/services/chat_service.py` 与 `app/schemas/chat.py`；商品接口位于 `app/api/goods.py`、`app/services/goods_service.py` 与 `app/schemas/goods.py`。文档和实现保持一致。

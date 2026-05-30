@@ -34,6 +34,7 @@ def build_goods(goods_id=1, publisher_id=1001, is_deleted=False, **overrides):
         "status": GoodsStatus.ON_SALE,
         "template_data": {},
         "is_deleted": is_deleted,
+        "user": SimpleNamespace(avatar_id=None),
         "attachments": [],
     }
     payload.update(overrides)
