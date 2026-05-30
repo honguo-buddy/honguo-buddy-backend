@@ -111,6 +111,5 @@ class PostMetrics(Base):
     view_count = Column(BigInteger, default=0, nullable=False, comment="浏览次数")
     favorite_count = Column(BigInteger, default=0, nullable=False, comment="收藏次数")
     comment_count = Column(BigInteger, default=0, nullable=False, comment="评论次数")
-    upvote_count = Column(BigInteger, default=0, nullable=False, comment="点赞次数")
     create_time = Column(DateTime, default=beijing_now_for_model, nullable=False, comment="创建时间")
     update_time = Column(DateTime, default=beijing_now_for_model, onupdate=beijing_now_for_model, nullable=False, comment="更新时间")
