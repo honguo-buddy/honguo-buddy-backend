@@ -8,7 +8,7 @@ import os
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from app.core import BEIJING_TZ
 
-from app.api import auth, user, attachment, category, post, order, comment, chat
+from app.api import auth, user, attachment, category, post, order, comment, chat, goods
 from app.core import register_exception_handlers, LogMiddleware, settings, watch_delayed_queues_task
 from app.db import engine, Base, redis, AsyncSessionLocal
 from app.services import OrderReviewService, MetricsService
@@ -163,6 +163,7 @@ try:
     app.include_router(router=order.router, prefix="/orders", tags=["orders"])
     app.include_router(router=comment.router, prefix="/comments", tags=["comments"])
     app.include_router(router=chat.router, prefix="/chats", tags=["chats"])
+    app.include_router(router=goods.router, prefix="/goods", tags=["goods"])
     logger.info("All routers registered successfully")
 except Exception as e:
     logger.error(f"Failed to register routers: {e}", exc_info=True)

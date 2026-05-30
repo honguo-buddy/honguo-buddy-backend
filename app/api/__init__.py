@@ -10,6 +10,7 @@ from app.api import post
 from app.api import order
 from app.api import comment
 from app.api import chat
+from app.api import goods
 
 __all__ = [
     "auth",
@@ -20,6 +21,7 @@ __all__ = [
     "order",
     "comment",
     "chat",
+    "goods",
     "get_current_user",
     "get_current_user_optional",
 ]
