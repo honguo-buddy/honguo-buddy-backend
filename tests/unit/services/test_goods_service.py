@@ -17,6 +17,7 @@ def build_db(*, execute_side_effect=None, scalar_one_or_none=None):
     db.flush = AsyncMock()
     db.commit = AsyncMock()
     db.rollback = AsyncMock()
+    db.refresh = AsyncMock()
     db.add = Mock()
     return db
 

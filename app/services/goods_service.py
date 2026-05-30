@@ -42,6 +42,9 @@ class GoodsService:
             await db.execute(stmt)
 
         await db.commit()
+        
+        await db.refresh(goods, ["user", "attachments"])  # 刷新以获取关联的 attachments 和 user
+        
         return goods
 
     @staticmethod

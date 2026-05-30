@@ -67,7 +67,7 @@ async def test_create_post_with_attachments_and_bind(monkeypatch):
             if self.added is not None:
                 setattr(self.added, "post_id", 123)
 
-        async def refresh(self, obj):
+        async def refresh(self, obj, attribute_names=None):
             return None
 
         async def commit(self):
@@ -109,7 +109,7 @@ async def test_create_post_bind_raises_logs(monkeypatch):
             if self.added is not None:
                 setattr(self.added, "post_id", 222)
 
-        async def refresh(self, obj):
+        async def refresh(self, obj, attribute_names=None):
             return None
 
         async def commit(self):
@@ -192,7 +192,7 @@ async def test_resolve_default_category_id_success_and_failure():
 async def test_create_post_with_fallback_enums_and_attachment_binding(monkeypatch):
     db = build_db(execute_side_effect=[FakeResult(scalar_value=3)])
 
-    async def refresh_side_effect(post):
+    async def refresh_side_effect(post, attribute_names=None):
         if getattr(post, "post_id", None) is None:
             post.post_id = 777
 

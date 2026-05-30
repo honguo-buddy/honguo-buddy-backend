@@ -12,8 +12,10 @@ import asyncio
 import logging
 from typing import Any
 
-from sqlalchemy import text
+from sqlalchemy import text, select
 from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.models import Goods, Post  # 确保导入 Post 和 Goods 模型以进行 ID 验证
 
 logger = logging.getLogger(__name__)
 
@@ -127,9 +129,42 @@ class MetricsService:
             item["favorite_count"] = int(metrics.get("favorite", 0))
             item["comment_count"] = int(metrics.get("comment", 0))
 
-    # ------------------------------------------------------------------
-    # 异步写回（Write-Back）：定时将 Redis 计数器刷入 MySQL
-    # ------------------------------------------------------------------
+
+    @staticmethod
+    async def hydrate_goods_with_metrics(
+        redis_client,
+        items: list[dict[str, Any]],
+        goods_ids: list[int],
+    ) -> None:
+        """Goods-marketplace card batch hydration. Structural symmetry with hydrate_posts_with_metrics.
+
+        Supports lobby, my-published, favorites, and history wall goods cards.
+        Keys on goods_id with target_id fallback for polymorphic contexts.
+        """
+        if not items or not goods_ids:
+            return
+
+        pipe = redis_client.pipeline()
+        for gid in goods_ids:
+            pipe.hgetall(f"metrics:goods:{gid}")
+        results = await pipe.execute()
+
+        metrics_map: dict[int, dict[str, str]] = {}
+        for gid, raw in zip(goods_ids, results):
+            if raw:
+                metrics_map[gid] = raw
+
+        for item in items:
+            gid = item.get("goods_id") or item.get("target_id")
+            if gid is None:
+                continue
+            metrics = metrics_map.get(gid, {})
+            v = metrics.get("view") or metrics.get(b"view") or 0
+            f = metrics.get("favorite") or metrics.get(b"favorite") or 0
+            c = metrics.get("comment") or metrics.get(b"comment") or 0
+            item["view_count"] = int(v)
+            item["favorite_count"] = int(f)
+            item["comment_count"] = int(c)
 
     @staticmethod
     async def flush_metrics_to_db(db: AsyncSession, redis_client) -> None:
@@ -140,105 +175,147 @@ class MetricsService:
         刷盘成功后原子清除 Redis 活跃集合，确保数据不丢。
         """
         async with _METRICS_FLUSH_LOCK:
-            await _flush_post_metrics(db, redis_client)
-            await _flush_goods_metrics(db, redis_client)
+            await MetricsService._flush_post_metrics(db, redis_client)
+            await MetricsService._flush_goods_metrics(db, redis_client)
 
 
-async def _flush_post_metrics(db: AsyncSession, redis_client) -> None:
-    """批量刷盘帖子计数器（Redis Set 扫描 + DB 层北京时间补齐）。"""
-    raw_post_ids = await redis_client.smembers(_ACTIVE_POSTS_SET)
-    if not raw_post_ids:
-        return
+    @staticmethod
+    async def _flush_post_metrics(db: AsyncSession, redis_client) -> None:
+        """批量刷盘帖子计数器（自带大厂级幽灵 ID 清洗滤网，100% 防御外键冲突）。"""
+        raw_post_ids = await redis_client.smembers(_ACTIVE_POSTS_SET)
+        if not raw_post_ids:
+            return
 
-    post_ids = [int(pid) for pid in raw_post_ids]
+        post_ids = [int(pid) for pid in raw_post_ids]
 
-    pipe = redis_client.pipeline()
-    for pid in post_ids:
-        pipe.hgetall(f"metrics:post:{pid}")
-    results = await pipe.execute()
+        # 去 MySQL 查岗，清洗掉已被物理删除或根本不存在的帖子假 ID
+        stmt = select(Post.post_id).where(Post.post_id.in_(post_ids))
+        res = await db.execute(stmt)
+        existing_ids = set(res.scalars().all())
 
-    values_clauses = []
-    for pid, raw in zip(post_ids, results):
-        if not raw:
-            continue
-        view = int(raw.get("view") or raw.get(b"view") or 0)
-        favorite = int(raw.get("favorite") or raw.get(b"favorite") or 0)
-        comment = int(raw.get("comment") or raw.get(b"comment") or 0)
-        upvote = int(raw.get("upvote") or raw.get(b"upvote") or 0)
-        values_clauses.append(
-            f"({pid}, {view}, {favorite}, {comment}, {upvote}, "
-            f"CONVERT_TZ(NOW(), @@session.time_zone, '+08:00'), "
-            f"CONVERT_TZ(NOW(), @@session.time_zone, '+08:00'))"
-        )
+        valid_ids = [pid for pid in post_ids if pid in existing_ids]
+        ghost_ids = [pid for pid in post_ids if pid not in existing_ids]
 
-    if not values_clauses:
-        return
+        # 幽灵脏数据直接在 Redis 账单里无声销账，防止永久阻塞通道
+        if ghost_ids:
+            await redis_client.srem(_ACTIVE_POSTS_SET, *ghost_ids)
+            pipe_clean = redis_client.pipeline()
+            for g_id in ghost_ids:
+                pipe_clean.delete(f"metrics:post:{g_id}")
+            await pipe_clean.execute()
+            logger.warning(f"⚠️ [Metrics Clean] 成功拦截并无声蒸发了帖子测试幽灵脏数据 ID: {ghost_ids}")
 
-    sql = text("""
-        INSERT INTO post_metrics (post_id, view_count, favorite_count, comment_count, upvote_count, create_time, update_time)
-        VALUES {values}
-        ON DUPLICATE KEY UPDATE
-            view_count = VALUES(view_count),
-            favorite_count = VALUES(favorite_count),
-            comment_count = VALUES(comment_count),
-            upvote_count = VALUES(upvote_count),
-            update_time = CONVERT_TZ(NOW(), @@session.time_zone, '+08:00')
-    """.format(values=", ".join(values_clauses)))
+        if not valid_ids:
+            return
 
-    try:
-        await db.execute(sql)
-        await db.commit()
-        await redis_client.srem(_ACTIVE_POSTS_SET, *post_ids)
-        logger.info(f"Metrics Sync: post_metrics flushed for posts {post_ids}")
-    except Exception:
-        await db.rollback()
-        logger.exception("Metrics Sync: post_metrics flush failed")
+        # 只去 Redis 捞取真切活着的帖子的并发指标
+        pipe = redis_client.pipeline()
+        for pid in valid_ids:
+            pipe.hgetall(f"metrics:post:{pid}")
+        results = await pipe.execute()
+
+        values_clauses = []
+        for pid, raw in zip(valid_ids, results):
+            if not raw:
+                continue
+            view = int(raw.get("view") or raw.get(b"view") or 0)
+            favorite = int(raw.get("favorite") or raw.get(b"favorite") or 0)
+            comment = int(raw.get("comment") or raw.get(b"comment") or 0)
+            values_clauses.append(
+                f"({pid}, {view}, {favorite}, {comment}, "
+                f"CONVERT_TZ(NOW(), @@session.time_zone, '+08:00'), "
+                f"CONVERT_TZ(NOW(), @@session.time_zone, '+08:00'))"
+            )
+
+        if not values_clauses:
+            return
+
+        sql = text("""
+            INSERT INTO post_metrics (post_id, view_count, favorite_count, comment_count, create_time, update_time)
+            VALUES {values}
+            ON DUPLICATE KEY UPDATE
+                view_count = VALUES(view_count),
+                favorite_count = VALUES(favorite_count),
+                comment_count = VALUES(comment_count),
+                update_time = CONVERT_TZ(NOW(), @@session.time_zone, '+08:00')
+        """.format(values=", ".join(values_clauses)))
+
+        try:
+            await db.execute(sql)
+            await db.commit()
+            await redis_client.srem(_ACTIVE_POSTS_SET, *valid_ids)
+            logger.info(f"✨ [Metrics Sync] 成功将活跃帖子 {valid_ids} 的最新计数完美对齐到 MySQL 物理表！")
+        except Exception:
+            await db.rollback()
+            logger.exception("❌ [Metrics Sync] 刷盘 post_metrics 发生严重硬伤失败")
 
 
-async def _flush_goods_metrics(db: AsyncSession, redis_client) -> None:
-    """批量刷盘商品计数器（Redis Set 扫描 + DB 层北京时间补齐）。"""
-    raw_goods_ids = await redis_client.smembers(_ACTIVE_GOODS_SET)
-    if not raw_goods_ids:
-        return
+    @staticmethod
+    async def _flush_goods_metrics(db: AsyncSession, redis_client) -> None:
+        """批量刷盘商品计数器（自带大厂级幽灵 ID 清洗滤网，100% 防御外键冲突）。"""
+        raw_goods_ids = await redis_client.smembers(_ACTIVE_GOODS_SET)
+        if not raw_goods_ids:
+            return
 
-    goods_ids = [int(gid) for gid in raw_goods_ids]
+        goods_ids = [int(gid) for gid in raw_goods_ids]
 
-    pipe = redis_client.pipeline()
-    for gid in goods_ids:
-        pipe.hgetall(f"metrics:goods:{gid}")
-    results = await pipe.execute()
+        # 去 MySQL 查岗，清洗掉已被物理删除或根本不存在的商品假 ID
+        stmt = select(Goods.goods_id).where(Goods.goods_id.in_(goods_ids))
+        res = await db.execute(stmt)
+        existing_ids = set(res.scalars().all())
 
-    values_clauses = []
-    for gid, raw in zip(goods_ids, results):
-        if not raw:
-            continue
-        view = int(raw.get("view") or raw.get(b"view") or 0)
-        favorite = int(raw.get("favorite") or raw.get(b"favorite") or 0)
-        comment = int(raw.get("comment") or raw.get(b"comment") or 0)
-        values_clauses.append(
-            f"({gid}, {view}, {favorite}, {comment}, "
-            f"CONVERT_TZ(NOW(), @@session.time_zone, '+08:00'), "
-            f"CONVERT_TZ(NOW(), @@session.time_zone, '+08:00'))"
-        )
+        valid_ids = [gid for gid in goods_ids if gid in existing_ids]
+        ghost_ids = [gid for gid in goods_ids if gid not in existing_ids]
 
-    if not values_clauses:
-        return
+        # 商品幽灵脏数据同样在 Redis 账单里就地销账
+        if ghost_ids:
+            await redis_client.srem(_ACTIVE_GOODS_SET, *ghost_ids)
+            pipe_clean = redis_client.pipeline()
+            for g_id in ghost_ids:
+                pipe_clean.delete(f"metrics:goods:{g_id}")
+            await pipe_clean.execute()
+            logger.warning(f"⚠️ [Metrics Clean] 成功拦截并无声蒸发了商品测试幽灵脏数据 ID: {ghost_ids}")
 
-    sql = text("""
-        INSERT INTO goods_metrics (goods_id, view_count, favorite_count, comment_count, create_time, update_time)
-        VALUES {values}
-        ON DUPLICATE KEY UPDATE
-            view_count = VALUES(view_count),
-            favorite_count = VALUES(favorite_count),
-            comment_count = VALUES(comment_count),
-            update_time = CONVERT_TZ(NOW(), @@session.time_zone, '+08:00')
-    """.format(values=", ".join(values_clauses)))
+        if not valid_ids:
+            return
 
-    try:
-        await db.execute(sql)
-        await db.commit()
-        await redis_client.srem(_ACTIVE_GOODS_SET, *goods_ids)
-        logger.info(f"Metrics Sync: goods_metrics flushed for goods {goods_ids}")
-    except Exception:
-        await db.rollback()
-        logger.exception("Metrics Sync: goods_metrics flush failed")
+        # 只去 Redis 捞取真切活着的商品的并发指标
+        pipe = redis_client.pipeline()
+        for gid in valid_ids:
+            pipe.hgetall(f"metrics:goods:{gid}")
+        results = await pipe.execute()
+
+        values_clauses = []
+        for gid, raw in zip(valid_ids, results):
+            if not raw:
+                continue
+            view = int(raw.get("view") or raw.get(b"view") or 0)
+            favorite = int(raw.get("favorite") or raw.get(b"favorite") or 0)
+            comment = int(raw.get("comment") or raw.get(b"comment") or 0)
+            values_clauses.append(
+                f"({gid}, {view}, {favorite}, {comment}, "
+                f"CONVERT_TZ(NOW(), @@session.time_zone, '+08:00'), "
+                f"CONVERT_TZ(NOW(), @@session.time_zone, '+08:00'))"
+            )
+
+        if not values_clauses:
+            return
+
+        sql = text("""
+            INSERT INTO goods_metrics (goods_id, view_count, favorite_count, comment_count, create_time, update_time)
+            VALUES {values}
+            ON DUPLICATE KEY UPDATE
+                view_count = VALUES(view_count),
+                favorite_count = VALUES(favorite_count),
+                comment_count = VALUES(comment_count),
+                update_time = CONVERT_TZ(NOW(), @@session.time_zone, '+08:00')
+        """.format(values=", ".join(values_clauses)))
+
+        try:
+            await db.execute(sql)
+            await db.commit()
+            await redis_client.srem(_ACTIVE_GOODS_SET, *valid_ids)
+            logger.info(f"✨ [Metrics Sync] 成功将活跃商品 {valid_ids} 的最新计数完美对齐到 MySQL 物理表！")
+        except Exception:
+            await db.rollback()
+            logger.exception("❌ [Metrics Sync] 刷盘 goods_metrics 发生严重硬伤失败")

@@ -119,7 +119,7 @@ class PostService:
                 logger.warning(f"绑定附件 {attachment_ids} 到帖子 {post.post_id} 失败: {e}")
         
         await db.commit()
-        await db.refresh(post)
+        await db.refresh(post, ["user", "attachments"])  # 刷新以获取关联的 attachments 和 user
         return post
 
     @staticmethod

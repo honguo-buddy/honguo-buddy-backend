@@ -12,15 +12,24 @@ class CategoryCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=100, description="分类名称")
     icon: Optional[str] = Field(default=None, max_length=255, description="分类图标（可选）")
     item_type: str = Field(default="POST", description="业务类型：POST/GOODS")
-    config_json: Dict[str, Any] = Field(..., description="模板配置 JSON（必填，且不能为空对象）")
+    # 给 config_json 赋予默认 factory，前端不传时自动默认为空字典，不卡接口
+    config_json: Optional[Dict[str, Any]] = Field(default_factory=dict, description="模板配置 JSON")
 
     @field_validator("config_json")
     @classmethod
-    def validate_config_json(cls, value: Dict[str, Any]) -> Dict[str, Any]:
+    def validate_config_json(cls, value: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        # 如果是 None，自动初始化为空字典
+        if value is None:
+            value = {}
+            
         if not isinstance(value, dict):
             raise ValueError("config_json 必须是对象")
-        if not value:
-            raise ValueError("config_json 不能为空")
+            
+        # 如果前端传了 {} 或空，后端在校验层全自动将其“升维归一”为标准的无模版格式
+        # 这样既过了非空校验，又保证了落地入库的数据结构绝对安全，前端 map 循环永不崩
+        if not value or "fields" not in value:
+            return {"fields": []}
+            
         return value
 
     @field_validator("item_type")
@@ -40,15 +49,21 @@ class CategoryUpdate(BaseModel):
     name: Optional[str] = Field(default=None, min_length=1, max_length=100, description="分类名称")
     item_type: Optional[str] = Field(default=None, description="业务类型：POST/GOODS（可选）")
     icon: Optional[str] = Field(default=None, max_length=255, description="分类图标（可选）")
-    config_json: Dict[str, Any] = Field(..., description="模板配置 JSON（必填，且不能为空对象）")
+    # 更新时同样赋予全自动防腐兜底
+    config_json: Optional[Dict[str, Any]] = Field(default_factory=dict, description="模板配置 JSON")
 
     @field_validator("config_json")
     @classmethod
-    def validate_config_json(cls, value: Dict[str, Any]) -> Dict[str, Any]:
+    def validate_config_json(cls, value: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        if value is None:
+            value = {}
         if not isinstance(value, dict):
             raise ValueError("config_json 必须是对象")
-        if not value:
-            raise ValueError("config_json 不能为空")
+            
+        # 同步自动归一化
+        if not value or "fields" not in value:
+            return {"fields": []}
+            
         return value
 
     @field_validator("item_type")

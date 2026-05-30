@@ -54,6 +54,12 @@ class Goods(Base):
     # 像素级严格对齐的 ORM 关系映射大盘（完美防御多态组件）
     # ------------------------------------------------------------------
     user = relationship("User", back_populates="goods", lazy="selectin")
+    
+    @property
+    def publisher(self):
+        """无缝映射给 Pydantic 响应 Schema 中的 publisher 字段"""
+        return self.user
+    
     category = relationship("Category", back_populates="goods", lazy="selectin")
     
     # 订单多态关系对齐：锁定项语义为 'GOODS'，开启只读视图，拒绝交叉污染

@@ -13,18 +13,17 @@ def test_category_create_accepts_valid_payload():
     assert schema.config_json == {"fields": ["address"]}
 
 
-def test_category_create_rejects_empty_config_json():
-    with pytest.raises(ValidationError) as exc_info:
-        CategoryCreate.model_validate({"name": "跑腿", "config_json": {}})
-
-    assert "config_json 不能为空" in str(exc_info.value)
+def test_category_create_empty_config_json_normalizes():
+    """Empty config_json is normalized to {"fields": []} instead of rejected."""
+    schema = CategoryCreate.model_validate({"name": "跑腿", "config_json": {}})
+    assert schema.config_json == {"fields": []}
 
 
 def test_category_create_rejects_invalid_item_type():
     with pytest.raises(ValidationError) as exc_info:
         CategoryCreate.model_validate({"name": "跑腿", "item_type": "invalid", "config_json": {"x": 1}})
 
-    assert "item_type 必须为 POST 或 GOODS" in str(exc_info.value)
+    assert "必须为 POST 或 GOODS" in str(exc_info.value)
 
 
 def test_category_create_validator_can_be_called_directly():
@@ -35,10 +34,14 @@ def test_category_create_validator_can_be_called_directly():
 
 
 def test_category_update_accepts_optional_item_type_none():
-    schema = CategoryUpdate.model_validate({"config_json": {"enabled": True}})
-
+    """item_type=None is accepted; config_json gets normalized if missing 'fields'."""
+    schema = CategoryUpdate.model_validate({"config_json": {"fields": ["price"]}})
     assert schema.item_type is None
-    assert schema.config_json == {"enabled": True}
+    assert schema.config_json == {"fields": ["price"]}
+
+    # config without 'fields' key gets normalized
+    schema2 = CategoryUpdate.model_validate({"config_json": {"enabled": True}})
+    assert schema2.config_json == {"fields": []}
 
 
 def test_category_update_rejects_non_dict_config_json():

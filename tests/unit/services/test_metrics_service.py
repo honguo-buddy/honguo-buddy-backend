@@ -235,20 +235,23 @@ class TestMetricsService:
     async def test_flush_metrics_to_db_with_data(self):
         from app.services.metrics_service import MetricsService
         from unittest.mock import AsyncMock
+        from tests.unit.fake_sqlalchemy import FakeResult
 
         redis_fake = FakeRedisForMetrics()
-        # Pre-populate Redis Set and hash data
         await redis_fake.sadd("metrics:active_posts_set", 1001)
         redis_fake._hashes["metrics:post:1001"] = {"view": "20", "favorite": "3", "comment": "1", "upvote": "0"}
 
         db = AsyncMock()
+        # First execute = validation query (select existing post_ids), second = metrics insert
+        db.execute = AsyncMock(side_effect=[
+            FakeResult(items=[1001]),   # validation: post 1001 exists
+            FakeResult(),                # metrics INSERT
+        ])
         await MetricsService.flush_metrics_to_db(db, redis_fake)
 
-        # Should have executed an INSERT ... ON DUPLICATE KEY UPDATE
-        db.execute.assert_called_once()
+        assert db.execute.call_count == 2  # validation + INSERT
         db.commit.assert_called_once()
 
-        # After successful commit, active set should be cleared
         members = await redis_fake.smembers("metrics:active_posts_set")
         assert 1001 not in members
 

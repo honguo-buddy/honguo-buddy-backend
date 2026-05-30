@@ -98,9 +98,19 @@ class CommentService:
         await db.commit()
         await db.refresh(new_comment, attribute_names=["user", "parent", "replies"])
 
-        if getattr(new_comment.target_type, 'value', new_comment.target_type) == "POST":
+        # 提取归一化的业务类型字符串（POST 或 GOODS）
+        current_target_type = getattr(new_comment.target_type, 'value', new_comment.target_type)
+
+        if current_target_type == "POST":
             try:
                 await MetricsService.incr_post_comment(app_redis, new_comment.target_id, delta=1)
+            except Exception:
+                pass
+                
+        elif current_target_type == "GOODS":
+            try:
+                # 精准轰击商品专属的评论自增引擎，彻底打通集市计数闭环！
+                await MetricsService.incr_goods_comment(app_redis, new_comment.target_id, delta=1)
             except Exception:
                 pass
         

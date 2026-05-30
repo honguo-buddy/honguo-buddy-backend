@@ -390,3 +390,10 @@ OrderService.approve_order 和 reject_order 需要校验 post.publisher_id。
 2. VALUES 中硬编码北京时间函数：CONVERT_TZ(NOW(), @@session.time_zone, '+08:00')
 3. ON DUPLICATE KEY UPDATE 中须单独刷新 update_time = CONVERT_TZ(NOW(), @@session.time_zone, '+08:00')
 4. 读取 Redis hash 数据时做 bytes/str 双容错：raw.get("view") or raw.get(b"view") or 0
+
+
+十五、 新增实体灌水遵循既有对称模式 (Follow Established Hydration Pattern)
+
+【问题】新增商品灌水时，复活了先前已被替换的泛型方法 hydrate_posts_counter（含 field_map 映射、id_field 推断等多余间接层），而非照搬已形成稳定闭环的 hydrate_posts_with_metrics 对称模式。
+
+【解决】每新增一个实体类型，为其创建专属的 hydrate_X_with_metrics 方法，结构与 Post 版完全对称：Pipeline 批量捞取 -> metrics_map 构建 -> 直接赋值覆盖。严禁复活旧代码、严禁使用带 field_map 的泛型中间层。专属方法优势：可针对该实体的多态主键（如 goods_id/target_id）做定制化适配，且 bytes/str 双容错由方法内部闭环，调用方无需感知。

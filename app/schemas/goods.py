@@ -53,24 +53,31 @@ class GoodsRead(BaseModel):
     favorite_count: int = 0
     comment_count: int = 0
 
-
-class GoodsDetailRead(BaseModel):
-    """Detail page response for goods."""
+# 专治嵌套断链的评论 Schema
+class GoodsCommentSchema(BaseModel):
+    """商品详情页专用的轻量级内嵌评论响应契约"""
     model_config = ConfigDict(from_attributes=True)
 
+    comment_id: int = Field(..., description="评论ID")
+    user_id: int = Field(..., description="评论发表人ID")
+    content: str = Field(..., description="评论内容")
+    create_time: datetime = Field(..., description="评论时间")
+        
+
+class GoodsDetailRead(GoodsBase):
+    """用于商品详情页面的响应 Schema"""
     goods_id: int
-    category_id: int
-    name: str
-    description: Optional[str] = None
-    price: Optional[float] = None
-    condition: str
     status: str
-    template_data: Optional[dict] = None
     create_time: datetime
     attachment_urls: List[str] = []
     publisher: Optional[GoodsPublisherSchema] = None
-    comments: List[dict] = []
+    
+    # 干掉 List[dict]，换成显式的类型安全的强类型契约数组！
+    comments: List[GoodsCommentSchema] = []
+    
+    model_config = ConfigDict(from_attributes=True)
 
+    # 详情页指标回填
     view_count: int = 0
     favorite_count: int = 0
     comment_count: int = 0
