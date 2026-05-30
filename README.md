@@ -510,6 +510,535 @@ DATA_GET_FAILED: 301
 - code: 103 - 用户不存在。
 - code: 301 - 查询公开资料失败。
 
+#### 4.2.5 注销本人账号 (DELETE: /users/me)
+
+用途: 注销当前登录用户账号（逻辑删除）。注销后无法登录，数据保留在数据库。
+
+请求头: Authorization: Bearer <token>。
+
+请求示例:
+
+```json
+{}
+```
+
+成功响应:
+
+```json
+{
+    "code": 0,
+    "message": {
+        "message": "账号已注销"
+    }
+}
+```
+
+常见错误:
+
+- code: 105 - Token 失效或缺失。
+- code: 103 - 用户不存在。
+
+#### 4.2.6 关注/取消关注用户 (POST: /users/follow)
+
+用途: 对指定用户执行关注/取消关注双态翻转。未关注则创建关注，已关注则取消关注。禁止自己关注自己。
+
+请求头: Authorization: Bearer <token>。
+
+请求示例:
+
+```json
+{
+    "following_id": 1002
+}
+```
+
+成功响应:
+
+```json
+{
+    "code": 0,
+    "message": {
+        "following_id": 1002,
+        "is_following": true
+    }
+}
+```
+
+常见错误:
+
+- code: 105 - Token 失效或缺失。
+- code: 99 - 尝试自己关注自己，或关注的目标用户不存在。
+
+#### 4.2.7 获取我的关注列表 (GET: /users/me/followings)
+
+用途: 分页拉取当前登录用户的关注人列表，返回关注对象的公开资料及互关标志。
+
+请求头: Authorization: Bearer <token>。
+
+请求示例:
+
+```json
+{
+    "page": 1,
+    "page_size": 20
+}
+```
+
+成功响应:
+
+```json
+{
+    "code": 0,
+    "message": {
+        "total": 1,
+        "page": 1,
+        "page_size": 20,
+        "list": [
+            {
+                "user": {
+                    "user_id": 1002,
+                    "user_uuid": "6f7d2f9c-4f5f-4de5-a2b2-6f8d6e4ce100",
+                    "user_name": "关注用户",
+                    "avatar": "/static/avatar/avatar_1002.png",
+                    "sex": "男",
+                    "credit_score": 80,
+                    "is_verified": false,
+                    "user_type": "user"
+                },
+                "is_mutual": true
+            }
+        ]
+    }
+}
+```
+
+常见错误:
+
+- code: 105 - Token 失效或缺失。
+
+#### 4.2.8 获取我的粉丝列表 (GET: /users/me/followers)
+
+用途: 分页拉取当前登录用户的粉丝列表，返回粉丝的公开资料及互关标志。
+
+请求头: Authorization: Bearer <token>。
+
+请求示例:
+
+```json
+{
+    "page": 1,
+    "page_size": 20
+}
+```
+
+成功响应:
+
+```json
+{
+    "code": 0,
+    "message": {
+        "total": 1,
+        "page": 1,
+        "page_size": 20,
+        "list": [
+            {
+                "user": {
+                    "user_id": 1003,
+                    "user_uuid": "...",
+                    "user_name": "粉丝用户",
+                    "avatar": "/static/avatar/avatar_1003.png",
+                    "sex": "女",
+                    "credit_score": 90,
+                    "is_verified": true,
+                    "user_type": "user"
+                },
+                "is_mutual": false
+            }
+        ]
+    }
+}
+```
+
+常见错误:
+
+- code: 105 - Token 失效或缺失。
+
+#### 4.2.9 收藏/取消收藏 (POST: /users/favorite)
+
+用途: 对指定帖子或商品执行收藏/取消收藏双态翻转。`target_type` 支持 `POST` 与 `GOODS`。
+
+请求头: Authorization: Bearer <token>。
+
+请求示例:
+
+```json
+{
+    "target_type": "POST",
+    "target_id": 1001
+}
+```
+
+成功响应:
+
+```json
+{
+    "code": 0,
+    "message": {
+        "target_type": "POST",
+        "target_id": 1001,
+        "is_favorite": true
+    }
+}
+```
+
+常见错误:
+
+- code: 105 - Token 失效或缺失。
+- code: 99 - `target_type` 非法或目标实体不存在。
+
+#### 4.2.10 获取我的收藏列表 (GET: /users/me/favorites)
+
+用途: 分页拉取当前登录用户的收藏列表。采用批量灌水机制补齐帖子/商品详情，联动返回原资产的生存状态（`is_effective`）与满员状态（`is_full`），并附带发布者简影。
+
+请求头: Authorization: Bearer <token>。
+
+请求示例:
+
+```json
+{
+    "page": 1,
+    "page_size": 20
+}
+```
+
+成功响应:
+
+```json
+{
+    "code": 0,
+    "message": {
+        "total": 1,
+        "page": 1,
+        "page_size": 20,
+        "list": [
+            {
+                "target_type": "POST",
+                "target_id": 1001,
+                "title": "帮忙代拿快递",
+                "description": "从东门快递站拿到宿舍楼",
+                "price": 5.0,
+                "target_status": "OPEN",
+                "is_effective": true,
+                "is_full": false,
+                "view_count": 88,
+                "favorite_count": 12,
+                "comment_count": 6,
+                "create_time": 1680000000123,
+                "publisher": {
+                    "user_name": "发帖用户",
+                    "avatar": "/static/avatar/avatar_1002.png"
+                }
+            }
+        ]
+    }
+}
+```
+
+说明：
+- `is_effective` 为 `false` 表示原帖子已删除或状态为 CLOSED，前端可据此置灰。
+- `is_full` 为 `true` 表示当前接单人数已达上限。
+- `create_time` 为 13 位毫秒级时间戳。
+- `publisher` 为发布者脱敏简影，仅包含 `user_name` 与 `avatar`。
+
+常见错误:
+
+- code: 105 - Token 失效或缺失。
+
+#### 4.2.11 获取我的历史浏览足迹 (GET: /users/me/histories)
+
+用途: 分页拉取当前登录用户的历史浏览足迹（基于 Redis ZSET 纯内存存储）。返回最近浏览的帖子/商品列表，采用批量灌水机制补齐详情、满员状态与发布者简影。最多保留最近 100 条记录，自动滚动淘汰。
+
+请求头: Authorization: Bearer <token>。
+
+请求示例:
+
+```json
+{
+    "page": 1,
+    "page_size": 20
+}
+```
+
+成功响应:
+
+```json
+{
+    "code": 0,
+    "message": {
+        "total": 1,
+        "page": 1,
+        "page_size": 20,
+        "list": [
+            {
+                "target_type": "POST",
+                "target_id": 1001,
+                "title": "帮忙代拿快递",
+                "description": "从东门快递站拿到宿舍楼",
+                "price": 5.0,
+                "target_status": "OPEN",
+                "is_effective": true,
+                "is_full": false,
+                "view_count": 55,
+                "favorite_count": 3,
+                "comment_count": 2,
+                "view_time": 1680000000456,
+                "publisher": {
+                    "user_name": "发帖用户",
+                    "avatar": "/static/avatar/avatar_1002.png"
+                }
+            }
+        ]
+    }
+}
+```
+
+说明：
+- 历史足迹通过 Redis ZSET 以 `user:history:{user_id}` 为 Key 存储，不写入 MySQL。
+- 用户浏览详情页时自动异步刷入足迹，Redis 自动去重并置顶最新浏览。
+- 系统自动裁剪保留最新 100 条，有效期 30 天滚动过期。
+- `view_time` 为 13 位毫秒级时间戳。
+- `is_effective` 与 `is_full` 含义同收藏列表。
+
+常见错误:
+
+- code: 105 - Token 失效或缺失。
+
+#### 4.2.12 [管理员] 修改用户信息 (PUT: /users/{user_id})
+
+用途: 管理员修改指定用户信息（用户名、头像、性别）。请求体字段均为可选，可只提交部分字段进行局部更新。
+
+请求头: Authorization: Bearer <token>（需管理员权限）。
+
+请求示例:
+
+```json
+{
+    "user_name": "新昵称",
+    "avatar_id": 123,
+    "sex": "男"
+}
+```
+
+成功响应:
+
+```json
+{
+    "code": 0,
+    "message": {
+        "user_id": 1002,
+        "user_uuid": "...",
+        "user_name": "新昵称",
+        "avatar": "/static/avatar/avatar_1002.png",
+        "sex": "男",
+        "email": "...",
+        "phonenumber": "...",
+        "user_type": "user",
+        "credit_score": 100,
+        "is_verified": false,
+        "is_active": true,
+        "is_admin": false,
+        "last_login_ip": "127.0.0.1",
+        "last_login_time": 1700000000,
+        "wechat_unionid": null
+    }
+}
+```
+
+常见错误:
+
+- code: 105 - Token 失效或缺失。
+- code: 102 - 权限不足，仅管理员可操作。
+
+#### 4.2.13 [管理员] 禁用/删除用户 (DELETE: /users/{user_id})
+
+用途: 管理员禁用或删除指定用户（逻辑删除）。管理员无法删除自己的账号。
+
+请求头: Authorization: Bearer <token>（需管理员权限）。
+
+请求示例:
+
+```json
+{}
+```
+
+成功响应:
+
+```json
+{
+    "code": 0,
+    "message": {
+        "message": "用户 1002 已被禁用/删除"
+    }
+}
+```
+
+常见错误:
+
+- code: 105 - Token 失效或缺失。
+- code: 102 - 权限不足或尝试删除自己的账号。
+
+#### 4.2.14 多维清理历史足迹 (POST: /users/me/histories/delete)
+
+用途: 按照指定模式清理用户的历史浏览足迹。支持三种清理模式：SINGLE（单条删除）、RANGE（按时间段删除）、CLEAR_ALL（全量清空）。禁止使用 DELETE 带 Body，故采用 POST 承载清理载荷。
+
+请求头: Authorization: Bearer <token>。
+
+请求示例（SINGLE 模式）:
+
+```json
+{
+    "action_type": "SINGLE",
+    "target_type": "POST",
+    "target_id": 1001
+}
+```
+
+请求示例（RANGE 模式）:
+
+```json
+{
+    "action_type": "RANGE",
+    "start_time": 1700000000000,
+    "end_time": 1700000100000
+}
+```
+
+请求示例（CLEAR_ALL 模式）:
+
+```json
+{
+    "action_type": "CLEAR_ALL"
+}
+```
+
+说明：
+- `action_type` 为必填，可选值 `SINGLE` / `RANGE` / `CLEAR_ALL`。
+- SINGLE 模式下 `target_type` 与 `target_id` 均为必填。
+- RANGE 模式下 `start_time` 与 `end_time` 均为必填（13位毫秒级时间戳），且 `start_time` 不大于 `end_time`。
+- CLEAR_ALL 模式下无需额外参数，一键清空当前用户全部足迹。
+
+成功响应:
+
+```json
+{
+    "code": 0,
+    "message": {
+        "action_type": "SINGLE",
+        "message": "清理意图已成功接收并在后台异步蒸发",
+        "deleted_count": 1
+    }
+}
+```
+
+常见错误:
+
+- code: 105 - Token 失效或缺失。
+- code: 99 - 请求参数校验失败（如 SINGLE 缺少 target_type，或 RANGE 起止时间不合法）。
+
+#### 4.2.15 用户主页声誉画像 (GET: /users/{user_id}/profile)
+
+用途: 获取指定用户的双角色星级评分与印象标签。优先读取 Redis 缓存，击穿时回数据库重算。
+
+请求头: 无（公开接口）。
+
+请求示例:
+
+```json
+{
+    "user_id": 1001
+}
+```
+
+成功响应:
+
+```json
+{
+    "code": 0,
+    "message": {
+        "user_id": 1001,
+        "carrier_score": 4.5,
+        "carrier_order_count": 10,
+        "client_score": 4.8,
+        "client_order_count": 5,
+        "tags_json": "{}"
+    }
+}
+```
+
+说明：
+- `carrier_score` / `carrier_order_count`：「接单人」角色维度的平均评分与订单数。
+- `client_score` / `client_order_count`：「发单人」角色维度的平均评分与订单数。
+- `tags_json`：高频印象标签（JSON 字符串），如 `{"好评": 12, "快速响应": 8}`。
+
+常见错误:
+
+- code: 103 - 用户不存在或已被删除。
+
+#### 4.2.16 用户评价详情列表 (GET: /users/{user_id}/reviews)
+
+用途: 延迟加载指定用户的评价列表，支持按角色分页（CARRIER 接单人 / CLIENT 发单人）。执行严格双向脱敏：评价发表人头像置 None，姓名打码。仅展示已通过双盲释放机制（`is_visible=True`）的评价。
+
+请求头: 无（公开接口）。
+
+请求示例:
+
+```json
+{
+    "role": "CARRIER",
+    "offset": 0,
+    "limit": 20
+}
+```
+
+成功响应:
+
+```json
+{
+    "code": 0,
+    "message": {
+        "total": 1,
+        "offset": 0,
+        "limit": 20,
+        "role": "CARRIER",
+        "list": [
+            {
+                "review_id": 8001,
+                "order_id": 7001,
+                "rating": 5,
+                "content": "非常好",
+                "is_anonymous": false,
+                "reviewer": {
+                    "user_id": 1002,
+                    "user_name": "张**",
+                    "avatar": null
+                },
+                "create_time": 1700000000000
+            }
+        ]
+    }
+}
+```
+
+说明：
+- `role`：`CARRIER` 查看用户作为接单人收到的评价，`CLIENT` 查看用户作为发单人收到的评价。
+- 评价发表人强制执行脱敏：`avatar` 始终为 `null`，`user_name` 打码（如「张学长」→「张**」）。
+- 仅展示 `is_visible=True` 的评价（双盲机制释放后）。
+- `create_time` 为 13 位毫秒级时间戳。
+
+常见错误:
+
+- code: 103 - 用户不存在。
+
 ### 4.3 附件上传模块
 
 #### 4.3.1 上传附件 (POST: /attachments/upload)
@@ -749,7 +1278,7 @@ DATA_GET_FAILED: 301
 
 说明：
 - `title` 为必填字段。
-- `description`、`price`、`category_id`、`template_filters` 均为可选字段。
+- `description`、`price`、`category_id`、`template_filters`、`attachment_ids` 均为可选字段。
 - `direction` 默认为 `SELL`，`urgency` 默认为 `NORMAL`，`max_accepters` 默认为 `1`。
 
 请求头: Authorization: Bearer <token>。
@@ -765,7 +1294,8 @@ DATA_GET_FAILED: 301
     "urgency": "NORMAL",
     "max_accepters": 1,
     "category_id": 3,
-    "template_filters": {"pickup_address": "教学楼A楼"}
+    "template_filters": {"pickup_address": "教学楼A楼"},
+    "attachment_ids": [123]
 }
 ```
 
@@ -814,7 +1344,7 @@ DATA_GET_FAILED: 301
 
 #### 4.5.2 获取帖子列表 (GET: /posts)
 
-用途: 获取帖子列表，支持关键词、模板/分类ID、状态、价格、时间等筛选。
+用途: 获取帖子列表，支持关键词、模板/分类ID、状态、价格、时间等筛选。返回的每个卡片均携带 Redis 实时灌水计数器（iew_count、avorite_count、comment_count）。
 
 请求示例:
 
@@ -861,6 +1391,9 @@ DATA_GET_FAILED: 301
                 },
                 "publisher_id": 2001,
                 "current_accepters": 0,
+                "view_count": 128,
+                "favorite_count": 15,
+                "comment_count": 9,
                 "create_time": "2025-09-01T12:00:00",
                 "attachment_urls": []
             }
@@ -919,6 +1452,9 @@ DATA_GET_FAILED: 301
                 },
                 "publisher_id": 1001,
                 "current_accepters": 0,
+                "view_count": 42,
+                "favorite_count": 7,
+                "comment_count": 3,
                 "create_time": "2025-09-01T12:00:00",
                 "attachment_urls": []
             }
@@ -980,6 +1516,9 @@ DATA_GET_FAILED: 301
                 },
                 "publisher_id": 1002,
                 "current_accepters": 0,
+                "view_count": 30,
+                "favorite_count": 5,
+                "comment_count": 1,
                 "create_time": "2025-09-01T12:00:00",
                 "attachment_urls": []
             }
@@ -1035,6 +1574,9 @@ DATA_GET_FAILED: 301
         },
         "publisher_id": 1001,
         "current_accepters": 0,
+        "view_count": 256,
+        "favorite_count": 32,
+        "comment_count": 14,
         "create_time": "2025-09-01T12:00:00",
         "attachment_urls": ["/static/avatar/avatar_1001_1680000000.png"],
         "comments": [
@@ -1049,6 +1591,15 @@ DATA_GET_FAILED: 301
     }
 }
 ```
+
+说明：
+- 已登录用户访问帖子详情时会自动将浏览记录异步写入 Redis 历史足迹（`user:history:{user_id}`），供 4.2.11 历史浏览足迹接口使用。未登录用户不会记录。
+- 返回的 `comments` 仅包含最近若干条热评，按创建时间倒序排列，由 `comments_limit` 控制条数（默认 5 条）。
+
+常见错误:
+
+- code: 99 - 帖子 ID 或路径参数不合法。
+- code: 103 - 帖子不存在或已被软删除。
 
 #### 4.5.6 局部更新 (PATCH: /posts/{post_id})
 
@@ -1188,6 +1739,33 @@ DATA_GET_FAILED: 301
 
 - code: 105 - Token 失效或缺失。
 - code: 99 - 请求帖子数量超过 5 个，或参数不合法。
+
+#### 4.5.8.1 单个帖子接单 (POST: /posts/{post_id}/accept)
+
+用途: 当前用户对指定帖子发起接单申请。
+
+请求头: Authorization: Bearer <token>。
+
+说明：
+- `BUY` 方向帖子为申请制，申请后须等待发布者同意；该帖的 `PENDING` 订单不计入当前接单数。
+- `SELL` 方向帖子为征集制，`PENDING` 订单即时计入当前接单数。
+- 若用户刚刚取消过该帖子的申请，后端会返回 99 并提示冷静期。
+
+成功响应:
+
+```json
+{
+    "code": 0,
+    "message": {
+        "order_id": 1001,
+        "post_id": 2001,
+        "current_accepters": 1,
+        "max_accepters": 3,
+        "accepted": true,
+        "status": "PENDING"
+    }
+}
+```
 
 #### 4.5.9 查看接单申请列表 (GET: /posts/{post_id}/applications)
 
@@ -1473,6 +2051,7 @@ JSON
 - `submit-delivery` 由卖家提交已交付状态。
 - `accept-delivery` 由买家确认收货并完成订单；`complete` 为兼容接口，内部等价于 `accept-delivery`。
 - `cancel` 仅限买家或卖家取消，若订单为 PENDING，则发起人也可取消。
+- `cancel` 接口会额外返回 `curr_accepters`，用于客户端更新当前帖子接单数。
 
 成功响应示例:
 
@@ -1512,17 +2091,19 @@ JSON
 {
     "order_id": 5001,
     "reviewee_id": 3001,
-    "review_type": "FIRST",
+    "review_type": "INITIAL",
     "rating": 5,
     "content": "对方响应很快，沟通顺畅",
     "is_anonymous": true,
+    "attachment_ids": [456],
     "parent_id": null
 }
 ```
 
 说明：
-- `review_type` 支持 `FIRST`、`FOLLOW_UP`、`REPLY`。
+- `review_type` 支持 `INITIAL`、`ADDITIONAL`、`REPLY`。
 - `is_anonymous=true` 表示评价内容在双盲期内匿名展示。
+- `attachment_ids` 可选，先上传附件后再将附件绑定到当前评价。
 - `parent_id` 为可选，用于追评/回评关联上一条评价。
 
 成功响应:
@@ -1541,6 +2122,7 @@ JSON
         "content": "对方响应很快，沟通顺畅",
         "is_anonymous": true,
         "is_visible": false,
+        "attachment_urls": [],
         "create_time": "2025-09-05T12:00:00Z",
         "update_time": "2025-09-05T12:00:00Z"
     }
@@ -1930,6 +2512,235 @@ LIMIT :size
 
 请求头：Authorization: Bearer <token>（必须登录）
 
+
+### 4.9 Goods 商品模块
+
+说明：商品模块为闲置交易大厅，支持发布、列表筛选、详情浏览、更新上下架状态和软删除。所有列表/详情卡片均通过 Redis 计数器中心实时注入 view_count、favorite_count、comment_count。路由前缀固定为 `/goods`。
+
+#### 4.9.1 发布商品 (POST: /goods/)
+
+用途：发布一个新的闲置商品，可选绑定附件图片。
+
+请求头：Authorization: Bearer <token>（必须登录）
+
+请求示例：
+
+```json
+{
+    "category_id": 1,
+    "name": "二手 MacBook Pro",
+    "description": "95 成新，电池循环 50 次以内",
+    "price": 6999.00,
+    "condition": "准新/99新",
+    "template_data": {"brand": "Apple", "model": "M3 Pro"},
+    "attachment_ids": [10, 11]
+}
+```
+
+字段说明：
+- `category_id`: 必填，模板分类 ID
+- `name`: 必填，商品名称
+- `description`: 可选，详细描述
+- `price`: 可选，价格（NULL 表示面议）
+- `condition`: 必填，成色等级：`"全新"` / `"准新/99新"` / `"常用/无明显瑕疵"` / `"陈旧/明显瑕疵"`
+- `template_data`: 可选，由分类驱动的扩展字段
+- `attachment_ids`: 可选，已上传的附件 ID 列表
+
+成功响应：
+
+```json
+{
+    "code": 0,
+    "message": {
+        "goods_id": 5001,
+        "category_id": 1,
+        "name": "二手 MacBook Pro",
+        "price": 6999.00,
+        "condition": "准新/99新",
+        "status": "上架中",
+        "create_time": "2026-05-30T12:00:00",
+        "attachment_urls": ["/static/attachments/img-10.jpg"],
+        "publisher": {"user_id": 1001, "user_name": "张三", "avatar": "/static/avatar/av-1.jpg"},
+        "view_count": 0,
+        "favorite_count": 0,
+        "comment_count": 0
+    }
+}
+```
+
+常见错误：
+
+- code: 99 - 请求参数校验失败（如缺少 category_id 或 name）。
+- code: 105 - Token 无效。
+
+#### 4.9.2 商品大厅列表 (GET: /goods)
+
+用途：分页查询商品大厅，支持关键词、分类、状态筛选。返回卡片均携带 Redis 实时灌水计数器。
+
+请求头：无（公开接口）
+
+请求示例：
+
+```json
+{
+    "keyword": "MacBook",
+    "category_id": 1,
+    "status": "上架中",
+    "page": 1,
+    "page_size": 20
+}
+```
+
+字段说明：
+- `keyword`: 可选，按商品名称模糊匹配
+- `category_id`: 可选，按分类筛选
+- `status`: 可选，状态筛选：`"上架中"` / `"已下架"` / `"已售出"`
+- `page`: 可选，默认 1
+- `page_size`: 可选，默认 20，最大 100
+
+成功响应：
+
+```json
+{
+    "code": 0,
+    "message": {
+        "total": 15,
+        "page": 1,
+        "page_size": 20,
+        "list": [
+            {
+                "goods_id": 5001,
+                "category_id": 1,
+                "name": "二手 MacBook Pro",
+                "price": 6999.00,
+                "condition": "准新/99新",
+                "status": "上架中",
+                "create_time": "2026-05-30T12:00:00",
+                "attachment_urls": [],
+                "publisher": {"user_id": 1001, "user_name": "张三", "avatar": null},
+                "view_count": 128,
+                "favorite_count": 3,
+                "comment_count": 0
+            }
+        ]
+    }
+}
+```
+
+常见错误：
+
+- code: 301 - 数据获取失败。
+
+#### 4.9.3 我的商品 (GET: /goods/me)
+
+用途：分页查询当前用户发布的商品列表。
+
+请求头：Authorization: Bearer <token>（必须登录）
+
+请求示例：
+
+```json
+{
+    "page": 1,
+    "page_size": 20
+}
+```
+
+成功响应：同 4.9.2 商品大厅列表响应结构。
+
+常见错误：
+
+- code: 105 - Token 无效。
+
+#### 4.9.4 商品详情 (GET: /goods/{goods_id})
+
+用途：获取单个商品完整详情，自动触发浏览计数自增（Redis），并注入实时计数器到卡片。
+
+请求头：无（公开接口）
+
+成功响应：
+
+```json
+{
+    "code": 0,
+    "message": {
+        "goods_id": 5001,
+        "category_id": 1,
+        "name": "二手 MacBook Pro",
+        "description": "95 成新，电池循环 50 次以内",
+        "price": 6999.00,
+        "condition": "准新/99新",
+        "status": "上架中",
+        "create_time": "2026-05-30T12:00:00",
+        "attachment_urls": ["/static/attachments/img-10.jpg"],
+        "publisher": {"user_id": 1001, "user_name": "张三", "avatar": "/static/avatar/av-1.jpg"},
+        "comments": [],
+        "view_count": 129,
+        "favorite_count": 3,
+        "comment_count": 0
+    }
+}
+```
+
+常见错误：
+
+- code: 103 - 商品不存在或已删除。
+
+#### 4.9.5 更新商品 (PATCH: /goods/{goods_id})
+
+用途：局部更新商品字段（名称、价格、描述、成色、状态、附件等）。可执行上架 ⇄ 下架状态流转。仅商品发布者可操作。
+
+请求头：Authorization: Bearer <token>（必须登录）
+
+请求示例：
+
+```json
+{
+    "name": "二手 MacBook Pro M3",
+    "price": 6499.00,
+    "status": "已下架"
+}
+```
+
+字段说明：全部字段可选，请求体可以只包含需要更新的字段。
+- `name`: 可选，商品名称
+- `description`: 可选，详细描述
+- `price`: 可选，价格
+- `condition`: 可选，成色等级
+- `status`: 可选，`"上架中"` / `"已下架"` / `"已售出"`
+- `attachment_ids`: 可选，替换附件列表
+- `template_data`: 可选，扩展字段
+
+成功响应：同 4.9.1 发布商品响应结构。
+
+常见错误：
+
+- code: 102 - 非发布者无权修改。
+- code: 103 - 商品不存在。
+
+#### 4.9.6 删除商品 (DELETE: /goods/{goods_id})
+
+用途：软删除一个商品（标记 is_deleted，大厅不再可见）。仅商品发布者可操作。
+
+请求头：Authorization: Bearer <token>（必须登录）
+
+成功响应：
+
+```json
+{
+    "code": 0,
+    "message": {
+        "goods_id": 5001,
+        "deleted": true
+    }
+}
+```
+
+常见错误：
+
+- code: 102 - 非发布者无权删除。
+- code: 103 - 商品不存在。
+
 ---
 
-文件位置：评论接口实现位于项目代码中：`app/api/comment.py`、`app/services/comment_service.py` 与 `app/schemas/comment.py`；聊天接口位于 `app/api/chat.py`、`app/services/chat_service.py` 与 `app/schemas/chat.py`。文档和实现保持一致。
+文件位置：评论接口位于 `app/api/comment.py`、`app/services/comment_service.py` 与 `app/schemas/comment.py`；聊天接口位于 `app/api/chat.py`、`app/services/chat_service.py` 与 `app/schemas/chat.py`；商品接口位于 `app/api/goods.py`、`app/services/goods_service.py` 与 `app/schemas/goods.py`。文档和实现保持一致。

@@ -3,7 +3,7 @@ from sqlalchemy.orm import relationship
 from app.core.datetime_utils import beijing_now_for_model
 
 
-from app.db.base import Base
+from app.db_base import Base
 
 
 #用户日志数据库表

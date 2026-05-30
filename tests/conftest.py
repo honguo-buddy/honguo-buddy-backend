@@ -29,6 +29,27 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 
+
+
+class _FakeRedisPipe:
+    """FakeRedis 管道：收集 hgetall 命令并批量执行。"""
+
+    def __init__(self, parent) -> None:
+        self._parent = parent
+        self._commands: list = []
+
+    def hgetall(self, key: str):
+        self._commands.append(("hgetall", key))
+        return self
+
+    async def execute(self):
+        results = []
+        for cmd, key in self._commands:
+            if cmd == "hgetall":
+                val = self._parent._data.get(f"_hash:{key}") or {}
+                results.append(val if val else {})
+        return results
+
 class FakeRedis:
     """测试用 Redis 替身。"""
 
@@ -46,7 +67,11 @@ class FakeRedis:
     async def setex(self, key: str, ex, value):
         self._data[key] = str(value)
         return True
-
+    
+    async def ttl(self, name: str) -> int:
+        #默认返回 -2 (代表 key 不存在/已过期)，让测试顺畅通过冷却期判定
+        return -2
+    
     async def delete(self, *keys):
         for key in keys:
             self._data.pop(key, None)
@@ -87,6 +112,32 @@ class FakeRedis:
             ordered = ordered[:num]
         return ordered
 
+    async def zremrangebyrank(self, key: str, start: int, end: int):
+        zset = self._zsets.get(key, {})
+        if not zset:
+            return 0
+        ordered = sorted(zset.items(), key=lambda item: (item[1], item[0]))
+        if end < 0:
+            end = len(ordered) + end
+        to_remove = [member for idx, (member, _) in enumerate(ordered) if idx >= start and idx <= end]
+        for member in to_remove:
+            zset.pop(member, None)
+        return len(to_remove)
+
+    async def zcard(self, key: str):
+        return len(self._zsets.get(key, {}))
+
+    async def zrevrange(self, key: str, start: int, end: int, withscores: bool = False):
+        zset = self._zsets.get(key, {})
+        ordered = sorted(zset.items(), key=lambda item: (-item[1], item[0]))
+        sliced = ordered[start:end + 1 if end is not None else None]
+        if withscores:
+            return [(member, score) for member, score in sliced]
+        return [member for member, _ in sliced]
+
+    async def expire(self, key: str, seconds: int):
+        return True
+
     async def zrem(self, key: str, *members):
         zset = self._zsets.get(key, {})
         removed = 0
@@ -100,6 +151,60 @@ class FakeRedis:
     async def zscore(self, key: str, member: str):
         zset = self._zsets.get(key, {})
         return zset.get(str(member))
+
+    async def sadd(self, key: str, *values):
+        s = self._data.setdefault(f"_set:{key}", set())
+        added = 0
+        for v in values:
+            v_str = str(v)
+            if v_str not in s:
+                s.add(v_str)
+                added += 1
+        return added
+
+    async def smembers(self, key: str):
+        s = self._data.get(f"_set:{key}", set())
+        return list(s)
+
+    async def srem(self, key: str, *values):
+        s = self._data.get(f"_set:{key}", set())
+        removed = 0
+        for v in values:
+            v_str = str(v)
+            if v_str in s:
+                s.remove(v_str)
+                removed += 1
+        return removed
+
+    async def hset(self, key: str, field: str, value):
+        bucket = self._data.setdefault(f"_hash:{key}", {})
+        bucket[field] = str(value)
+        return 1
+
+    async def hincrby(self, key: str, field: str, amount: int = 1):
+        bucket = self._data.setdefault(f"_hash:{key}", {})
+        current = int(str(bucket.get(field, "0")))
+        current += int(amount)
+        bucket[field] = str(current)
+        return current
+
+    async def hgetall(self, key: str):
+        """返回字典形式的哈希字段映射。"""
+        return self._data.get(f"_hash:{key}") or {}
+
+    def pipeline(self):
+        """返回一个支持批量命令收集和批量执行的 Pipe 对象。"""
+        pipe = _FakeRedisPipe(self)
+        return pipe
+
+    async def zremrangebyscore(self, key: str, min_val, max_val):
+        zset = self._zsets.get(key, {})
+        if not zset:
+            return 0
+        to_remove = [k for k, v in zset.items() if min_val <= v <= max_val]
+        for k in to_remove:
+            del zset[k]
+        return len(to_remove)
 
     async def aclose(self):
         return None
@@ -121,8 +226,15 @@ def patch_test_settings(monkeypatch, fake_redis):
     monkeypatch.setattr("app.db.base.redis", fake_redis, raising=False)
     monkeypatch.setattr("app.main.redis", fake_redis, raising=False)
     monkeypatch.setattr("app.api.auth.redis", fake_redis, raising=False)
+    monkeypatch.setattr("app.api.post.redis", fake_redis, raising=False)
+    monkeypatch.setattr("app.api.user.redis", fake_redis, raising=False)
     monkeypatch.setattr("app.services.auth_service.redis", fake_redis, raising=False)
+    try:
+        monkeypatch.setattr("app.services.sms_service.redis", fake_redis, raising=False)
+    except ImportError:
+        pass
     monkeypatch.setattr("app.core.security.redis", fake_redis, raising=False)
+    monkeypatch.setattr("app.services.social_service.redis", fake_redis, raising=False)
     monkeypatch.setattr("app.core.log_middleware.redis", fake_redis, raising=False)
 
     async def noop_save_log_to_db(log_data: dict):

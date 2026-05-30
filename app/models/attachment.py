@@ -4,7 +4,7 @@ from sqlalchemy import BigInteger, Column, DateTime, Enum as SAEnum, Index, Stri
 from sqlalchemy.orm import relationship
 
 from app.core.datetime_utils import beijing_now_for_model
-from app.db.base import Base
+from app.db_base import Base
 
 
 class AttachmentTargetType(enum.Enum):
@@ -13,6 +13,7 @@ class AttachmentTargetType(enum.Enum):
     GOODS = "GOODS"
     COMMENT = "COMMENT"
     CHAT = "CHAT"
+    ORDERREVIEW = "ORDERREVIEW"
 
 
 class Attachment(Base):

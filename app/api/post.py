@@ -17,11 +17,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
-from app.api import get_current_user
+from app.api import get_current_user, get_current_user_optional
 from app.core import AuthHTTPException, BusinessHTTPException, ResourceHTTPException, settings
-from app.db import get_db
-from app.schemas import PostCreate, PostDetailRead, PostList, PostRead, PostUpdate, ResponseModel, UserRead
+from app.db import get_db, get_redis, redis
 from app.schemas import (
+    FavoriteRequest,
+    FavoriteResponse,
     PostApplicationApplicantRead,
     PostApplicationItem,
     PostApplicationListResponse,
@@ -29,8 +30,15 @@ from app.schemas import (
     PostBatchAcceptRequest,
     PostBatchAcceptResponse,
     PostBatchAcceptResultItem,
+    PostCreate,
+    PostDetailRead,
+    PostList,
+    PostRead,
+    PostUpdate,
+    ResponseModel,
+    UserRead,
 )
-from app.services import PostService, OrderService
+from app.services import MetricsService, PostService, OrderService, SocialService
 from app.models import Comment, Post, TargetType
 
 logger = logging.getLogger(__name__)
@@ -81,6 +89,7 @@ async def publish_post(
             db,
             publisher_id=current_user.user_id,
             post_create=post_create,
+            attachment_ids=post_create.attachment_ids,
         )
         current_accepters = await OrderService.get_current_accepters_count(
             db,
@@ -114,6 +123,7 @@ async def list_posts(
     page: int = Query(1, ge=1, description="页码"),
     page_size: int = Query(20, ge=1, le=100, description="每页数量"),
     db: AsyncSession = Depends(get_db),
+    redis_client = Depends(get_redis),
 ):
     """
     获取任务列表，支持多条件过滤。
@@ -151,6 +161,13 @@ async def list_posts(
             current_accepters = current_accepters_map.get(post.post_id, 0)
             post_list.append(_build_post_read(post, current_accepters))
         
+
+        # 批量灌水计数器
+        if post_list:
+            post_dicts = [pr.model_dump() for pr in post_list]
+            post_ids = [pr.post_id for pr in post_list]
+            await MetricsService.hydrate_posts_with_metrics(redis_client, post_dicts, post_ids)
+            post_list = [PostRead.model_validate(pd) for pd in post_dicts]
         return ResponseModel(
             code=settings.SUCCESS_CODE,
             message=PostList(
@@ -176,6 +193,7 @@ async def list_my_posts(
     page: int = Query(1, ge=1, description="页码"),
     size: int = Query(20, ge=1, le=100, alias="size", description="每页数量"),
     db: AsyncSession = Depends(get_db),
+    redis_client = Depends(get_redis),
 ):
     """获取当前用户发布的帖子。"""
 
@@ -198,6 +216,13 @@ async def list_my_posts(
         current_accepters = current_accepters_map.get(post.post_id, 0)
         post_list.append(_build_post_read(post, current_accepters))
 
+
+    # 批量灌水计数器
+    if post_list:
+        post_dicts = [pr.model_dump() for pr in post_list]
+        post_ids = [pr.post_id for pr in post_list]
+        await MetricsService.hydrate_posts_with_metrics(redis_client, post_dicts, post_ids)
+        post_list = [PostRead.model_validate(pd) for pd in post_dicts]
     return ResponseModel(
         code=settings.SUCCESS_CODE,
         message=PostList(total=total, page=page, page_size=size, list=post_list),
@@ -212,6 +237,7 @@ async def list_public_user_posts(
     page: int = Query(1, ge=1, description="页码"),
     size: int = Query(20, ge=1, le=100, alias="size", description="每页数量"),
     db: AsyncSession = Depends(get_db),
+    redis_client = Depends(get_redis),
 ):
     """公开查询指定用户发布的帖子。"""
 
@@ -233,6 +259,13 @@ async def list_public_user_posts(
         current_accepters = current_accepters_map.get(post.post_id, 0)
         post_list.append(_build_post_read(post, current_accepters))
 
+
+    # 批量灌水计数器
+    if post_list:
+        post_dicts = [pr.model_dump() for pr in post_list]
+        post_ids = [pr.post_id for pr in post_list]
+        await MetricsService.hydrate_posts_with_metrics(redis_client, post_dicts, post_ids)
+        post_list = [PostRead.model_validate(pd) for pd in post_dicts]
     return ResponseModel(
         code=settings.SUCCESS_CODE,
         message=PostList(total=total, page=page, page_size=size, list=post_list),
@@ -244,6 +277,7 @@ async def batch_accept_posts(
     payload: PostBatchAcceptRequest,
     current_user: UserRead = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    redis_client = Depends(get_redis),
 ):
     """批量接单入口：适用于顺路聚合场景，允许单次申请多个 BUY 帖子。"""
 
@@ -251,6 +285,7 @@ async def batch_accept_posts(
         db=db,
         initiator_id=current_user.user_id,
         post_ids=payload.post_ids,
+        redis_client=redis_client,
     )
     return ResponseModel(
         code=settings.SUCCESS_CODE,
@@ -340,7 +375,9 @@ async def delete_post(
 async def get_post_detail(
     post_id: int,
     db: AsyncSession = Depends(get_db),
+    current_user: Optional[UserRead] = Depends(get_current_user_optional),
     comments_limit: int = Query(5, ge=0, le=100, description="返回的评论条数，0 表示不返回（建议使用独立分页接口）"),
+    redis_client = Depends(get_redis),
 ):
     """
     获取任务详情（仅返回前 N 条评论以避免内存压力）。
@@ -348,6 +385,8 @@ async def get_post_detail(
     """
     try:
         post = await PostService.get_post_detail(db, post_id)
+        # 帖子存在性验证通过后再自增浏览计数，防止对不存在/已删除帖子虚增指标
+        await MetricsService.incr_post_view(redis_client, post_id)
         # 通过 OrderService 统一获取接单数
         current_accepters = await OrderService.get_current_accepters_count(
             db,
@@ -407,12 +446,22 @@ async def get_post_detail(
             comments=comments,
         )
 
-        # 注意：可在此处添加 Redis 缓存层（key: post_detail:{post_id}:{comments_limit}），
-        # 当 Post 变更（更新/新接单/新增评论）时应触发缓存失效。
+        if current_user:
+            await SocialService.record_history(
+                redis_client=redis_client,
+                user_id=current_user.user_id,
+                target_type="POST",
+                target_id=post_id,
+            )
+
+        # 灌入计数器到详情卡片
+        post_detail_dict = post_detail.model_dump()
+        await MetricsService.hydrate_posts_with_metrics(redis_client, [post_detail_dict], [post_id])
+        hydrated_detail = PostDetailRead.model_validate(post_detail_dict)
 
         return ResponseModel(
             code=settings.SUCCESS_CODE,
-            message=post_detail,
+            message=hydrated_detail,
         )
     except Exception as e:
         logger.error(f"获取任务详情失败 post_id={post_id}: {e}")
@@ -424,6 +473,7 @@ async def accept_post(
     post_id: int,
     current_user: UserRead = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    redis_client = Depends(get_redis),
 ):
     """
     接单（创建订单）
@@ -435,6 +485,7 @@ async def accept_post(
             item_type="POST",
             item_id=post_id,
             initiator_id=current_user.user_id,
+            redis_client=redis_client,
         )
         
         # 查询更新后的接单数

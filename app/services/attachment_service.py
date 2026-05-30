@@ -32,6 +32,7 @@ class AttachmentService:
             "GOODS": "goods",
             "COMMENT": "comment",
             "CHAT": "chat",
+            "ORDERREVIEW": "order_review",
         }
         folder = folder_map.get(normalized_target_type, "avatar")
 
@@ -154,3 +155,37 @@ class AttachmentService:
         if not row:
             return None
         return row["url"]
+    @staticmethod
+    async def hydrate_owners_avatar(db: AsyncSession, entity_list: list) -> None:
+        """统一头像灌水中心：批量收集 avatar_id → IN 查询 Attachment 表 → 内存注入 user.avatar。
+
+        适用于 Post、Goods 等所有持有 user 关系的实体列表，
+        单次 DB 往返消灭 N+1 问题。
+        """
+        if not entity_list:
+            return
+
+        avatar_ids: list[int] = []
+        for entity in entity_list:
+            if entity is None:
+                continue
+            owner = getattr(entity, "user", None) or getattr(entity, "publisher", None)
+            if owner and getattr(owner, "avatar_id", None):
+                avatar_ids.append(owner.avatar_id)
+
+        if not avatar_ids:
+            return
+
+        attachments_result = await db.execute(
+            select(Attachment).where(Attachment.attachment_id.in_(avatar_ids))
+        )
+        avatar_url_map = {att.attachment_id: att.url for att in attachments_result.scalars().all()}
+
+        for entity in entity_list:
+            if entity is None:
+                continue
+            owner = getattr(entity, "user", None) or getattr(entity, "publisher", None)
+            if owner:
+                avatar_id = getattr(owner, "avatar_id", None)
+                owner.avatar = avatar_url_map.get(avatar_id) if avatar_id else None
+

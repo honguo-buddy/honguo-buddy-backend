@@ -33,6 +33,10 @@ from app.schemas.response import (
     UserRoleResponse,
     UpdateUserRoleResponse,
 )
+from app.schemas.history import (
+    HistoryDeletePayload,
+    HistoryDeleteResponse,
+)
 from app.schemas.user import (
     userBase,
     userCreate,
@@ -48,6 +52,16 @@ from app.schemas.user import (
     UserPublicResponse,
     UserSelfUpdateRequest,
     UserRead,
+    UserFollowToggleRequest,
+    UserFollowToggleResponse,
+    UserFollowItem,
+    UserFollowListResponse,
+    FavoriteRequest,
+    FavoriteResponse,
+    FavoriteItem,
+    FavoriteListResponse,
+    HistoryItem,
+    HistoryListResponse,
 )
 from app.schemas.comment import (
     CommentCreateRequest,
@@ -96,6 +110,17 @@ from app.schemas.order_review import (
     OrderReviewListResponse,
 )
 
+
+from app.schemas.goods import (
+    GoodsBase,
+    GoodsCreate,
+    GoodsUpdate,
+    GoodsPublisherSchema,
+    GoodsRead,
+    GoodsDetailRead,
+    GoodsListResponse,
+)
+
 __all__ = [
     # auth
     "WxLoginRequest",
@@ -135,6 +160,16 @@ __all__ = [
     "UserPublicResponse",
     "UserSelfUpdateRequest",
     "UserRead",
+    "UserFollowToggleRequest",
+    "UserFollowToggleResponse",
+    "UserFollowItem",
+    "UserFollowListResponse",
+    "FavoriteRequest",
+    "FavoriteResponse",
+    "FavoriteItem",
+    "FavoriteListResponse",
+    "HistoryItem",
+    "HistoryListResponse",
     # category
     "CategoryCreate",
     "CategoryUpdate",
@@ -160,4 +195,12 @@ __all__ = [
     "OrderReviewCreateRequest",
     "OrderReviewRead",
     "OrderReviewListResponse",
+    # goods
+    "GoodsBase",
+    "GoodsCreate",
+    "GoodsUpdate",
+    "GoodsPublisherSchema",
+    "GoodsRead",
+    "GoodsDetailRead",
+    "GoodsListResponse",
 ]

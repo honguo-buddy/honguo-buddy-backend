@@ -20,6 +20,7 @@ class PostCreate(BaseModel):
         default_factory=dict, 
         description="模板相关筛选字段（JSON），根据选择的模板而定（如 pickup_address、dropoff_address 等）"
     )
+    attachment_ids: Optional[List[int]] = Field(default=None, description="附件 ID 列表，上传后可用于绑定到帖子")
 
     @field_validator("template_filters")
     @classmethod
@@ -43,6 +44,7 @@ class PostUpdate(BaseModel):
     max_accepters: Optional[int] = Field(default=None, ge=1, description="最大接单人数")
     category_id: Optional[int] = Field(default=None, description="分类ID")
     template_filters: Optional[Dict[str, Any]] = Field(default=None, description="模板相关筛选字段（JSON）")
+    attachment_ids: Optional[List[int]] = Field(default=None, description="附件 ID 列表，上传后可用于绑定到帖子")
 
     @field_validator("template_filters")
     @classmethod
@@ -72,6 +74,9 @@ class PostRead(BaseModel):
     publisher: Optional[UserRead] = None
     publisher_id: int
     current_accepters: int = 0  # 当前接单人数
+    view_count: int = Field(default=0, description="浏览计数（Redis 灌水）")
+    favorite_count: int = Field(default=0, description="收藏计数（Redis 灌水）")
+    comment_count: int = Field(default=0, description="评论计数（Redis 灌水）")
     create_time: str
     attachment_urls: List[str] = Field(default_factory=list, description="附件 URL 列表")
 

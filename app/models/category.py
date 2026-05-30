@@ -2,7 +2,7 @@ from sqlalchemy import Boolean, Column, DateTime, Index, JSON, BigInteger, Strin
 from sqlalchemy.orm import relationship
 
 from app.core.datetime_utils import beijing_now_for_model
-from app.db.base import Base
+from app.db_base import Base
 
 # 为了保持与系统中其他多态类型一致，复用 ItemType 枚举
 from app.models.order import ItemType

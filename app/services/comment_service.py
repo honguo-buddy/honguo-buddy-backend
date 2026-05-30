@@ -17,7 +17,8 @@ from sqlalchemy.orm import selectinload
 from app.core import AuthHTTPException, BusinessHTTPException, ResourceHTTPException, settings
 from app.models import AttachmentTargetType, Comment, User, TargetType
 from app.services.attachment_service import AttachmentService
-
+from app.services.metrics_service import MetricsService
+from app.db import redis as app_redis
 logger = logging.getLogger(__name__)
 
 
@@ -96,6 +97,22 @@ class CommentService:
 
         await db.commit()
         await db.refresh(new_comment, attribute_names=["user", "parent", "replies"])
+
+        # 提取归一化的业务类型字符串（POST 或 GOODS）
+        current_target_type = getattr(new_comment.target_type, 'value', new_comment.target_type)
+
+        if current_target_type == "POST":
+            try:
+                await MetricsService.incr_post_comment(app_redis, new_comment.target_id, delta=1)
+            except Exception:
+                pass
+                
+        elif current_target_type == "GOODS":
+            try:
+                # 精准轰击商品专属的评论自增引擎，彻底打通集市计数闭环！
+                await MetricsService.incr_goods_comment(app_redis, new_comment.target_id, delta=1)
+            except Exception:
+                pass
         
         return new_comment
 
@@ -139,6 +156,12 @@ class CommentService:
         # 标记为删除，清洗内容
         comment.is_deleted = True
         comment.content = "该评论已由用户删除"
+
+        if getattr(comment.target_type, 'value', comment.target_type) == "POST":
+            try:
+                await MetricsService.incr_post_comment(app_redis, comment.target_id, delta=-1)
+            except Exception:
+                pass
         
         # 如果有子回复，需要清洗它们的内容以保持树状结构完整
         # 但不删除子回复记录本身

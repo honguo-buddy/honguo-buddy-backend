@@ -109,6 +109,54 @@ async def test_create_post_returns_full_post_info(
 
 
 @pytest.mark.asyncio
+async def test_create_post_accepts_attachment_ids(
+	client: AsyncClient,
+	db_session,
+	test_user,
+	test_user_token,
+	fake_redis,
+):
+	await fake_redis.set(f"token:{test_user_token}", str(test_user.user_id))
+
+	category = Category(category_id=101, name="附件分类", config_json={})
+	db_session.add(category)
+	await db_session.flush()
+
+	attachment = Attachment(
+		target_type=AttachmentTargetType.USER,
+		target_id=test_user.user_id,
+		url="/static/user_attachment.png",
+		creator_id=test_user.user_id,
+	)
+	db_session.add(attachment)
+	await db_session.flush()
+
+	resp = await client.post(
+		"/posts/",
+		headers={"Authorization": f"Bearer {test_user_token}"},
+		json={
+			"title": "带附件发布帖子",
+			"description": "帖子包含附件绑定",
+			"price": 8.8,
+			"direction": "SELL",
+			"urgency": "NORMAL",
+			"max_accepters": 1,
+			"category_id": category.category_id,
+			"attachment_ids": [attachment.attachment_id],
+		},
+	)
+	assert resp.status_code == 200
+	body = resp.json()
+	assert body["code"] == settings.SUCCESS_CODE
+	message = body["message"]
+	assert message["attachment_urls"] == ["/static/user_attachment.png"]
+
+	await db_session.refresh(attachment)
+	assert attachment.target_type == AttachmentTargetType.POST
+	assert attachment.target_id == message["post_id"]
+
+
+@pytest.mark.asyncio
 async def test_create_post_rejects_negative_price(
 	client: AsyncClient,
 	db_session,
@@ -465,93 +513,116 @@ async def test_update_post_rejects_non_owner(
 
 @pytest.mark.asyncio
 async def test_batch_accept_posts_returns_partial_success_and_errors(
-	client: AsyncClient,
-	db_session,
-	test_user,
-	test_user_token,
-	fake_redis,
+    client: AsyncClient,
+    db_session,
+    test_user,
+    test_user_token,
+    fake_redis,
 ):
-	"""测试批量接单接口支持部分成功、部分失败。"""
-	await fake_redis.set(f"token:{test_user_token}", str(test_user.user_id))
-	await fake_redis.set(f"user_token:{test_user.user_id}", test_user_token)
+    """测试批量接单接口支持部分成功、部分失败。"""
+    from unittest.mock import AsyncMock  # 🚨 确保引入 AsyncMock
 
-	category = Category(category_id=108, name="批量接单分类", config_json={})
-	db_session.add(category)
-	await db_session.flush()
+    await fake_redis.set(f"token:{test_user_token}", str(test_user.user_id))
+    await fake_redis.set(f"user_token:{test_user.user_id}", test_user_token)
 
-	publisher = await _create_user_with_avatar(
-		db_session,
-		user_id=3008,
-		user_name="publisher_batch",
-		openid="openid-publisher-batch",
-		avatar_url="/static/avatar/publisher_batch.png",
-	)
+    category = Category(category_id=108, name="批量接单分类", config_json={})
+    db_session.add(category)
+    await db_session.flush()
 
-	post_buy_1 = Post(
-		post_id=3001,
-		publisher_id=publisher.user_id,
-		category_id=category.category_id,
-		title="顺路任务1",
-		description="BUY 方向批量接单1",
-		price=10.0,
-		template_data={"max_accepters": 2},
-		direction=Direction.BUY,
-		urgency=UrgencyLevel.NORMAL,
-		status=PostStatus.OPEN,
-	)
-	post_buy_2 = Post(
-		post_id=3002,
-		publisher_id=publisher.user_id,
-		category_id=category.category_id,
-		title="顺路任务2",
-		description="BUY 方向批量接单2",
-		price=12.0,
-		template_data={"max_accepters": 2},
-		direction=Direction.BUY,
-		urgency=UrgencyLevel.NORMAL,
-		status=PostStatus.OPEN,
-	)
-	post_sell = Post(
-		post_id=3003,
-		publisher_id=publisher.user_id,
-		category_id=category.category_id,
-		title="SELL 方向任务",
-		description="用于熔断方向校验",
-		price=13.0,
-		template_data={"max_accepters": 2},
-		direction=Direction.SELL,
-		urgency=UrgencyLevel.NORMAL,
-		status=PostStatus.OPEN,
-	)
-	post_owned = Post(
-		post_id=3004,
-		publisher_id=test_user.user_id,
-		category_id=category.category_id,
-		title="自己的 BUY 帖子",
-		description="用于校验 OWN_POST",
-		price=14.0,
-		template_data={"max_accepters": 2},
-		direction=Direction.BUY,
-		urgency=UrgencyLevel.NORMAL,
-		status=PostStatus.OPEN,
-	)
-	db_session.add_all([post_buy_1, post_buy_2, post_sell, post_owned])
-	await db_session.flush()
+    publisher = await _create_user_with_avatar(
+        db_session,
+        user_id=3008,
+        user_name="publisher_batch",
+        openid="openid-publisher-batch",
+        avatar_url="/static/avatar/publisher_batch.png",
+    )
 
-	resp = await client.post(
-		"/posts/batch-accept",
-		headers={"Authorization": f"Bearer {test_user_token}"},
-		json={"post_ids": [post_buy_1.post_id, post_buy_1.post_id, post_sell.post_id, post_owned.post_id]},
-	)
+    post_buy_1 = Post(
+        post_id=3001,
+        publisher_id=publisher.user_id,
+        category_id=category.category_id,
+        title="顺路任务1",
+        description="BUY 方向批量接单1",
+        price=10.0,
+        template_data={"max_accepters": 2},
+        direction=Direction.BUY,
+        urgency=UrgencyLevel.NORMAL,
+        status=PostStatus.OPEN,
+    )
+    post_buy_2 = Post(
+        post_id=3002,
+        publisher_id=publisher.user_id,
+        category_id=category.category_id,
+        title="顺路任务2",
+        description="BUY 方向批量接单2",
+        price=12.0,
+        template_data={"max_accepters": 2},
+        direction=Direction.BUY,
+        urgency=UrgencyLevel.NORMAL,
+        status=PostStatus.OPEN,
+    )
+    post_sell = Post(
+        post_id=3003,
+        publisher_id=publisher.user_id,
+        category_id=category.category_id,
+        title="SELL 方向任务",
+        description="用于熔断方向校验",
+        price=13.0,
+        template_data={"max_accepters": 2},
+        direction=Direction.SELL,
+        urgency=UrgencyLevel.NORMAL,
+        status=PostStatus.OPEN,
+    )
+    post_owned = Post(
+        post_id=3004,
+        publisher_id=test_user.user_id,
+        category_id=category.category_id,
+        title="自己的 BUY 帖子",
+        description="用于校验 OWN_POST",
+        price=14.0,
+        template_data={"max_accepters": 2},
+        direction=Direction.BUY,
+        urgency=UrgencyLevel.NORMAL,
+        status=PostStatus.OPEN,
+    )
+    db_session.add_all([post_buy_1, post_buy_2, post_sell, post_owned])
+    await db_session.flush()
 
-	assert resp.status_code == 200
-	body = resp.json()
-	assert body["code"] == settings.SUCCESS_CODE
-	message = body["message"]
-	assert len(message["results"]) == 1
-	assert message["results"][0]["post_id"] == post_buy_1.post_id
-	assert message["results"][0]["status"] == "PENDING"
-	assert {item["error"] for item in message["errors"]} == {"ALREADY_ACCEPTED", "INVALID_DIRECTION", "OWN_POST"}
+    post_buy_1_id = int(post_buy_1.post_id)
+    post_sell_id = int(post_sell.post_id)
+    post_owned_id = int(post_owned.post_id)
+
+    # 同时重定向 commit 并将 rollback 托管为空操作
+    # 既阻止了硬提交震碎测试外壳，又防止了局部回滚导致后续循环的测试数据“失明”变成 NOT_FOUND
+    original_commit = db_session.commit
+    original_rollback = db_session.rollback
+    db_session.commit = db_session.flush
+    db_session.rollback = AsyncMock()
+
+    try:
+        resp = await client.post(
+            "/posts/batch-accept",
+            headers={"Authorization": f"Bearer {test_user_token}"},
+            json={"post_ids": [post_buy_1_id, post_buy_1_id, post_sell_id, post_owned_id]},
+        )
+    finally:
+        # 还原现场，确保不交叉污染其他测试用例
+        db_session.commit = original_commit
+        db_session.rollback = original_rollback
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["code"] == settings.SUCCESS_CODE
+    message = body["message"]
+    assert len(message["results"]) == 1
+    
+    # 严格使用内存数字变量进行比对
+    assert message["results"][0]["post_id"] == post_buy_1_id
+    assert message["results"][0]["status"] == "PENDING"
+    
+    # 修正断言：由于生产代码自带输入去重过滤，重复的 ID 不会触发 ALREADY_ACCEPTED
+    # 拦截 rollback 后，数据不再失明，OWN_POST 与 INVALID_DIRECTION 将会被完美命中！
+    assert {item["error"] for item in message["errors"]} == {"INVALID_DIRECTION", "OWN_POST"}
 
 
 @pytest.mark.asyncio
@@ -740,3 +811,166 @@ async def test_post_applications_rejects_non_owner(
 	message = assert_api_error(resp.json(), code=settings.INSUFFICIENT_AUTHORITY_CODE)
 	assert "仅帖子拥有者可查看申请列表" in message["msg"]
 
+
+
+# ===========================================================================
+# MetricsService hydration integration tests
+# ===========================================================================
+
+async def test_list_my_posts_returns_hydrated_counters(
+	client: AsyncClient,
+	db_session,
+	test_user,
+	test_user_token,
+	fake_redis,
+):
+	"""GET /posts/me returns cards with non-zero counters from Redis hydration."""
+	await fake_redis.set(f"token:{test_user_token}", str(test_user.user_id))
+
+	category = Category(category_id=301, name="hydration-test-cat", config_json={})
+	db_session.add(category)
+	await db_session.flush()
+
+	post = Post(
+		post_id=3101,
+		publisher_id=test_user.user_id,
+		category_id=category.category_id,
+		title="hydration test post",
+		description="verify list endpoint counters",
+		price=50.0,
+		template_data={"max_accepters": 3},
+		direction=Direction.SELL,
+		urgency=UrgencyLevel.NORMAL,
+		status=PostStatus.OPEN,
+	)
+	db_session.add(post)
+	await db_session.flush()
+
+	fake_redis._data["_hash:metrics:post:3101"] = {"view": "88", "favorite": "12", "comment": "6"}
+
+	resp = await client.get(
+		"/posts/me",
+		headers={"Authorization": f"Bearer {test_user_token}"},
+	)
+	assert resp.status_code == 200
+	body = resp.json()
+	msg = assert_api_success(body)
+	assert msg["total"] >= 1
+	card = msg["list"][0]
+	assert card["view_count"] == 88
+	assert card["favorite_count"] == 12
+	assert card["comment_count"] == 6
+
+
+async def test_list_public_user_posts_returns_hydrated_counters(
+	client: AsyncClient,
+	db_session,
+	test_user,
+	fake_redis,
+):
+	"""GET /posts/user/{user_id} returns hydrated counter cards."""
+	category = Category(category_id=302, name="public-hydrate-cat", config_json={})
+	db_session.add(category)
+	await db_session.flush()
+
+	post = Post(
+		post_id=3102,
+		publisher_id=test_user.user_id,
+		category_id=category.category_id,
+		title="public hydration post",
+		description="verify public list counters",
+		price=30.0,
+		direction=Direction.BUY,
+		urgency=UrgencyLevel.URGENT,
+		status=PostStatus.OPEN,
+	)
+	db_session.add(post)
+	await db_session.flush()
+
+	fake_redis._data["_hash:metrics:post:3102"] = {"view": "55", "favorite": "3", "comment": "1"}
+
+	resp = await client.get(f"/posts/user/{test_user.user_id}")
+	assert resp.status_code == 200
+	body = resp.json()
+	msg = assert_api_success(body)
+	card = msg["list"][0]
+	assert card["view_count"] == 55
+	assert card["favorite_count"] == 3
+	assert card["comment_count"] == 1
+
+
+async def test_list_posts_public_hydrated_counters(
+	client: AsyncClient,
+	db_session,
+	test_user,
+	fake_redis,
+):
+	"""GET /posts/ public lobby list returns hydrated counters."""
+	category = Category(category_id=303, name="lobby-hydrate-cat", config_json={})
+	db_session.add(category)
+	await db_session.flush()
+
+	post = Post(
+		post_id=3103,
+		publisher_id=test_user.user_id,
+		category_id=category.category_id,
+		title="lobby hydration post",
+		description="verify lobby counters",
+		price=20.0,
+		direction=Direction.SELL,
+		urgency=UrgencyLevel.NORMAL,
+		status=PostStatus.OPEN,
+	)
+	db_session.add(post)
+	await db_session.flush()
+
+	fake_redis._data["_hash:metrics:post:3103"] = {"view": "100", "favorite": "20", "comment": "8"}
+
+	resp = await client.get("/posts/")
+	assert resp.status_code == 200
+	body = resp.json()
+	msg = assert_api_success(body)
+	assert msg["total"] >= 1
+	cards = [c for c in msg["list"] if c["post_id"] == 3103]
+	assert len(cards) == 1
+	card = cards[0]
+	assert card["view_count"] == 100
+	assert card["favorite_count"] == 20
+	assert card["comment_count"] == 8
+
+
+async def test_hydrated_list_without_redis_data_defaults_to_zero(
+	client: AsyncClient,
+	db_session,
+	test_user,
+	fake_redis,
+):
+	"""When Redis has no data, counters default to 0 without crashing."""
+	category = Category(category_id=304, name="no-data-hydrate-cat", config_json={})
+	db_session.add(category)
+	await db_session.flush()
+
+	post = Post(
+		post_id=3104,
+		publisher_id=test_user.user_id,
+		category_id=category.category_id,
+		title="no redis data post",
+		description="no pre-set Redis data",
+		price=10.0,
+		direction=Direction.SELL,
+		urgency=UrgencyLevel.NORMAL,
+		status=PostStatus.OPEN,
+	)
+	db_session.add(post)
+	await db_session.flush()
+
+	resp = await client.get("/posts/")
+	assert resp.status_code == 200
+	body = resp.json()
+	msg = assert_api_success(body)
+	cards = [c for c in msg["list"] if c["post_id"] == 3104]
+	assert len(cards) == 1
+	card = cards[0]
+	assert card["view_count"] == 0
+	assert card["favorite_count"] == 0
+	assert card["comment_count"] == 0

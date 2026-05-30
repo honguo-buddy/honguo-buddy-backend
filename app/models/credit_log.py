@@ -2,7 +2,7 @@ from sqlalchemy import BigInteger, Column, DateTime, ForeignKey, Integer, String
 from sqlalchemy.orm import relationship
 
 from app.core.datetime_utils import beijing_now_for_model
-from app.db.base import Base
+from app.db_base import Base
 
 
 class CreditLog(Base):

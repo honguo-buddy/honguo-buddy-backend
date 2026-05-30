@@ -24,6 +24,7 @@ class OrderRead(BaseModel):
     meta_data: Optional[Dict[str, Any]] = None
     buyer: Optional[UserRead] = None
     seller: Optional[UserRead] = None
+    curr_accepters: Optional[int] = None
 
     model_config = {"from_attributes": True}
 

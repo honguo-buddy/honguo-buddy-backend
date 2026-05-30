@@ -1,22 +1,31 @@
 """用户 API 路由层。"""
 
-from typing import Optional, Union
+from typing import Literal, Optional, Union
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, BackgroundTasks, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api import get_current_user, get_current_user_optional
 from app.core import settings, AuthHTTPException
-from app.db import get_db
+from app.db import get_db, get_redis, redis
 from app.schemas import (
     AuthErrorResponse,
+    FavoriteListResponse,
+    HistoryDeletePayload,
+    FavoriteRequest,
+    FavoriteResponse,
+    HistoryListResponse,
     ResponseModel,
+    UserFollowListResponse,
+    UserFollowToggleRequest,
+    UserFollowToggleResponse,
     user as UserSchema,
     UserProfileResponse,
     UserPublicResponse,
     UserSelfUpdateRequest,
 )
-from app.services import UserService
+from app.services import MetricsService, ReputationService, SocialService, UserService
+from app.models import User as UserModel
 
 router = APIRouter()
 
@@ -83,6 +92,126 @@ async def delete_me(
     )
 
 
+@router.post("/follow", response_model=ResponseModel[UserFollowToggleResponse])
+async def toggle_follow(
+    request: UserFollowToggleRequest,
+    current_user: UserSchema = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """关注 / 取消关注用户。"""
+    result = await SocialService.toggle_follow(db, current_user.user_id, request.following_id)
+    return ResponseModel(code=settings.SUCCESS_CODE, message=UserFollowToggleResponse.model_validate(result))
+
+
+@router.post("/favorite", response_model=ResponseModel[FavoriteResponse])
+async def toggle_favorite(
+    request: FavoriteRequest,
+    current_user: UserSchema = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """收藏 / 取消收藏帖子或商品。"""
+    result = await SocialService.toggle_favorite(db, current_user.user_id, request.target_type, request.target_id)
+    return ResponseModel(code=settings.SUCCESS_CODE, message=FavoriteResponse.model_validate(result))
+
+
+@router.get("/me/followings", response_model=ResponseModel[UserFollowListResponse])
+async def list_my_followings(
+    current_user: UserSchema = Depends(get_current_user),
+    page: int = 1,
+    page_size: int = 20,
+    db: AsyncSession = Depends(get_db),
+):
+    """获取我的关注列表。"""
+    offset = (page - 1) * page_size
+    result = await SocialService.list_followings(db, current_user.user_id, offset, page_size)
+    result["page"] = page
+    result["page_size"] = page_size
+    return ResponseModel(code=settings.SUCCESS_CODE, message=UserFollowListResponse.model_validate(result))
+
+
+@router.get("/me/followers", response_model=ResponseModel[UserFollowListResponse])
+async def list_my_followers(
+    current_user: UserSchema = Depends(get_current_user),
+    page: int = 1,
+    page_size: int = 20,
+    db: AsyncSession = Depends(get_db),
+):
+    """获取我的粉丝列表。"""
+    offset = (page - 1) * page_size
+    result = await SocialService.list_followers(db, current_user.user_id, offset, page_size)
+    result["page"] = page
+    result["page_size"] = page_size
+    return ResponseModel(code=settings.SUCCESS_CODE, message=UserFollowListResponse.model_validate(result))
+
+
+@router.get("/me/favorites", response_model=ResponseModel[FavoriteListResponse])
+async def list_my_favorites(
+    current_user: UserSchema = Depends(get_current_user),
+    page: int = 1,
+    page_size: int = 20,
+    db: AsyncSession = Depends(get_db),
+    redis_client = Depends(get_redis),
+):
+    """获取我的收藏列表。"""
+    offset = (page - 1) * page_size
+    result = await SocialService.list_favorites(db, current_user.user_id, offset, page_size)
+    result["page"] = page
+    result["page_size"] = page_size
+
+    # 批量灌水：为收藏列表中的 POST 卡片注入计数器
+    fav_items = result.get("list", [])
+    post_items = [it for it in fav_items if it.get("target_type") == "POST"]
+    if post_items:
+        await MetricsService.hydrate_posts_with_metrics(redis_client, post_items, [it["target_id"] for it in post_items], id_key="target_id")
+
+    return ResponseModel(code=settings.SUCCESS_CODE, message=FavoriteListResponse.model_validate(result))
+
+
+@router.get("/me/histories", response_model=ResponseModel[HistoryListResponse])
+async def list_my_histories(
+    current_user: UserSchema = Depends(get_current_user),
+    page: int = 1,
+    page_size: int = 20,
+    db: AsyncSession = Depends(get_db),
+    redis_client = Depends(get_redis),
+):
+    """获取我的历史墙（最近浏览记录）。"""
+    offset = (page - 1) * page_size
+    result = await SocialService.list_history(redis_client, db, current_user.user_id, offset, page_size)
+    result["page"] = page
+    result["page_size"] = page_size
+
+    # 批量灌水：为历史足迹中的 POST 卡片注入计数器
+    hist_items = result.get("list", [])
+    post_items = [it for it in hist_items if it.get("target_type") == "POST"]
+    if post_items:
+        await MetricsService.hydrate_posts_with_metrics(redis_client, post_items, [it["target_id"] for it in post_items], id_key="target_id")
+
+    return ResponseModel(code=settings.SUCCESS_CODE, message=HistoryListResponse.model_validate(result))
+
+
+@router.post("/me/histories/delete", response_model=ResponseModel[dict])
+async def delete_my_histories(
+    payload: HistoryDeletePayload,
+    bg_tasks: BackgroundTasks,
+    current_user: UserSchema = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    redis_client=Depends(get_redis),
+):
+    """多维聚合清理历史足迹（支持单条、时间段、全量三种模式）。
+
+    禁止使用 DELETE 带 Body，采用 POST 承载清理载荷以防网关裁剪。
+    """
+    result = await SocialService.delete_user_history(
+        db=db,
+        user_id=current_user.user_id,
+        payload=payload,
+        bg_tasks=bg_tasks,
+        redis_client=redis_client,
+    )
+    return ResponseModel(code=settings.SUCCESS_CODE, message=result)
+
+
 @router.get("/info", response_model=ResponseModel[Union[dict, AuthErrorResponse]])
 async def get_profile(current_user: UserSchema = Depends(get_current_user)):
     """获取当前登录用户基础信息（向后兼容/弃用）。"""
@@ -96,6 +225,49 @@ async def get_profile(current_user: UserSchema = Depends(get_current_user)):
             "userType": current_user.user_type,
         },
     )
+
+
+@router.get("/{user_id}/profile", response_model=ResponseModel[dict])
+async def get_user_profile(
+    user_id: int,
+    current_user: Optional[UserSchema] = Depends(get_current_user_optional),
+    db: AsyncSession = Depends(get_db),
+):
+    """获取用户主页声誉画像（含双角色星级与印象标签）。
+
+    优先读取 Redis 缓存，击穿时回数据库重算。
+    """
+    user = await db.get(UserModel, user_id)
+    if not user or user.is_deleted:
+        raise AuthHTTPException(
+            code=settings.USER_GET_FAILED_CODE,
+            msg="用户不存在",
+        )
+    reputation = await ReputationService.get_user_reputation(redis, db, user_id)
+    return ResponseModel(code=settings.SUCCESS_CODE, message=reputation)
+
+
+@router.get("/{user_id}/reviews", response_model=ResponseModel[dict])
+async def get_user_reviews(
+    user_id: int,
+    role: Literal["CARRIER", "CLIENT"] = "CARRIER",
+    offset: int = 0,
+    limit: int = 20,
+    db: AsyncSession = Depends(get_db),
+):
+    """延迟加载用户评价详情（支持 CARRIER/CLIENT 双 Tab 页签）。
+
+    执行严格双向脱敏：评价发表人头像置 None，姓名打码。
+    仅展示已通过双盲释放机制（is_visible=True）的评价。
+    """
+    user = await db.get(UserModel, user_id)
+    if not user or user.is_deleted:
+        raise AuthHTTPException(
+            code=settings.USER_GET_FAILED_CODE,
+            msg="用户不存在",
+        )
+    result = await ReputationService.get_user_reviews(db, user_id, role, offset, limit)
+    return ResponseModel(code=settings.SUCCESS_CODE, message=result)
 
 
 @router.get("/{user_id}", response_model=ResponseModel[Union[UserPublicResponse, UserProfileResponse]])

@@ -3,7 +3,7 @@ from sqlalchemy import Column, BigInteger, Integer, Text, DateTime, ForeignKey, 
 from sqlalchemy.orm import relationship
 
 from app.core.datetime_utils import beijing_now_for_model
-from app.db.base import Base
+from app.db_base import Base
 
 
 class ReviewType(enum.Enum):

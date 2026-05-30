@@ -117,3 +117,40 @@ Comment (递归树)：支持 parent_id 自关联，实现嵌套回复。
 
 【迁移与兼容】
 - 时间字段迁移时要保证历史数据语义一致，明确记录原时区假设与转换策略，避免同一字段混用 UTC 与北京时间。
+
+9. 模型迁移后的引用同步 (Post-Migration Reference Sync)
+
+【问题】当模型字段从单一布尔/字符串属性迁移到统一状态枚举时（如 Goods.is_sold → Goods.status + GoodsStatus.SOLD），若旧属性已从模型中移除，使用 getattr(obj, "is_sold", False) 会因默认值回退而静默返回错误结果，不触发 AttributeError。
+
+【解决】
+- 模型字段迁移前，全局搜索所有引用点（rg "is_sold"），逐个替换为枚举比较。
+- 使用 goods_item.status == GoodsStatus.SOLD 替代 getattr(goods_item, "is_sold", False)。
+- 迁移完成后从模型中移除废弃字段，确保未来引用会触发显式 AttributeError 而非静默错误。
+
+
+10. Schema 与模型枚举双向绑定 (Schema-Model Enum Bidirectional Binding)
+
+【问题】Pydantic Schema 中字段类型定义为 raw str，导致：(1) API 输入不做枚举值校验，接受任意字符串；(2) ORM 模型返回的枚举对象需要手动 .value 转换；(3) 枚举成员变更时 Schema 侧无编译提示。
+
+【解决】
+- Schema 字段类型必须显式绑定模型枚举类：condition: GoodsCondition, status: Optional[GoodsStatus]。
+- Pydantic v2 默认将枚举序列化为其值（字符串），无需额外配置。
+- 如需枚举对象传递，使用 model_config = ConfigDict(use_enum_values=True) 控制序列化行为。
+- 枚举类的 name 属性必须全局唯一，避免 Alembic 迁移冲突。
+
+
+11. 原生 SQL 参数化安全 (Raw SQL Parameterization)
+
+【问题】使用 text().format() 拼接 SQL 时，.format() 先于 text() 执行，变量值直接嵌入 SQL 字符串，绕过 SQLAlchemy 的参数绑定与转义机制。即使数据源可信，此模式也不利于 SQL 语句缓存。
+
+【解决】使用 :param 命名占位符 + bind_params 字典：
+  sql = text("INSERT INTO t (col) VALUES (:val)")
+  await db.execute(sql, {"val": 123})
+批量多行使用 :col_N 模式在 Python 侧构建占位符与参数映射。
+
+
+12. 废弃导入清理 (Dead Import Cleanup)
+
+【问题】模型中保留未使用的导入（如 from sqlalchemy import Float 但无 Float 类型列），增加编译开销且造成代码审查噪声。
+
+【解决】每次模型修改后检查导入列表，移除未使用的符号。CI 可集成 ruff/pyflakes 自动检测。

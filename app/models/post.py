@@ -4,7 +4,7 @@ from sqlalchemy import BigInteger, Boolean, Column, DateTime, Enum as SAEnum, Fo
 from sqlalchemy.orm import foreign, relationship
 
 from app.core.datetime_utils import beijing_now_for_model
-from app.db.base import Base
+from app.db_base import Base
 
 
 class PostStatus(enum.Enum):
@@ -99,3 +99,17 @@ class Post(Base):
             return int(val) if val is not None else 1
         except Exception:
             return 1
+
+class PostMetrics(Base):
+    """帖子计数器分表：物理隔离 posts 主表，避免写放大污染业务查询。
+
+    与 posts 表通过 post_id 保持 1:1 锁死关联。
+    """
+    __tablename__ = "post_metrics"
+
+    post_id = Column(BigInteger, ForeignKey("post.post_id", ondelete="CASCADE"), primary_key=True, comment="帖子ID（1:1关联posts表）")
+    view_count = Column(BigInteger, default=0, nullable=False, comment="浏览次数")
+    favorite_count = Column(BigInteger, default=0, nullable=False, comment="收藏次数")
+    comment_count = Column(BigInteger, default=0, nullable=False, comment="评论次数")
+    create_time = Column(DateTime, default=beijing_now_for_model, nullable=False, comment="创建时间")
+    update_time = Column(DateTime, default=beijing_now_for_model, onupdate=beijing_now_for_model, nullable=False, comment="更新时间")

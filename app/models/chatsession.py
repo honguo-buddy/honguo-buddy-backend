@@ -1,6 +1,6 @@
 from sqlalchemy import Column, BigInteger, Text, DateTime, ForeignKey, Index, String
 from sqlalchemy.orm import relationship
-from app.db.base import Base
+from app.db_base import Base
 
 class ChatSession(Base):
     """私信会话表：维护双人会话与最后消息预览。"""

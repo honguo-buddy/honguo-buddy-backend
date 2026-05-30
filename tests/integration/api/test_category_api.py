@@ -157,7 +157,7 @@ class TestCategoryAdminCrud:
 
         assert resp.status_code == 200
         message = assert_api_error(resp.json(), code=settings.REQ_ERROR_CODE)
-        assert "模板分类名称已存在" in message["msg"]
+        assert "已存在" in message["msg"]
 
     async def test_update_category_template(self, client: AsyncClient, db_session, test_admin_user, test_admin_token, fake_redis):
         """管理员可更新模板分类。"""

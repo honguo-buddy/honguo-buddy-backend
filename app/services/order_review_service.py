@@ -12,7 +12,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import BusinessHTTPException, ResourceHTTPException, get_now_naive, settings
 from app.core.delay_queue import REVIEW_DOUBLE_BLIND_QUEUE_KEY, enqueue_delayed_task
-from app.models import Order, OrderReview, ReviewType, OrderStatus
+from app.models import AttachmentTargetType, Order, OrderReview, ReviewType, OrderStatus
+from app.services.attachment_service import AttachmentService
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +86,7 @@ class OrderReviewService:
         rating: int | None = None,
         content: str | None = None,
         is_anonymous: bool = False,
+        attachment_ids: list[int] | None = None,
         redis_client=None,
     ) -> OrderReview:
         """创建订单评价并在满足条件时自动公开。"""
@@ -140,6 +142,15 @@ class OrderReviewService:
         )
         db.add(review)
         await db.flush()
+
+        if attachment_ids:
+            await AttachmentService.bind_attachments_to_target(
+                db=db,
+                attachment_ids=attachment_ids,
+                target_type=AttachmentTargetType.ORDERREVIEW.value,
+                target_id=review.review_id,
+                creator_id=current_user_id,
+            )
 
         if review_type_enum == ReviewType.INITIAL:
             initial_count_stmt = select(func.count()).select_from(OrderReview).where(

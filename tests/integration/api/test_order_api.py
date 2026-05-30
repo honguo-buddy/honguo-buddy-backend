@@ -13,7 +13,7 @@ from app.core.cleantask import process_delayed_queues_once
 from app.core.delay_queue import ORDER_AUTO_CONFIRM_QUEUE_KEY, REVIEW_DOUBLE_BLIND_QUEUE_KEY
 from app.core import settings
 from app.db import AsyncSessionLocal
-from app.models import Category, Direction, ItemType, Order, OrderReview, OrderStatus, Post, PostStatus, SexEnum, UrgencyLevel, User, UserType
+from app.models import Attachment, AttachmentTargetType, Category, Direction, ItemType, Order, OrderReview, OrderStatus, Post, PostStatus, SexEnum, UrgencyLevel, User, UserType
 from app.models import CreditLog
 from app.services import OrderReviewService, OrderService
 from tests.helpers import assert_api_error
@@ -445,6 +445,44 @@ async def test_order_review_double_blind_flow(client, app, db_session):
 
     review_rows = await db_session.execute(select(OrderReview).where(OrderReview.order_id == order.order_id))
     assert len(review_rows.scalars().all()) == 2
+
+    await _clear_current_user(app)
+
+
+@pytest.mark.asyncio
+async def test_order_review_can_attach_images(client, app, db_session):
+    order, publisher, helper = await _prepare_completed_order(client, app, db_session)
+
+    attachment = Attachment(
+        target_type=AttachmentTargetType.USER,
+        target_id=helper.user_id,
+        url="/static/order_review_attachment.png",
+        creator_id=helper.user_id,
+    )
+    db_session.add(attachment)
+    await db_session.flush()
+
+    await _set_current_user(app, helper)
+    resp = await client.post(
+        "/orders/reviews",
+        json={
+            "order_id": order.order_id,
+            "reviewee_id": publisher.user_id,
+            "review_type": "INITIAL",
+            "rating": 5,
+            "content": "评价时带附件",
+            "is_anonymous": False,
+            "attachment_ids": [attachment.attachment_id],
+        },
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["code"] == settings.SUCCESS_CODE
+    assert body["message"]["attachment_urls"] == ["/static/order_review_attachment.png"]
+
+    await db_session.refresh(attachment)
+    assert attachment.target_type == AttachmentTargetType.ORDERREVIEW
+    assert attachment.target_id == body["message"]["review_id"]
 
     await _clear_current_user(app)
 
@@ -892,15 +930,17 @@ async def test_auto_confirm_and_accept_delivery_do_not_double_credit(monkeypatch
 async def test_register_scheduler_jobs_adds_double_blind_fallback():
     from app.main import register_scheduler_jobs
 
-    captured = {}
+    captured = []
 
     class FakeScheduler:
         def add_job(self, func, trigger, **kwargs):
-            captured["func"] = func
-            captured["trigger"] = trigger
-            captured["kwargs"] = kwargs
+            captured.append({"func": func, "trigger": trigger, "kwargs": kwargs})
 
     register_scheduler_jobs(FakeScheduler())
-    assert captured["trigger"] == "interval"
-    assert captured["kwargs"]["id"] == "auto_release_expired_double_blind_reviews"
-    assert captured["kwargs"]["replace_existing"] is True
+    assert len(captured) == 2, f"Expected 2 scheduler jobs, got {len(captured)}"
+    job_ids = {j["kwargs"]["id"] for j in captured}
+    assert "auto_release_expired_double_blind_reviews" in job_ids
+    assert "flush_metrics_to_db" in job_ids
+    for j in captured:
+        assert j["trigger"] == "interval"
+        assert j["kwargs"]["replace_existing"] is True

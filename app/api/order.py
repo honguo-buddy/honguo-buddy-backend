@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api import get_current_user
 from app.core import BusinessHTTPException, settings
 from app.db import get_db, get_redis
-from app.models import Goods, Post
+from app.models import AttachmentTargetType, Goods, ItemType, Post
 from app.schemas import (
     OrderItemList,
     OrderList,
@@ -20,7 +20,7 @@ from app.schemas import (
     ResponseModel,
     UserRead,
 )
-from app.services import OrderReviewService, OrderService
+from app.services import AttachmentService, OrderReviewService, OrderService
 
 router = APIRouter()
 
@@ -147,9 +147,18 @@ async def create_order_review(
         rating=payload.rating,
         content=payload.content,
         is_anonymous=payload.is_anonymous,
+        attachment_ids=payload.attachment_ids,
         redis_client=redis_client,
     )
-    return ResponseModel(code=settings.SUCCESS_CODE, message=OrderReviewRead.model_validate(review))
+
+    review_urls = await AttachmentService.get_urls_by_target(
+        db=db,
+        target_type=AttachmentTargetType.ORDERREVIEW.value,
+        target_ids=[review.review_id],
+    )
+    review_data = OrderReviewRead.model_validate(review).model_dump()
+    review_data["attachment_urls"] = review_urls.get(review.review_id, [])
+    return ResponseModel(code=settings.SUCCESS_CODE, message=OrderReviewRead.model_validate(review_data))
 
 
 @router.get("/{order_id}/reviews", response_model=ResponseModel[OrderReviewListResponse])
@@ -164,9 +173,22 @@ async def list_order_reviews(
         current_user_id=current_user.user_id,
         is_admin=bool(current_user.is_admin),
     )
+    review_ids = [review.review_id for review in reviews]
+    attachment_urls_map = await AttachmentService.get_urls_by_target(
+        db=db,
+        target_type=AttachmentTargetType.ORDERREVIEW.value,
+        target_ids=review_ids,
+    )
     return ResponseModel(
         code=settings.SUCCESS_CODE,
-        message=OrderReviewListResponse(items=[OrderReviewRead.model_validate(item) for item in reviews]),
+        message=OrderReviewListResponse(
+            items=[
+                OrderReviewRead.model_validate(
+                    {**OrderReviewRead.model_validate(review).model_dump(), "attachment_urls": attachment_urls_map.get(review.review_id, [])}
+                )
+                for review in reviews
+            ]
+        ),
     )
 
 
@@ -211,6 +233,14 @@ async def cancel_order(
     order_id: int,
     current_user: UserRead = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    redis_client = Depends(get_redis),
 ):
-    order = await OrderService.cancel_order(db, order_id, current_user.user_id)
-    return ResponseModel(code=settings.SUCCESS_CODE, message=_order_to_read(order))
+    order = await OrderService.cancel_order(db, order_id, current_user.user_id, redis_client=redis_client)
+    result = OrderService._serialize_order(order)
+    if order.item_type == ItemType.POST:
+        result["curr_accepters"] = await OrderService.get_current_accepters_count(
+            db,
+            item_type="POST",
+            item_id=order.item_id,
+        )
+    return ResponseModel(code=settings.SUCCESS_CODE, message=OrderRead.model_validate(result))
