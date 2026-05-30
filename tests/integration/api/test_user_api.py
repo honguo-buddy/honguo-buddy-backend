@@ -8,8 +8,8 @@ import uuid
 from httpx import AsyncClient
 
 from app.core import settings
-from app.models import User, Attachment, AttachmentTargetType, Category, Post
-from tests.helpers import assert_api_error
+from app.models import User, Attachment, AttachmentTargetType, Category, Direction, Post, PostStatus, UrgencyLevel
+from tests.helpers import assert_api_error, assert_api_success
 
 pytestmark = pytest.mark.asyncio
 
@@ -750,3 +750,119 @@ class TestUserReputation:
         resp = await client.get("/users/99999/reviews", params={"role": "CARRIER"})
         assert resp.status_code == 200
         assert resp.json()["code"] == 103
+
+
+
+# ===========================================================================
+# MetricsService hydration integration tests (favorites & histories)
+# ===========================================================================
+
+class TestFavoritesHydration:
+    """GET /users/me/favorites: POST-type cards carry hydrated counters."""
+
+    async def test_favorites_post_card_has_counters(
+        self,
+        client: AsyncClient,
+        db_session,
+        test_user,
+        test_user_token,
+        fake_redis,
+    ):
+        """POST-type favorite cards carry view_count/favorite_count/comment_count."""
+        await fake_redis.set(f"token:{test_user_token}", str(test_user.user_id))
+
+        category = Category(category_id=401, name="fav-hydrate-cat", config_json={})
+        db_session.add(category)
+        await db_session.flush()
+
+        post = Post(
+            post_id=4101,
+            publisher_id=test_user.user_id,
+            category_id=category.category_id,
+            title="favorite test post",
+            description="verify fav counter hydration",
+            price=99.0,
+            direction=Direction.SELL,
+            urgency=UrgencyLevel.NORMAL,
+            status=PostStatus.OPEN,
+        )
+        db_session.add(post)
+        await db_session.flush()
+
+        # Create a favorite entry
+        await client.post(
+            "/users/favorite",
+            headers={"Authorization": f"Bearer {test_user_token}"},
+            json={"target_type": "POST", "target_id": 4101},
+        )
+
+        fake_redis._data["_hash:metrics:post:4101"] = {"view": "42", "favorite": "7", "comment": "3"}
+
+        resp = await client.get(
+            "/users/me/favorites",
+            headers={"Authorization": f"Bearer {test_user_token}"},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        msg = assert_api_success(body)
+        assert msg["total"] >= 1
+        card = msg["list"][0]
+        assert card["target_type"] == "POST"
+        assert card["view_count"] == 42
+        assert card["favorite_count"] == 7
+        assert card["comment_count"] == 3
+
+
+class TestHistoriesHydration:
+    """GET /users/me/histories: POST-type history cards carry hydrated counters."""
+
+    async def test_histories_post_card_has_counters(
+        self,
+        client: AsyncClient,
+        db_session,
+        test_user,
+        test_user_token,
+        fake_redis,
+    ):
+        """POST-type history cards carry counter fields from Redis."""
+        await fake_redis.set(f"token:{test_user_token}", str(test_user.user_id))
+
+        category = Category(category_id=402, name="hist-hydrate-cat", config_json={})
+        db_session.add(category)
+        await db_session.flush()
+
+        post = Post(
+            post_id=4102,
+            publisher_id=test_user.user_id,
+            category_id=category.category_id,
+            title="history test post",
+            description="verify history counter hydration",
+            price=75.0,
+            direction=Direction.BUY,
+            urgency=UrgencyLevel.URGENT,
+            status=PostStatus.OPEN,
+        )
+        db_session.add(post)
+        await db_session.flush()
+
+        # Record history by visiting the post detail page
+        await client.get(
+            f"/posts/{4102}",
+            headers={"Authorization": f"Bearer {test_user_token}"},
+        )
+
+        fake_redis._data["_hash:metrics:post:4102"] = {"view": "30", "favorite": "5", "comment": "2"}
+
+        resp = await client.get(
+            "/users/me/histories",
+            headers={"Authorization": f"Bearer {test_user_token}"},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        msg = assert_api_success(body)
+        assert msg["total"] >= 1
+        card = msg["list"][0]
+        assert card["target_type"] == "POST"
+        assert card["view_count"] == 30
+        assert card["favorite_count"] == 5
+        assert card["comment_count"] == 2

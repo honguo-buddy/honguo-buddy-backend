@@ -53,3 +53,12 @@ async def test_post_update_permissions_matrix(client, db_session, test_user, tes
     body_anon = resp_anon.json()
     assert body_anon["code"] == 105  # 期望未登录拦截
 6. 自动化门禁归档 (CI/CD)所有报告必须无条件输出至 test_reports/ 目录下。必须支持通过 pytest 命令行追加 --cov=app --cov-branch --cov-report=xml:test_reports/coverage.xml 指令，供 Jenkins 节点精准抓取分支覆盖率并执行卡门禁阈值。请立即开始，化身为代码终结者，按照此最新修正的“全出口对账”规范编写高压防御测试代码，将所有 Miss 行号彻底清零！
+
+8. Agent 操作经验教训 (Agent Operational Lessons)
+以下教训来源于真实 Agent 操作失误，每次犯错后必须追加到此处以避免重演：
+
+- 【路由函数删除】严禁用全文字符串替换（str.replace）修改路由函数签名。涉及代码块的修改必须用逐行定位+行插入（line-level insertion），避免替换范围失控吞掉整个函数体。
+- 【Mock 类型防御】对生产环境依赖 Enum.value 的代码，在单元测试 mock（如 SimpleNamespace）中该字段是纯字符串，访问 .value 会炸。统一使用 getattr(obj, 'value', obj) 做安全回退。
+- 【全局注册项测试】新增 scheduler job / router / middleware 等全局注册项时，必须搜索所有依赖注册顺序或数量的测试，同步更新断言（如 captured dict → list）。
+- 【Schema 灌水字段】新增 hydrate 灌水逻辑后，必须同步检查 Pydantic Schema 是否定义了对应 counter 字段，否则 model_validate 静默丢弃灌入值导致前端永远显示 0。
+- 【Depends 注入一致性】同一模块内所有路由函数的 Redis 依赖必须统一使用 Depends(get_redis)，禁止部分用 Depends 部分用模块级 import，避免测试 monkey-patch 覆盖遗漏。

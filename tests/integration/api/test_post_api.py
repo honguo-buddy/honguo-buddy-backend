@@ -811,3 +811,166 @@ async def test_post_applications_rejects_non_owner(
 	message = assert_api_error(resp.json(), code=settings.INSUFFICIENT_AUTHORITY_CODE)
 	assert "仅帖子拥有者可查看申请列表" in message["msg"]
 
+
+
+# ===========================================================================
+# MetricsService hydration integration tests
+# ===========================================================================
+
+async def test_list_my_posts_returns_hydrated_counters(
+	client: AsyncClient,
+	db_session,
+	test_user,
+	test_user_token,
+	fake_redis,
+):
+	"""GET /posts/me returns cards with non-zero counters from Redis hydration."""
+	await fake_redis.set(f"token:{test_user_token}", str(test_user.user_id))
+
+	category = Category(category_id=301, name="hydration-test-cat", config_json={})
+	db_session.add(category)
+	await db_session.flush()
+
+	post = Post(
+		post_id=3101,
+		publisher_id=test_user.user_id,
+		category_id=category.category_id,
+		title="hydration test post",
+		description="verify list endpoint counters",
+		price=50.0,
+		template_data={"max_accepters": 3},
+		direction=Direction.SELL,
+		urgency=UrgencyLevel.NORMAL,
+		status=PostStatus.OPEN,
+	)
+	db_session.add(post)
+	await db_session.flush()
+
+	fake_redis._data["_hash:metrics:post:3101"] = {"view": "88", "favorite": "12", "comment": "6"}
+
+	resp = await client.get(
+		"/posts/me",
+		headers={"Authorization": f"Bearer {test_user_token}"},
+	)
+	assert resp.status_code == 200
+	body = resp.json()
+	msg = assert_api_success(body)
+	assert msg["total"] >= 1
+	card = msg["list"][0]
+	assert card["view_count"] == 88
+	assert card["favorite_count"] == 12
+	assert card["comment_count"] == 6
+
+
+async def test_list_public_user_posts_returns_hydrated_counters(
+	client: AsyncClient,
+	db_session,
+	test_user,
+	fake_redis,
+):
+	"""GET /posts/user/{user_id} returns hydrated counter cards."""
+	category = Category(category_id=302, name="public-hydrate-cat", config_json={})
+	db_session.add(category)
+	await db_session.flush()
+
+	post = Post(
+		post_id=3102,
+		publisher_id=test_user.user_id,
+		category_id=category.category_id,
+		title="public hydration post",
+		description="verify public list counters",
+		price=30.0,
+		direction=Direction.BUY,
+		urgency=UrgencyLevel.URGENT,
+		status=PostStatus.OPEN,
+	)
+	db_session.add(post)
+	await db_session.flush()
+
+	fake_redis._data["_hash:metrics:post:3102"] = {"view": "55", "favorite": "3", "comment": "1"}
+
+	resp = await client.get(f"/posts/user/{test_user.user_id}")
+	assert resp.status_code == 200
+	body = resp.json()
+	msg = assert_api_success(body)
+	card = msg["list"][0]
+	assert card["view_count"] == 55
+	assert card["favorite_count"] == 3
+	assert card["comment_count"] == 1
+
+
+async def test_list_posts_public_hydrated_counters(
+	client: AsyncClient,
+	db_session,
+	test_user,
+	fake_redis,
+):
+	"""GET /posts/ public lobby list returns hydrated counters."""
+	category = Category(category_id=303, name="lobby-hydrate-cat", config_json={})
+	db_session.add(category)
+	await db_session.flush()
+
+	post = Post(
+		post_id=3103,
+		publisher_id=test_user.user_id,
+		category_id=category.category_id,
+		title="lobby hydration post",
+		description="verify lobby counters",
+		price=20.0,
+		direction=Direction.SELL,
+		urgency=UrgencyLevel.NORMAL,
+		status=PostStatus.OPEN,
+	)
+	db_session.add(post)
+	await db_session.flush()
+
+	fake_redis._data["_hash:metrics:post:3103"] = {"view": "100", "favorite": "20", "comment": "8"}
+
+	resp = await client.get("/posts/")
+	assert resp.status_code == 200
+	body = resp.json()
+	msg = assert_api_success(body)
+	assert msg["total"] >= 1
+	cards = [c for c in msg["list"] if c["post_id"] == 3103]
+	assert len(cards) == 1
+	card = cards[0]
+	assert card["view_count"] == 100
+	assert card["favorite_count"] == 20
+	assert card["comment_count"] == 8
+
+
+async def test_hydrated_list_without_redis_data_defaults_to_zero(
+	client: AsyncClient,
+	db_session,
+	test_user,
+	fake_redis,
+):
+	"""When Redis has no data, counters default to 0 without crashing."""
+	category = Category(category_id=304, name="no-data-hydrate-cat", config_json={})
+	db_session.add(category)
+	await db_session.flush()
+
+	post = Post(
+		post_id=3104,
+		publisher_id=test_user.user_id,
+		category_id=category.category_id,
+		title="no redis data post",
+		description="no pre-set Redis data",
+		price=10.0,
+		direction=Direction.SELL,
+		urgency=UrgencyLevel.NORMAL,
+		status=PostStatus.OPEN,
+	)
+	db_session.add(post)
+	await db_session.flush()
+
+	resp = await client.get("/posts/")
+	assert resp.status_code == 200
+	body = resp.json()
+	msg = assert_api_success(body)
+	cards = [c for c in msg["list"] if c["post_id"] == 3104]
+	assert len(cards) == 1
+	card = cards[0]
+	assert card["view_count"] == 0
+	assert card["favorite_count"] == 0
+	assert card["comment_count"] == 0

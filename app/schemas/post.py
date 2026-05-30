@@ -74,6 +74,9 @@ class PostRead(BaseModel):
     publisher: Optional[UserRead] = None
     publisher_id: int
     current_accepters: int = 0  # 当前接单人数
+    view_count: int = Field(default=0, description="浏览计数（Redis 灌水）")
+    favorite_count: int = Field(default=0, description="收藏计数（Redis 灌水）")
+    comment_count: int = Field(default=0, description="评论计数（Redis 灌水）")
     create_time: str
     attachment_urls: List[str] = Field(default_factory=list, description="附件 URL 列表")
 

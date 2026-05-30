@@ -11,7 +11,7 @@ from app.core import BEIJING_TZ
 from app.api import auth, user, attachment, category, post, order, comment, chat
 from app.core import register_exception_handlers, LogMiddleware, settings, watch_delayed_queues_task
 from app.db import engine, Base, redis, AsyncSessionLocal
-from app.services import OrderReviewService
+from app.services import OrderReviewService, MetricsService
 
 # 确保 logs 文件夹存在
 os.makedirs("logs", exist_ok=True)
@@ -38,12 +38,26 @@ async def _auto_release_expired_double_blind_reviews_job():
         await OrderReviewService.auto_release_expired_double_blind_reviews(db)
 
 
+async def _flush_metrics_job():
+    async with AsyncSessionLocal() as db:
+        await MetricsService.flush_metrics_to_db(db, redis)
+
+
 def register_scheduler_jobs(scheduler: AsyncIOScheduler) -> None:
     scheduler.add_job(
         _auto_release_expired_double_blind_reviews_job,
         "interval",
         hours=1,
         id="auto_release_expired_double_blind_reviews",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+    scheduler.add_job(
+        _flush_metrics_job,
+        "interval",
+        seconds=60,
+        id="flush_metrics_to_db",
         replace_existing=True,
         max_instances=1,
         coalesce=True,

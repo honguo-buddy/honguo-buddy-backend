@@ -153,6 +153,10 @@ DATA_GET_FAILED_CODE: 106
 接口变更是否同步更新 README。
 
 七、 注意事项
+
+【Redis 依赖注入】路由函数中严禁直接使用模块级 `redis` 变量；必须通过 `redis_client = Depends(get_redis)` 注入。Service 层可用模块级 redis。
+
+
 每次修改接口信息/参数/返回后，必须更新 README 对应接口说明（参考 prompt/prompt-readme）。
 
 每次新增第三方库时，先使用 uv 安装，再更新 requirements.txt。
@@ -358,3 +362,31 @@ OrderService.approve_order 和 reject_order 需要校验 post.publisher_id。
 【测试门禁】
 
 涉及 schema/model/core/db 修改后，必须至少执行一次相关 pytest 并确认 warning 数为 0 后方可交付。
+
+十二、 Redis 灌水赋值规范 (Hydration Assignment Rule)
+
+【问题】MetricsService.hydrate_posts_with_metrics 内使用 dict.setdefault() 写入计数器字段。当 Pydantic Schema 已定义 view_count: int = 0 默认值时，model_dump() 会带出 view_count=0，导致 setdefault 不覆盖已有 key，灌水值被静默丢弃，前端永远显示 0。
+
+【解决】灌水方法内必须使用直接赋值 item["view_count"] = ...，严禁 setdefault。因为灌水的语义是"用 Redis 权威数据覆盖"，而非"仅在缺失时补默认值"。
+
+
+十三、 计数器中心架构红线 (Metrics Service Architecture Lessons)
+
+以下三条是本轮 MetricsService 重构中发现的致命架构缺陷，写入规范防止重演：
+
+【HINCRBY 负数卡位】Redis HINCRBY 可返回负数（如取消收藏导致 favorite=-1）。涉及计数的原子增减方法（favorite、comment、upvote）必须在 hincrby 后立刻加入 `if current < 0: await hset(key, field, 0)` 零值卡位防御，严禁依赖 SQL 层或前端兜底。
+
+【跨 Worker 分布式状态】在多 Worker（Uvicorn --workers N / --reload）部署下，Python 内存变量（set/list/dict）仅存在于单个进程。计数器活跃实体追踪必须使用 Redis 分布式集合（SADD/SMEMBERS/SREM），严禁使用模块级 Python set 做刷盘扫描源。表象：定时日志显示"Executed successfully"但 MySQL 无数据写入。
+
+【详情页自增优先级】帖子详情页的 Redis 自增（incr_post_view）必须提升到 try 块外部、所有 DB 查询之前执行。严禁放在 try 块内部被静默吞噬，严禁放在 DB 查询之后导致热点请求堆积时自增遗漏。此外，路由签名中必须通过 Depends(get_redis) 显式注入 redis_client，严禁使用模块级 redis 变量。
+
+
+十四、 原生 SQL 刷盘时间字段补齐规范 (Raw SQL Flush Time Columns)
+
+【问题】使用 text(...) 原生 SQL 做 INSERT ... ON DUPLICATE KEY UPDATE 批量刷盘时，SQL 绕过 SQLAlchemy ORM 模型层的 default 机制。若物理表有 NOT NULL 时间列（如 create_time、update_time）但未在 MySQL Schema 层设置 DEFAULT，且 INSERT 语句未显式写入这些列，MySQL 会抛出 (1364, "Field 'xxx' doesn't have a default value") 导致事务回滚。
+
+【解决】
+1. INSERT 列清单必须显式包含 create_time 和 update_time。
+2. VALUES 中硬编码北京时间函数：CONVERT_TZ(NOW(), @@session.time_zone, '+08:00')
+3. ON DUPLICATE KEY UPDATE 中须单独刷新 update_time = CONVERT_TZ(NOW(), @@session.time_zone, '+08:00')
+4. 读取 Redis hash 数据时做 bytes/str 双容错：raw.get("view") or raw.get(b"view") or 0

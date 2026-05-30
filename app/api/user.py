@@ -7,7 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api import get_current_user, get_current_user_optional
 from app.core import settings, AuthHTTPException
-from app.db import get_db, redis
+from app.db import get_db, get_redis, redis
 from app.schemas import (
     AuthErrorResponse,
     FavoriteListResponse,
@@ -24,7 +24,7 @@ from app.schemas import (
     UserPublicResponse,
     UserSelfUpdateRequest,
 )
-from app.services import ReputationService, SocialService, UserService
+from app.services import MetricsService, ReputationService, SocialService, UserService
 from app.models import User as UserModel
 
 router = APIRouter()
@@ -150,12 +150,23 @@ async def list_my_favorites(
     page: int = 1,
     page_size: int = 20,
     db: AsyncSession = Depends(get_db),
+    redis_client = Depends(get_redis),
 ):
     """获取我的收藏列表。"""
     offset = (page - 1) * page_size
     result = await SocialService.list_favorites(db, current_user.user_id, offset, page_size)
     result["page"] = page
     result["page_size"] = page_size
+
+    # 批量灌水：为收藏列表中的 POST 卡片注入计数器
+    fav_items = result.get("list", [])
+    post_items = [it for it in fav_items if it.get("target_type") == "POST"]
+    if post_items:
+        # hydrate_posts_with_metrics 按 post_id 寻址，这里临时映射 target_id → post_id
+        for it in post_items:
+            it["post_id"] = it["target_id"]
+        await MetricsService.hydrate_posts_with_metrics(redis_client, post_items, [it["target_id"] for it in post_items])
+
     return ResponseModel(code=settings.SUCCESS_CODE, message=FavoriteListResponse.model_validate(result))
 
 
@@ -165,12 +176,23 @@ async def list_my_histories(
     page: int = 1,
     page_size: int = 20,
     db: AsyncSession = Depends(get_db),
+    redis_client = Depends(get_redis),
 ):
     """获取我的历史墙（最近浏览记录）。"""
     offset = (page - 1) * page_size
-    result = await SocialService.list_history(redis, db, current_user.user_id, offset, page_size)
+    result = await SocialService.list_history(redis_client, db, current_user.user_id, offset, page_size)
     result["page"] = page
     result["page_size"] = page_size
+
+    # 批量灌水：为历史足迹中的 POST 卡片注入计数器
+    hist_items = result.get("list", [])
+    post_items = [it for it in hist_items if it.get("target_type") == "POST"]
+    if post_items:
+        # hydrate_posts_with_metrics 按 post_id 寻址，这里临时映射 target_id → post_id
+        for it in post_items:
+            it["post_id"] = it["target_id"]
+        await MetricsService.hydrate_posts_with_metrics(redis_client, post_items, [it["target_id"] for it in post_items])
+
     return ResponseModel(code=settings.SUCCESS_CODE, message=HistoryListResponse.model_validate(result))
 
 
@@ -180,6 +202,7 @@ async def delete_my_histories(
     current_user: UserSchema = Depends(get_current_user),
     bg_tasks: BackgroundTasks = BackgroundTasks(),
     db: AsyncSession = Depends(get_db),
+    redis_client=Depends(get_redis),
 ):
     """多维聚合清理历史足迹（支持单条、时间段、全量三种模式）。
 
@@ -190,7 +213,7 @@ async def delete_my_histories(
         user_id=current_user.user_id,
         payload=payload,
         bg_tasks=bg_tasks,
-        redis_client=redis,
+        redis_client=redis_client,
     )
     return ResponseModel(code=settings.SUCCESS_CODE, message=result)
 

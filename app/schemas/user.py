@@ -202,6 +202,9 @@ class FavoriteItem(BaseModel):
     target_status: str | None = None
     is_effective: bool
     is_full: bool = False
+    view_count: int = Field(default=0, description="浏览次数")
+    favorite_count: int = Field(default=0, description="收藏次数")
+    comment_count: int = Field(default=0, description="评论次数")
     create_time: int = Field(description="13位毫秒级时间戳")
     publisher: dict | None = Field(default=None, description="发布者简影：{user_name, avatar}")
 
@@ -222,6 +225,9 @@ class HistoryItem(BaseModel):
     target_status: str | None = None
     is_effective: bool
     is_full: bool = False
+    view_count: int = Field(default=0, description="浏览次数")
+    favorite_count: int = Field(default=0, description="收藏次数")
+    comment_count: int = Field(default=0, description="评论次数")
     view_time: int = Field(description="13位毫秒级时间戳")
     publisher: dict | None = Field(default=None, description="发布者简影：{user_name, avatar}")
 

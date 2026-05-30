@@ -930,15 +930,17 @@ async def test_auto_confirm_and_accept_delivery_do_not_double_credit(monkeypatch
 async def test_register_scheduler_jobs_adds_double_blind_fallback():
     from app.main import register_scheduler_jobs
 
-    captured = {}
+    captured = []
 
     class FakeScheduler:
         def add_job(self, func, trigger, **kwargs):
-            captured["func"] = func
-            captured["trigger"] = trigger
-            captured["kwargs"] = kwargs
+            captured.append({"func": func, "trigger": trigger, "kwargs": kwargs})
 
     register_scheduler_jobs(FakeScheduler())
-    assert captured["trigger"] == "interval"
-    assert captured["kwargs"]["id"] == "auto_release_expired_double_blind_reviews"
-    assert captured["kwargs"]["replace_existing"] is True
+    assert len(captured) == 2, f"Expected 2 scheduler jobs, got {len(captured)}"
+    job_ids = {j["kwargs"]["id"] for j in captured}
+    assert "auto_release_expired_double_blind_reviews" in job_ids
+    assert "flush_metrics_to_db" in job_ids
+    for j in captured:
+        assert j["trigger"] == "interval"
+        assert j["kwargs"]["replace_existing"] is True

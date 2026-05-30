@@ -210,40 +210,6 @@ class SocialService:
             "limit": limit,
             "list": items,
         }
-    @staticmethod
-    async def delete_user_history(
-        db: AsyncSession,
-        user_id: int,
-        payload,  # HistoryDeletePayload
-        bg_tasks: BackgroundTasks,
-        redis_client,
-    ) -> dict[str, Any]:
-        """多维聚合清理用户的历史足迹。
-
-        支持 SINGLE（单条删除）、RANGE（时间段删除）、CLEAR_ALL（全量清空）三种模式。
-        Redis 为主存储，直接执行原子操作。
-        """
-        key = f"user:history:{user_id}"
-        action = payload.action_type
-        deleted_count = 0
-
-        if action == "SINGLE":
-            fingerprint = f"{payload.target_type}:{payload.target_id}"
-            deleted_count = int((await redis_client.zrem(key, fingerprint)) or 0)
-
-        elif action == "RANGE":
-            deleted_count = int((await redis_client.zremrangebyscore(key, payload.start_time, payload.end_time)) or 0)
-
-        elif action == "CLEAR_ALL":
-            # 主线程直接清理 Redis 全量数据
-            deleted_count = int((await redis_client.zcard(key)) or 0)
-            await redis_client.delete(key)
-
-        return {
-            "action_type": action,
-            "message": "清理意图已成功接收并在后台异步蒸发",
-            "deleted_count": deleted_count,
-        }
 
     @staticmethod
     async def toggle_favorite(db: AsyncSession, user_id: int, target_type: str, target_id: int) -> dict[str, Any]:
@@ -282,6 +248,13 @@ class SocialService:
         if existing_favorite:
             await db.delete(existing_favorite)
             await db.commit()
+            try:
+                if normalized_target == FavoriteTargetType.POST:
+                    await MetricsService.incr_post_favorite(redis, target_id, delta=-1)
+                else:
+                    await MetricsService.incr_goods_favorite(redis, target_id, delta=-1)
+            except Exception:
+                pass
             return {
                 "target_type": normalized_target.value,
                 "target_id": target_id,
@@ -304,6 +277,14 @@ class SocialService:
                 "target_id": target_id,
                 "is_favorite": True,
             }
+
+        try:
+            if normalized_target == FavoriteTargetType.POST:
+                await MetricsService.incr_post_favorite(redis, target_id, delta=1)
+            else:
+                await MetricsService.incr_goods_favorite(redis, target_id, delta=1)
+        except Exception:
+            pass
 
         return {
             "target_type": normalized_target.value,
@@ -430,40 +411,6 @@ class SocialService:
             "offset": offset,
             "limit": limit,
             "list": items,
-        }
-    @staticmethod
-    async def delete_user_history(
-        db: AsyncSession,
-        user_id: int,
-        payload,  # HistoryDeletePayload
-        bg_tasks: BackgroundTasks,
-        redis_client,
-    ) -> dict[str, Any]:
-        """多维聚合清理用户的历史足迹。
-
-        支持 SINGLE（单条删除）、RANGE（时间段删除）、CLEAR_ALL（全量清空）三种模式。
-        Redis 为主存储，直接执行原子操作。
-        """
-        key = f"user:history:{user_id}"
-        action = payload.action_type
-        deleted_count = 0
-
-        if action == "SINGLE":
-            fingerprint = f"{payload.target_type}:{payload.target_id}"
-            deleted_count = int((await redis_client.zrem(key, fingerprint)) or 0)
-
-        elif action == "RANGE":
-            deleted_count = int((await redis_client.zremrangebyscore(key, payload.start_time, payload.end_time)) or 0)
-
-        elif action == "CLEAR_ALL":
-            # 主线程直接清理 Redis 全量数据
-            deleted_count = int((await redis_client.zcard(key)) or 0)
-            await redis_client.delete(key)
-
-        return {
-            "action_type": action,
-            "message": "清理意图已成功接收并在后台异步蒸发",
-            "deleted_count": deleted_count,
         }
 
     @staticmethod
@@ -607,38 +554,4 @@ class SocialService:
             "offset": offset,
             "limit": limit,
             "list": items,
-        }
-    @staticmethod
-    async def delete_user_history(
-        db: AsyncSession,
-        user_id: int,
-        payload,  # HistoryDeletePayload
-        bg_tasks: BackgroundTasks,
-        redis_client,
-    ) -> dict[str, Any]:
-        """多维聚合清理用户的历史足迹。
-
-        支持 SINGLE（单条删除）、RANGE（时间段删除）、CLEAR_ALL（全量清空）三种模式。
-        Redis 为主存储，直接执行原子操作。
-        """
-        key = f"user:history:{user_id}"
-        action = payload.action_type
-        deleted_count = 0
-
-        if action == "SINGLE":
-            fingerprint = f"{payload.target_type}:{payload.target_id}"
-            deleted_count = int((await redis_client.zrem(key, fingerprint)) or 0)
-
-        elif action == "RANGE":
-            deleted_count = int((await redis_client.zremrangebyscore(key, payload.start_time, payload.end_time)) or 0)
-
-        elif action == "CLEAR_ALL":
-            # 主线程直接清理 Redis 全量数据
-            deleted_count = int((await redis_client.zcard(key)) or 0)
-            await redis_client.delete(key)
-
-        return {
-            "action_type": action,
-            "message": "清理意图已成功接收并在后台异步蒸发",
-            "deleted_count": deleted_count,
         }

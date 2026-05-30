@@ -730,6 +730,9 @@ DATA_GET_FAILED: 301
                 "target_status": "OPEN",
                 "is_effective": true,
                 "is_full": false,
+                "view_count": 88,
+                "favorite_count": 12,
+                "comment_count": 6,
                 "create_time": 1680000000123,
                 "publisher": {
                     "user_name": "发帖用户",
@@ -785,6 +788,9 @@ DATA_GET_FAILED: 301
                 "target_status": "OPEN",
                 "is_effective": true,
                 "is_full": false,
+                "view_count": 55,
+                "favorite_count": 3,
+                "comment_count": 2,
                 "view_time": 1680000000456,
                 "publisher": {
                     "user_name": "发帖用户",
@@ -1338,7 +1344,7 @@ DATA_GET_FAILED: 301
 
 #### 4.5.2 获取帖子列表 (GET: /posts)
 
-用途: 获取帖子列表，支持关键词、模板/分类ID、状态、价格、时间等筛选。
+用途: 获取帖子列表，支持关键词、模板/分类ID、状态、价格、时间等筛选。返回的每个卡片均携带 Redis 实时灌水计数器（iew_count、avorite_count、comment_count）。
 
 请求示例:
 
@@ -1385,6 +1391,9 @@ DATA_GET_FAILED: 301
                 },
                 "publisher_id": 2001,
                 "current_accepters": 0,
+                "view_count": 128,
+                "favorite_count": 15,
+                "comment_count": 9,
                 "create_time": "2025-09-01T12:00:00",
                 "attachment_urls": []
             }
@@ -1443,6 +1452,9 @@ DATA_GET_FAILED: 301
                 },
                 "publisher_id": 1001,
                 "current_accepters": 0,
+                "view_count": 42,
+                "favorite_count": 7,
+                "comment_count": 3,
                 "create_time": "2025-09-01T12:00:00",
                 "attachment_urls": []
             }
@@ -1504,6 +1516,9 @@ DATA_GET_FAILED: 301
                 },
                 "publisher_id": 1002,
                 "current_accepters": 0,
+                "view_count": 30,
+                "favorite_count": 5,
+                "comment_count": 1,
                 "create_time": "2025-09-01T12:00:00",
                 "attachment_urls": []
             }
@@ -1559,6 +1574,9 @@ DATA_GET_FAILED: 301
         },
         "publisher_id": 1001,
         "current_accepters": 0,
+        "view_count": 256,
+        "favorite_count": 32,
+        "comment_count": 14,
         "create_time": "2025-09-01T12:00:00",
         "attachment_urls": ["/static/avatar/avatar_1001_1680000000.png"],
         "comments": [

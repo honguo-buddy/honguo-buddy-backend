@@ -10,6 +10,7 @@ class FakeRedisForMetrics:
     """专门为计数器中心打造的轻量级 FakeRedis。"""
     def __init__(self):
         self._hashes = {}
+        self._sets = {}
         self._pipeline_calls = []
 
     async def hincrby(self, key, field, amount=1):
@@ -21,6 +22,32 @@ class FakeRedisForMetrics:
 
     async def hgetall(self, key):
         return self._hashes.get(key, {}) or None
+
+    async def hset(self, key, field, value):
+        bucket = self._hashes.setdefault(key, {})
+        bucket[field] = str(value)
+        return 1
+
+    async def sadd(self, key, *values):
+        s = self._sets.setdefault(key, set())
+        added = 0
+        for v in values:
+            if v not in s:
+                s.add(v)
+                added += 1
+        return added
+
+    async def smembers(self, key):
+        return list(self._sets.get(key, set()))
+
+    async def srem(self, key, *values):
+        s = self._sets.get(key, set())
+        removed = 0
+        for v in values:
+            if v in s:
+                s.remove(v)
+                removed += 1
+        return removed
 
     def pipeline(self):
         """返回一个 Pipe 对象，收集命令并在 execute 时批量执行。"""
@@ -68,9 +95,11 @@ class TestMetricsService:
         from app.services.metrics_service import MetricsService
 
         redis_fake = FakeRedisForMetrics()
+        # Set initial value to 2, then decrement to 1 (negative guard not triggered)
+        await redis_fake.hset("metrics:post:1001", "favorite", 2)
         await MetricsService.incr_post_favorite(redis_fake, 1001, delta=-1)
         bucket = await redis_fake.hgetall("metrics:post:1001")
-        assert bucket["favorite"] == "-1"
+        assert bucket["favorite"] == "1"
 
     async def test_hydrate_posts_with_metrics(self):
         from app.services.metrics_service import MetricsService
@@ -110,3 +139,142 @@ class TestMetricsService:
         assert items[0]["view_count"] == 0
         assert items[0]["favorite_count"] == 0
         assert items[0]["comment_count"] == 0
+    async def test_incr_post_comment_adds_to_redis(self):
+        from app.services.metrics_service import MetricsService
+
+        redis_fake = FakeRedisForMetrics()
+        await MetricsService.incr_post_comment(redis_fake, 1001, delta=1)
+        bucket = await redis_fake.hgetall("metrics:post:1001")
+        assert bucket["comment"] == "1"
+
+    async def test_incr_post_comment_negative(self):
+        from app.services.metrics_service import MetricsService
+
+        redis_fake = FakeRedisForMetrics()
+        # simulate add then delete
+        await MetricsService.incr_post_comment(redis_fake, 1001, delta=1)
+        await MetricsService.incr_post_comment(redis_fake, 1001, delta=-1)
+        bucket = await redis_fake.hgetall("metrics:post:1001")
+        assert bucket["comment"] == "0"
+
+    async def test_incr_goods_view(self):
+        from app.services.metrics_service import MetricsService
+
+        redis_fake = FakeRedisForMetrics()
+        await MetricsService.incr_goods_view(redis_fake, 2001)
+        bucket = await redis_fake.hgetall("metrics:goods:2001")
+        assert bucket["view"] == "1"
+
+    async def test_incr_goods_favorite(self):
+        from app.services.metrics_service import MetricsService
+
+        redis_fake = FakeRedisForMetrics()
+        await MetricsService.incr_goods_favorite(redis_fake, 2001, delta=1)
+        await MetricsService.incr_goods_favorite(redis_fake, 2001, delta=-1)
+        bucket = await redis_fake.hgetall("metrics:goods:2001")
+        assert bucket["favorite"] == "0"
+
+    async def test_hydrate_items_without_post_id_are_skipped(self):
+        from app.services.metrics_service import MetricsService
+
+        redis_fake = FakeRedisForMetrics()
+        redis_fake._hashes["metrics:post:1001"] = {"view": "5"}
+        items = [
+            {"post_id": 1001, "title": "Has post_id"},
+            {"title": "No post_id"},
+            {"post_id": None, "title": "Explicit None"},
+        ]
+        await MetricsService.hydrate_posts_with_metrics(redis_fake, items, [1001])
+
+        assert items[0]["view_count"] == 5
+        # Items without post_id should be untouched (no crash)
+        assert "view_count" not in items[1]
+        assert "view_count" not in items[2]
+
+    async def test_hydrate_none_post_ids_does_not_crash(self):
+        from app.services.metrics_service import MetricsService
+
+        redis_fake = FakeRedisForMetrics()
+        # post_ids=None should be handled gracefully
+        items = [{"post_id": 1001}]
+        # Empty list should be fine
+        await MetricsService.hydrate_posts_with_metrics(redis_fake, items, [])
+        assert "view_count" not in items[0]  # empty post_ids -> no hydration
+
+    async def test_hydrate_mixed_keys_partial_match(self):
+        from app.services.metrics_service import MetricsService
+
+        redis_fake = FakeRedisForMetrics()
+        redis_fake._hashes["metrics:post:1001"] = {"view": "10", "favorite": "2", "comment": "1"}
+        # 1002 has no metrics in Redis
+
+        items = [
+            {"post_id": 1001, "title": "With metrics"},
+            {"post_id": 1002, "title": "Without metrics"},
+        ]
+        await MetricsService.hydrate_posts_with_metrics(redis_fake, items, [1001, 1002])
+
+        assert items[0]["view_count"] == 10
+        assert items[0]["favorite_count"] == 2
+        assert items[0]["comment_count"] == 1
+        assert items[1]["view_count"] == 0
+        assert items[1]["favorite_count"] == 0
+        assert items[1]["comment_count"] == 0
+
+    async def test_flush_metrics_to_db_empty_pools(self):
+        from app.services.metrics_service import MetricsService
+        from unittest.mock import AsyncMock
+
+        db = AsyncMock()
+        redis_fake = FakeRedisForMetrics()
+        await MetricsService.flush_metrics_to_db(db, redis_fake)
+        # With empty Redis sets, db.execute should not be called
+        db.execute.assert_not_called()
+        db.commit.assert_not_called()
+
+    async def test_flush_metrics_to_db_with_data(self):
+        from app.services.metrics_service import MetricsService
+        from unittest.mock import AsyncMock
+
+        redis_fake = FakeRedisForMetrics()
+        # Pre-populate Redis Set and hash data
+        await redis_fake.sadd("metrics:active_posts_set", 1001)
+        redis_fake._hashes["metrics:post:1001"] = {"view": "20", "favorite": "3", "comment": "1", "upvote": "0"}
+
+        db = AsyncMock()
+        await MetricsService.flush_metrics_to_db(db, redis_fake)
+
+        # Should have executed an INSERT ... ON DUPLICATE KEY UPDATE
+        db.execute.assert_called_once()
+        db.commit.assert_called_once()
+
+        # After successful commit, active set should be cleared
+        members = await redis_fake.smembers("metrics:active_posts_set")
+        assert 1001 not in members
+
+    async def test_incr_post_favorite_never_negative(self):
+        from app.services.metrics_service import MetricsService
+
+        redis_fake = FakeRedisForMetrics()
+        # Simulate un-favorite when count is already 0
+        await redis_fake.hset("metrics:post:1001", "favorite", 0)
+        await MetricsService.incr_post_favorite(redis_fake, 1001, delta=-1)
+        bucket = await redis_fake.hgetall("metrics:post:1001")
+        assert int(bucket["favorite"]) == 0  # clamped to 0, not -1
+
+    async def test_incr_post_comment_never_negative(self):
+        from app.services.metrics_service import MetricsService
+
+        redis_fake = FakeRedisForMetrics()
+        await redis_fake.hset("metrics:post:1001", "comment", 0)
+        await MetricsService.incr_post_comment(redis_fake, 1001, delta=-1)
+        bucket = await redis_fake.hgetall("metrics:post:1001")
+        assert int(bucket["comment"]) == 0
+
+    async def test_incr_post_view_stores_in_active_set(self):
+        from app.services.metrics_service import MetricsService, _ACTIVE_POSTS_SET
+
+        redis_fake = FakeRedisForMetrics()
+        await MetricsService.incr_post_view(redis_fake, 1001)
+        members = await redis_fake.smembers(_ACTIVE_POSTS_SET)
+        assert 1001 in members

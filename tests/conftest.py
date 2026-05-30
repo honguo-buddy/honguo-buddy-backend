@@ -29,6 +29,27 @@ if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
 
+
+
+class _FakeRedisPipe:
+    """FakeRedis 管道：收集 hgetall 命令并批量执行。"""
+
+    def __init__(self, parent) -> None:
+        self._parent = parent
+        self._commands: list = []
+
+    def hgetall(self, key: str):
+        self._commands.append(("hgetall", key))
+        return self
+
+    async def execute(self):
+        results = []
+        for cmd, key in self._commands:
+            if cmd == "hgetall":
+                val = self._parent._data.get(f"_hash:{key}") or {}
+                results.append(val if val else {})
+        return results
+
 class FakeRedis:
     """测试用 Redis 替身。"""
 
@@ -130,6 +151,35 @@ class FakeRedis:
     async def zscore(self, key: str, member: str):
         zset = self._zsets.get(key, {})
         return zset.get(str(member))
+
+    async def sadd(self, key: str, *values):
+        s = self._data.setdefault(f"_set:{key}", set())
+        added = 0
+        for v in values:
+            v_str = str(v)
+            if v_str not in s:
+                s.add(v_str)
+                added += 1
+        return added
+
+    async def smembers(self, key: str):
+        s = self._data.get(f"_set:{key}", set())
+        return list(s)
+
+    async def srem(self, key: str, *values):
+        s = self._data.get(f"_set:{key}", set())
+        removed = 0
+        for v in values:
+            v_str = str(v)
+            if v_str in s:
+                s.remove(v_str)
+                removed += 1
+        return removed
+
+    async def hset(self, key: str, field: str, value):
+        bucket = self._data.setdefault(f"_hash:{key}", {})
+        bucket[field] = str(value)
+        return 1
 
     async def hincrby(self, key: str, field: str, amount: int = 1):
         bucket = self._data.setdefault(f"_hash:{key}", {})
