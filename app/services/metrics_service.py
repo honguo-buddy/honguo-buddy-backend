@@ -215,10 +215,8 @@ async def _flush_goods_metrics(db: AsyncSession, redis_client) -> None:
         view = int(raw.get("view") or raw.get(b"view") or 0)
         favorite = int(raw.get("favorite") or raw.get(b"favorite") or 0)
         comment = int(raw.get("comment") or raw.get(b"comment") or 0)
-        sales = int(raw.get("sales") or raw.get(b"sales") or 0)
-        cart = int(raw.get("cart") or raw.get(b"cart") or 0)
         values_clauses.append(
-            f"({gid}, {view}, {favorite}, {comment}, {sales}, {cart}, "
+            f"({gid}, {view}, {favorite}, {comment}, "
             f"CONVERT_TZ(NOW(), @@session.time_zone, '+08:00'), "
             f"CONVERT_TZ(NOW(), @@session.time_zone, '+08:00'))"
         )
@@ -227,14 +225,12 @@ async def _flush_goods_metrics(db: AsyncSession, redis_client) -> None:
         return
 
     sql = text("""
-        INSERT INTO goods_metrics (goods_id, view_count, favorite_count, comment_count, sales_count, cart_count, create_time, update_time)
+        INSERT INTO goods_metrics (goods_id, view_count, favorite_count, comment_count, create_time, update_time)
         VALUES {values}
         ON DUPLICATE KEY UPDATE
             view_count = VALUES(view_count),
             favorite_count = VALUES(favorite_count),
             comment_count = VALUES(comment_count),
-            sales_count = VALUES(sales_count),
-            cart_count = VALUES(cart_count),
             update_time = CONVERT_TZ(NOW(), @@session.time_zone, '+08:00')
     """.format(values=", ".join(values_clauses)))
 
