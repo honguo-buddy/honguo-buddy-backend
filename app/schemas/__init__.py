@@ -110,6 +110,17 @@ from app.schemas.order_review import (
     OrderReviewListResponse,
 )
 
+
+from app.schemas.goods import (
+    GoodsBase,
+    GoodsCreate,
+    GoodsUpdate,
+    GoodsPublisherSchema,
+    GoodsRead,
+    GoodsDetailRead,
+    GoodsListResponse,
+)
+
 __all__ = [
     # auth
     "WxLoginRequest",
@@ -184,4 +195,12 @@ __all__ = [
     "OrderReviewCreateRequest",
     "OrderReviewRead",
     "OrderReviewListResponse",
+    # goods
+    "GoodsBase",
+    "GoodsCreate",
+    "GoodsUpdate",
+    "GoodsPublisherSchema",
+    "GoodsRead",
+    "GoodsDetailRead",
+    "GoodsListResponse",
 ]

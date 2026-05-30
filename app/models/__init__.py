@@ -3,7 +3,7 @@ from app.models.category import Category
 from app.models.comment import Comment, TargetType
 from app.models.chat import ChatMessage, ChatSession
 from app.models.credit_log import CreditLog
-from app.models.goods import Goods, GoodsCondition, GoodsMetrics
+from app.models.goods import Goods, GoodsCondition, GoodsMetrics, GoodsStatus
 from app.models.order import ItemType, Order, OrderStatus, OrderTriggerType
 from app.models.orderreview import OrderReview, ReviewType
 from app.models.post import Direction, Post, PostMetrics, PostStatus, UrgencyLevel
@@ -23,6 +23,8 @@ __all__ = [
     "CreditLog",
     "Goods",
     "GoodsCondition",
+    "GoodsStatus",
+    "GoodsMetrics",
     "ItemType",
     "Order",
     "OrderStatus",

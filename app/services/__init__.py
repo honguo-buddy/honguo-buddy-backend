@@ -12,6 +12,7 @@ from app.services.chat_service import ChatService
 from app.services.social_service import SocialService
 from app.services.metrics_service import MetricsService
 from app.services.reputation_service import ReputationService
+from app.services.goods_service import GoodsService
 try:
     from app.services.sms_service import SMSService
 except ImportError:
@@ -31,4 +32,5 @@ __all__ = [
     "SocialService",
     "MetricsService",
     "ReputationService",
+    "GoodsService",
 ]
