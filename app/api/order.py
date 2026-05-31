@@ -70,13 +70,14 @@ async def list_my_orders(
         page=page,
         page_size=size,
     )
+    raw_orders = [OrderService._serialize_order(order) for order in orders]
     return ResponseModel(
         code=settings.SUCCESS_CODE,
         message=OrderList(
             total=total,
             page=page,
             page_size=size,
-            list=[_order_to_read(order) for order in orders],
+            list=[OrderRead.model_validate(d) for d in raw_orders],
         ),
     )
 
@@ -90,12 +91,13 @@ async def list_orders_by_item(
 ):
     await _assert_item_owner(db, current_user, item_type, item_id)
     orders = await OrderService.list_orders_by_item(db, item_type, item_id)
+    raw_orders = [OrderService._serialize_order(order) for order in orders]
     return ResponseModel(
         code=settings.SUCCESS_CODE,
         message=OrderItemList(
             item_id=item_id,
             item_type=str(item_type).upper(),
-            list=[_order_to_read(order) for order in orders],
+            list=[OrderRead.model_validate(d) for d in raw_orders],
         ),
     )
 
@@ -179,15 +181,27 @@ async def list_order_reviews(
         target_type=AttachmentTargetType.ORDERREVIEW.value,
         target_ids=review_ids,
     )
+    # Linear dict pipeline: ORM attrs -> raw dict -> single validate
+    raw_items = []
+    for review in reviews:
+        raw_items.append({
+            "review_id": review.review_id,
+            "order_id": review.order_id,
+            "reviewer_id": review.reviewer_id,
+            "reviewee_id": review.reviewee_id,
+            "review_type": review.review_type.value if getattr(review.review_type, 'value', None) else str(review.review_type),
+            "parent_id": review.parent_id,
+            "rating": review.rating,
+            "content": review.content,
+            "is_anonymous": review.is_anonymous,
+            "is_visible": review.is_visible,
+            "create_time": review.create_time,
+            "attachment_urls": attachment_urls_map.get(review.review_id, []),
+        })
     return ResponseModel(
         code=settings.SUCCESS_CODE,
         message=OrderReviewListResponse(
-            items=[
-                OrderReviewRead.model_validate(
-                    {**OrderReviewRead.model_validate(review).model_dump(), "attachment_urls": attachment_urls_map.get(review.review_id, [])}
-                )
-                for review in reviews
-            ]
+            items=[OrderReviewRead.model_validate(d) for d in raw_items]
         ),
     )
 

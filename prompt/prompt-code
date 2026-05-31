@@ -488,3 +488,56 @@ OrderService.approve_order 和 reject_order 需要校验 post.publisher_id。
 【问题】访问帖子详情页时，系统会将浏览足迹写入 Redis ZSET (user:history:{user_id})，但访问商品详情页时完全遗漏了历史记录，导致用户历史足迹墙缺失商品浏览记录。
 
 【解决】商品详情路由中注入可选用户依赖 (get_current_user_optional)，若已登录则调用 SocialService.record_history 将 target_type=GOODS 的浏览足迹写入 Redis 历史 ZSET，与帖子详情保持行为对称。
+
+二十九、 Read-Through 缓存模式替代 Always-Query-MySQL (Metrics Hydration Cache-Aside)
+
+【问题】hydrate_posts_with_metrics / hydrate_goods_with_metrics 每次调用都无条件执行 SELECT ... FROM post_metrics/goods_metrics WHERE id IN (...)，即使 Redis 已有数据也不会跳过，造成无意义 MySQL 查询开销。
+
+【解决】采用 Read-Through (Cache-Aside with Backfill) 模式：1) Redis Pipeline HGETALL 批量获取；2) 识别 cache-hit/cache-miss；3) 仅对 miss 的 ID 执行 MySQL IN 查询；4) MySQL 结果 HSET Pipeline 回填 Redis（自愈）；5) 合并注入。稳态下所有 hydrate 请求均 Redis 命中，MySQL 查询数为 0。另需防御 flush 后 Redis 残留全零 hash：全零视为 cache miss。
+
+
+三十、 线性字典管道消除双重 Pydantic 序列化 (Linear Dictionary Pipeline)
+
+【问题】列表接口存在 model_validate → model_dump → re-validate 双重序列化反模式，每页 20 条产生 40 次 Pydantic 构造 + 20 次 model_dump，CPU 开销巨大。
+
+【解决】采用 ORM 属性直出原生 dict → hydrate 灌水 → 单次 PostRead.model_validate 的线性管道。每页仅 20 次 Pydantic 构造，去除所有 model_dump。适用于所有列表/批量查询接口：Post、Goods、Order、Comment、Chat。
+
+
+三十一、 消除评论预览回复 N+1 查询 (Batch Preview Replies)
+
+【问题】get_root_comments 端点在循环内逐条调用 CommentService.get_preview_replies(db, comment_id)，每页 20 条评论产生 20 次单独的 SELECT 查询。
+
+【解决】新增 get_preview_replies_map(db, comment_ids, limit=3) 批量方法，使用 ROW_NUMBER() OVER (PARTITION BY parent_id) 窗口函数一次查询获取所有根评论的最新回复。路由层改为内存 map 查找，彻底消除 N+1。
+
+
+三十二、 订单评价三重序列化消除 (Order Review Triple-Pass Elimination)
+
+【问题】list_order_reviews 端点使用 OrderReviewRead.model_validate({**OrderReviewRead.model_validate(review).model_dump(), ...}) 三重嵌套 pattern。
+
+【解决】改为 ORM 属性直接提取为原生 dict，注入 attachment_urls 后单次 OrderReviewRead.model_validate。同样适用于所有嵌套 validate+dump+validate 的场景。
+
+三十三、 网关守卫 Read-Through 缓存盾 (Gateway Dependency Injection Cache Shield)
+
+【问题】get_current_user / get_current_user_optional 作为全系统最高频依赖注入，每次请求都执行 SELECT ... FROM user WHERE user_id=? ，高并发下 MySQL 被身份验证流量直接击穿。
+
+【解决】在依赖注入函数内部实现 Read-Through 缓存层：1) 验证 Token 后先查 Redis user:profile:cache:{user_id} ；2) 命中则 0 DB I/O 直接返回；3) Miss 时执行单次 MySQL SELECT 并 SETEX 回填 Redis（TTL 3600s）。将身份验证流量从 MySQL 隔离到 Redis 内存层。
+
+
+三十四、 用户画像读取缓存 + 写入失效 (User Profile Read-Through with Write Invalidation)
+
+【问题】get_me 、get_user_public 等画像接口每次请求都走多表关联 SQL 加载用户资料和头像，无缓存层。
+
+【解决】get_me 新增 user:profile:me:{user_id} 缓存键，存储 UserProfileResponse 全量字段（含 avatar）；update_me 写入后同时删除 user:profile:cache:{uid} 和 user:profile:me:{uid}，确保缓存与数据库绝对一致。
+
+
+三十五、 分类模板列表线性字典管道 (Category Template List Dict Pipeline)
+
+【问题】list_category_templates 使用 [CategoryRead.model_validate(c) for c in categories] 行级 Pydantic 榨汁机。
+
+【解决】改为 ORM 属性直接提取为原生 dict 列表，统一在返回前单次 model_validate。适用于所有集合查询接口。
+
+三十六、 用户公开画像 Read-Through 缓存 + 写入全量失效 (User Public Profile Cache with Write Invalidation)
+
+【问题】get_user_public 每次请求都执行多表关联 SQL 加载用户公开资料和头像，无缓存层。update_me 仅失效 user:profile:cache:{uid}，遗漏了 user:profile:me:{uid} 和 user:profile:public:{uid}，导致 get_me 和 get_user_public 继续返回过期脏数据。
+
+【解决】1) get_user_public 新增 user:profile:public:{user_id} Read-Through 缓存键；2) update_me 写入后同时删除 user:profile:cache:{uid}、user:profile:me:{uid}、user:profile:public:{uid} 三个缓存键；3) update_user_admin 也加入对目标用户的三键全量失效。确保所有用户画像读取链路（网关守卫、本人资料、公开资料）缓存与数据库绝对一致。

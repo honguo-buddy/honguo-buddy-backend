@@ -1,5 +1,7 @@
 """用户 API 路由层。"""
 
+import json as _json
+from types import SimpleNamespace
 from typing import Literal, Optional, Union
 
 from fastapi import APIRouter, BackgroundTasks, Depends
@@ -24,7 +26,7 @@ from app.schemas import (
     UserPublicResponse,
     UserSelfUpdateRequest,
 )
-from app.services import MetricsService, ReputationService, SocialService, UserService
+from app.services import AttachmentService, MetricsService, ReputationService, SocialService, UserService
 from app.models import User as UserModel
 
 router = APIRouter()
@@ -35,8 +37,41 @@ async def get_me(
     current_user: UserSchema = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """获取本人详细资料（含敏感字段如手机号、邮箱）。"""
+    """获取本人详细资料（含敏感字段如手机号、邮箱）。Read-Through: Redis cache first, DB fallback."""
+    cache_key = f"user:profile:me:{current_user.user_id}"
+    try:
+        cached = await redis.get(cache_key)
+        if cached:
+            data = _json.loads(cached)
+            return ResponseModel(
+                code=settings.SUCCESS_CODE,
+                message=UserProfileResponse.model_validate(SimpleNamespace(**data)),
+            )
+    except Exception:
+        pass
+
     user_data = await UserService.get_user_with_avatar_url(current_user.user_id, db)
+
+    try:
+        profile_dict = {
+            "user_id": user_data.user_id,
+            "user_uuid": user_data.user_uuid.hex() if hasattr(user_data, 'user_uuid') and user_data.user_uuid else "",
+            "user_name": user_data.user_name,
+            "is_admin": user_data.is_admin,
+            "is_verified": user_data.is_verified,
+            "email": user_data.email,
+            "phonenumber": user_data.phonenumber,
+            "last_login_ip": user_data.last_login_ip,
+            "last_login_time": user_data.last_login_time.isoformat() if user_data.last_login_time else None,
+            "user_type": getattr(user_data.user_type, 'value', str(user_data.user_type)) if user_data.user_type else None,
+            "avatar": getattr(user_data, 'avatar', None),
+            "sex": getattr(user_data, 'sex', {}).value if hasattr(getattr(user_data, 'sex', None), 'value') else str(getattr(user_data, 'sex', '')),
+            "credit_score": getattr(user_data, 'credit_score', 0),
+        }
+        await redis.setex(cache_key, settings.USER_PROFILE_CACHE_TTL, _json.dumps(profile_dict, ensure_ascii=False, default=str))
+    except Exception:
+        pass
+
     return ResponseModel(
         code=settings.SUCCESS_CODE,
         message=UserProfileResponse.model_validate(user_data),
@@ -68,7 +103,20 @@ async def update_me(
         sex=update_req.sex,
         db=db,
     )
-    # 返回时从 service 获取带 avatar URL 的 payload，确保 avatar 字段有值
+    # Invalidate all Read-Through profile caches after mutation
+    try:
+        uid = current_user.user_id
+        await redis.delete(f"user:profile:cache:{uid}")
+        await redis.delete(f"user:profile:me:{uid}")
+        await redis.delete(f"user:profile:public:{uid}")
+    except Exception:
+        pass
+
+    # Fetch fresh profile with avatar URL
+    avatar_url = await AttachmentService.get_attachment_url_by_id(
+        update_req.avatar_id, db
+    ) if update_req.avatar_id else None
+    # Re-fetch user from DB to get latest state
     user_data = await UserService.get_user_with_avatar_url(current_user.user_id, db)
     return ResponseModel(
         code=settings.SUCCESS_CODE,
@@ -295,7 +343,36 @@ async def get_user_public(
             message=UserProfileResponse.model_validate(user_data),
         )
 
+    # Read-Through: Redis user:profile:public:{user_id} cache first
+    cache_key = f"user:profile:public:{user_id}"
+    try:
+        cached = await redis.get(cache_key)
+        if cached:
+            data = _json.loads(cached)
+            return ResponseModel(
+                code=settings.SUCCESS_CODE,
+                message=UserPublicResponse.model_validate(SimpleNamespace(**data)),
+            )
+    except Exception:
+        pass
+
+    # Cache miss: query DB then backfill Redis
     user_data = await UserService.get_user_public_with_avatar_url(user_id, db)
+    try:
+        public_dict = {
+            "user_id": getattr(user_data, "user_id", user_id),
+            "user_uuid": str(getattr(user_data, "user_uuid", "")),
+            "user_name": getattr(user_data, "user_name", None),
+            "avatar": getattr(user_data, "avatar", None),
+            "sex": getattr(user_data, "sex", None),
+            "credit_score": int(getattr(user_data, "credit_score", 0)),
+            "is_verified": bool(getattr(user_data, "is_verified", False)),
+            "user_type": getattr(user_data, "user_type", None),
+        }
+        await redis.setex(cache_key, settings.USER_PROFILE_CACHE_TTL,
+                          _json.dumps(public_dict, ensure_ascii=False, default=str))
+    except Exception:
+        pass
     return ResponseModel(
         code=settings.SUCCESS_CODE,
         message=UserPublicResponse.model_validate(user_data),
@@ -327,6 +404,13 @@ async def update_user_admin(
         sex=update_req.sex,
         db=db,
     )
+    # Invalidate all Read-Through profile caches for the updated user
+    try:
+        await redis.delete(f"user:profile:cache:{user_id}")
+        await redis.delete(f"user:profile:me:{user_id}")
+        await redis.delete(f"user:profile:public:{user_id}")
+    except Exception:
+        pass
     # 管理员更新后也返回带 avatar URL 的 payload
     user_data = await UserService.get_user_with_avatar_url(user_id, db)
     return ResponseModel(

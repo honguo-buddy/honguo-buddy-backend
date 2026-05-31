@@ -10,7 +10,7 @@
 import logging
 from typing import List, Optional, Tuple
 
-from sqlalchemy import and_, select, func
+from sqlalchemy import and_, bindparam, func, select, text as sa_text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -393,6 +393,53 @@ class CommentService:
         # 反序以保持时间正序
         return list(reversed(replies))
 
+
+    @staticmethod
+    async def get_preview_replies_map(
+        db: AsyncSession,
+        comment_ids: List[int],
+        limit: int = 3,
+    ) -> dict[int, List[Comment]]:
+        """Batch fetch latest N preview replies for multiple root comments.
+
+        Single IN query replaces N individual get_preview_replies calls,
+        eliminating the N+1 query trap in the root comments lobby.
+        Uses a correlated subquery with ROW_NUMBER() to get
+        the latest {limit} replies per root comment in one pass.
+        """
+        if not comment_ids:
+            return {}
+
+        sql = sa_text("""
+            SELECT c.comment_id, c.parent_id, c.user_id, c.target_type,
+                   c.target_id, c.content, c.is_deleted, c.create_time, c.update_time
+            FROM (
+                SELECT c.*,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY c.parent_id ORDER BY c.create_time DESC
+                       ) AS rn
+                FROM comment c
+                WHERE c.parent_id IN :pids
+                  AND c.is_deleted = 0
+            ) c
+            WHERE c.rn <= :lim
+            ORDER BY c.parent_id, c.create_time ASC
+        """).bindparams(
+            bindparam('pids', expanding=True),
+            bindparam('lim', value=limit),
+        )
+
+        res = await db.execute(sql, {'pids': comment_ids, 'lim': limit})
+        rows = res.mappings().all()
+
+        result: dict[int, list] = {cid: [] for cid in comment_ids}
+        for row in rows:
+            pid = row['parent_id']
+            result.setdefault(pid, []).append(row)
+
+        return result
+
     @staticmethod
     async def get_comment_attachment_urls_map(db: AsyncSession, comment_ids: List[int]) -> dict[int, list[str]]:
         return await AttachmentService.get_urls_by_target(db, AttachmentTargetType.COMMENT.value, comment_ids)
+

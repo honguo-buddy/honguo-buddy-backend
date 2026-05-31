@@ -44,9 +44,21 @@ async def list_category_templates(
 ):
     """获取模板分类列表。对外开放（用于前端选择模板），支持按 `type`(POST/GOODS) 过滤。"""
     categories = await CategoryService.list_categories(db, item_type)
+    raw_items = [
+        {
+            "category_id": c.category_id,
+            "name": c.name,
+            "icon": c.icon,
+            "item_type": c.item_type.value if getattr(c.item_type, 'value', None) else str(c.item_type),
+            "config_json": c.config_json,
+            "create_time": c.create_time,
+            "update_time": c.update_time,
+        }
+        for c in categories
+    ]
     return ResponseModel(
         code=settings.SUCCESS_CODE,
-        message=[CategoryRead.model_validate(c) for c in categories],
+        message=[CategoryRead.model_validate(d) for d in raw_items],
     )
 
 

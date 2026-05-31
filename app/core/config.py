@@ -51,6 +51,7 @@ class Settings(BaseSettings):
     SMS_TEMPLATE_CODE: str | None = None
     SMS_SIGN_NAME: str | None = None
     SMS_CODE_TTL_SECONDS: int = 300
+    USER_PROFILE_CACHE_TTL: int = 3600  # user profile Read-Through cache TTL (seconds)
     SMS_RATE_LIMIT_SECONDS: int = 60
     SMS_VERIFIED_WINDOW_SECONDS: int = 900
 
