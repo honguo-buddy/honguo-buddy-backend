@@ -68,7 +68,7 @@ async def list_goods(
         if goods_list:
             goods_dicts = [g.model_dump() for g in goods_list]
             goods_ids = [gd.get("goods_id") or gd.get("target_id") for gd in goods_dicts]
-            await MetricsService.hydrate_goods_with_metrics(redis_client, goods_dicts, goods_ids)
+            await MetricsService.hydrate_goods_with_metrics(db, redis_client, goods_dicts, goods_ids)
             goods_list = [GoodsRead.model_validate(gd) for gd in goods_dicts]
 
         return ResponseModel(
@@ -100,7 +100,7 @@ async def list_my_goods(
         if goods_list:
             goods_dicts = [g.model_dump() for g in goods_list]
             goods_ids = [gd.get("goods_id") or gd.get("target_id") for gd in goods_dicts]
-            await MetricsService.hydrate_goods_with_metrics(redis_client, goods_dicts, goods_ids)
+            await MetricsService.hydrate_goods_with_metrics(db, redis_client, goods_dicts, goods_ids)
             goods_list = [GoodsRead.model_validate(gd) for gd in goods_dicts]
 
         return ResponseModel(
@@ -131,7 +131,7 @@ async def get_goods_detail(
     goods_detail.attachment_urls = _build_goods_urls(goods)
     goods_dict = goods_detail.model_dump()
 
-    await MetricsService.hydrate_goods_with_metrics(redis_client, [goods_dict], [goods_id])
+    await MetricsService.hydrate_goods_with_metrics(db, redis_client, [goods_dict], [goods_id])
 
     return ResponseModel(code=settings.SUCCESS_CODE, message=GoodsDetailRead.model_validate(goods_dict))
 

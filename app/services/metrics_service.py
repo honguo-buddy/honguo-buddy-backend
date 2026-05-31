@@ -3,68 +3,63 @@
 核心设计：
 - 热点写入全走 Redis HINCRBY（O(1) 原子操作，零锁竞争）
 - 活跃实体通过 Redis 分布式 Set 追踪（跨 Worker 安全）
-- 定时异步回写 MySQL（ON DUPLICATE KEY UPDATE 批量刷盘）
-- 列表读取走 Pipeline 批量灌水（单次网络往返，消灭 N+1）
+- 定时异步相对增量回写 MySQL（增量累加模式，彻底隔离重置覆盖天坑）
+- 列表读取走 混合对账双端合流 机制（MySQL 历史基准 + Redis 临时增量，消灭数据断层）
+- 静态参数化批量绑定（完全遵循数据库安全红线，彻底消灭 SQL 注入风险）
+- 彻底放开缓存侧负数限制，支持合法的负数净增量下发，并在 MySQL 端通过 GREATEST 优雅兜底。
 """
 from __future__ import annotations
 
 import logging
 import uuid
-from typing import Any
+from typing import Any, Optional
 
-from sqlalchemy import text, select
+from sqlalchemy import text, select, bindparam
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Goods, Post  # 确保导入 Post 和 Goods 模型以进行 ID 验证
+from app.models import Goods, Post  # 导入 Post 和 Goods 模型以进行 ID 验证
 
 logger = logging.getLogger(__name__)
 
-# Redis 分布式集合 key 常量（替代 Python 内存 set，跨 Worker 安全）
+# Redis 分布式集合 key 常量
 _ACTIVE_POSTS_SET = "metrics:active_posts_set"
 _ACTIVE_GOODS_SET = "metrics:active_goods_set"
-
 
 
 class MetricsService:
     """高性能多实体计数器中心。"""
 
     # ------------------------------------------------------------------
-    # Redis 原子自增入口（带负数卡位防御）
+    # Redis 原子自增入口（放开负数限制，允许合法负数净增量沉淀）
     # ------------------------------------------------------------------
 
     @staticmethod
     async def incr_post_view(redis_client, post_id: int) -> None:
         """浏览次数 +1（纯 Redis，不查不写 MySQL）。"""
-        logger.debug(f"🔥 [Metrics Debug] 侦测到详情页正向点击！正在为 post_{post_id} 触发 Redis 原子自增...")
+        logger.debug(f"[Metrics Debug] Detected post detail access, triggering atomic increment for post_{post_id}")
         key = f"metrics:post:{post_id}"
         await redis_client.hincrby(key, "view", 1)
         await redis_client.sadd(_ACTIVE_POSTS_SET, post_id)
 
     @staticmethod
     async def incr_post_favorite(redis_client, post_id: int, delta: int = 1) -> None:
-        """收藏数增减。delta=1 为收藏，delta=-1 为取消收藏。"""
+        """收藏数增减。delta=1 为收藏，delta=-1 为取消收藏。允许产生负数临时增量。"""
         key = f"metrics:post:{post_id}"
-        current = await redis_client.hincrby(key, "favorite", delta)
-        if current < 0:
-            await redis_client.hset(key, "favorite", 0)
+        await redis_client.hincrby(key, "favorite", delta)
         await redis_client.sadd(_ACTIVE_POSTS_SET, post_id)
 
     @staticmethod
     async def incr_post_comment(redis_client, post_id: int, delta: int = 1) -> None:
-        """评论数增减。"""
+        """评论数增减。delta=-1 为删除评论。"""
         key = f"metrics:post:{post_id}"
-        current = await redis_client.hincrby(key, "comment", delta)
-        if current < 0:
-            await redis_client.hset(key, "comment", 0)
+        await redis_client.hincrby(key, "comment", delta)
         await redis_client.sadd(_ACTIVE_POSTS_SET, post_id)
 
     @staticmethod
     async def incr_post_upvote(redis_client, post_id: int, delta: int = 1) -> None:
         """点赞数增减。"""
         key = f"metrics:post:{post_id}"
-        current = await redis_client.hincrby(key, "upvote", delta)
-        if current < 0:
-            await redis_client.hset(key, "upvote", 0)
+        await redis_client.hincrby(key, "upvote", delta)
         await redis_client.sadd(_ACTIVE_POSTS_SET, post_id)
 
     @staticmethod
@@ -78,69 +73,85 @@ class MetricsService:
     async def incr_goods_favorite(redis_client, goods_id: int, delta: int = 1) -> None:
         """商品收藏数增减。"""
         key = f"metrics:goods:{goods_id}"
-        current = await redis_client.hincrby(key, "favorite", delta)
-        if current < 0:
-            await redis_client.hset(key, "favorite", 0)
+        await redis_client.hincrby(key, "favorite", delta)
         await redis_client.sadd(_ACTIVE_GOODS_SET, goods_id)
 
     @staticmethod
     async def incr_goods_comment(redis_client, goods_id: int, delta: int = 1) -> None:
         """商品评论数增减。"""
         key = f"metrics:goods:{goods_id}"
-        current = await redis_client.hincrby(key, "comment", delta)
-        if current < 0:
-            await redis_client.hset(key, "comment", 0)
+        await redis_client.hincrby(key, "comment", delta)
         await redis_client.sadd(_ACTIVE_GOODS_SET, goods_id)
 
     # ------------------------------------------------------------------
-    # 批量灌水反哺（Anti-N+1 Pipeline）
+    # 读链路重构：双端对账实时合流（Total = MySQL Base + Redis Increment）
     # ------------------------------------------------------------------
 
     @staticmethod
     async def hydrate_posts_with_metrics(
+        db: AsyncSession,
         redis_client,
         items: list[dict[str, Any]],
         post_ids: list[int],
         id_key: str = "post_id",
     ) -> None:
-        """在循环体外批量（单次网络往返）捞出 Redis 哈希桶，注入卡片载荷。
-
-        直接修改传入的 items 列表，无返回值（O(1) 内存操作）。
-        """
+        """帖子指标混合反哺：结合 MySQL 历史大盘与 Redis 动态增量，确保精确计算。"""
         if not items or not post_ids:
             return
 
         pipe = redis_client.pipeline()
         for pid in post_ids:
             pipe.hgetall(f"metrics:post:{pid}")
-        results = await pipe.execute()
+        redis_results = await pipe.execute()
 
-        metrics_map: dict[int, dict[str, str]] = {}
-        for pid, raw in zip(post_ids, results):
+        redis_map = {}
+        for pid, raw in zip(post_ids, redis_results):
             if raw:
-                metrics_map[pid] = raw
+                redis_map[pid] = {
+                    "view": int(raw.get("view") or raw.get(b"view") or 0),
+                    "favorite": int(raw.get("favorite") or raw.get(b"favorite") or 0),
+                    "comment": int(raw.get("comment") or raw.get(b"comment") or 0),
+                }
+
+        db_map = {}
+        try:
+            sql = text("""
+                SELECT post_id, view_count, favorite_count, comment_count 
+                FROM post_metrics 
+                WHERE post_id IN :pids
+            """).bindparams(bindparam("pids", expanding=True))
+            
+            res = await db.execute(sql, {"pids": post_ids})
+            for row in res.mappings():
+                db_map[row["post_id"]] = {
+                    "view": int(row["view_count"] or 0),
+                    "favorite": int(row["favorite_count"] or 0),
+                    "comment": int(row["comment_count"] or 0)
+                }
+        except Exception:
+            logger.exception("[Metrics Hydrate] Failed to fetch post metrics baseline from database")
 
         for item in items:
             pid = item.get(id_key)
             if pid is None:
                 continue
-            metrics = metrics_map.get(pid, {})
-            item["view_count"] = int(metrics.get("view", 0))
-            item["favorite_count"] = int(metrics.get("favorite", 0))
-            item["comment_count"] = int(metrics.get("comment", 0))
-
+            
+            db_base = db_map.get(pid, {"view": 0, "favorite": 0, "comment": 0})
+            redis_incr = redis_map.get(pid, {"view": 0, "favorite": 0, "comment": 0})
+            
+            # 允许负数增量参与求和运算，读链路数据达到动态绝对一致
+            item["view_count"] = max(0, db_base["view"] + redis_incr["view"])
+            item["favorite_count"] = max(0, db_base["favorite"] + redis_incr["favorite"])
+            item["comment_count"] = max(0, db_base["comment"] + redis_incr["comment"])
 
     @staticmethod
     async def hydrate_goods_with_metrics(
+        db: AsyncSession,
         redis_client,
         items: list[dict[str, Any]],
         goods_ids: list[int],
     ) -> None:
-        """Goods-marketplace card batch hydration. Structural symmetry with hydrate_posts_with_metrics.
-
-        Supports lobby, my-published, favorites, and history wall goods cards.
-        Keys on goods_id with target_id fallback for polymorphic contexts.
-        """
+        """商品指标混合反哺：结合 MySQL 历史大盘与 Redis 动态增量，确保精确计算。"""
         if not items or not goods_ids:
             return
 
@@ -149,39 +160,59 @@ class MetricsService:
             pipe.hgetall(f"metrics:goods:{gid}")
         results = await pipe.execute()
 
-        metrics_map: dict[int, dict[str, str]] = {}
+        redis_map = {}
         for gid, raw in zip(goods_ids, results):
             if raw:
-                metrics_map[gid] = raw
+                redis_map[gid] = {
+                    "view": int(raw.get("view") or raw.get(b"view") or 0),
+                    "favorite": int(raw.get("favorite") or raw.get(b"favorite") or 0),
+                    "comment": int(raw.get("comment") or raw.get(b"comment") or 0),
+                }
+
+        db_map = {}
+        try:
+            sql = text("""
+                SELECT goods_id, view_count, favorite_count, comment_count 
+                FROM goods_metrics 
+                WHERE goods_id IN :gids
+            """).bindparams(bindparam("gids", expanding=True))
+            
+            res = await db.execute(sql, {"gids": goods_ids})
+            for row in res.mappings():
+                db_map[row["goods_id"]] = {
+                    "view": int(row["view_count"] or 0),
+                    "favorite": int(row["favorite_count"] or 0),
+                    "comment": int(row["comment_count"] or 0)
+                }
+        except Exception:
+            logger.exception("[Metrics Hydrate] Failed to fetch goods metrics baseline from database")
 
         for item in items:
             gid = item.get("goods_id") or item.get("target_id")
             if gid is None:
                 continue
-            metrics = metrics_map.get(gid, {})
-            v = metrics.get("view") or metrics.get(b"view") or 0
-            f = metrics.get("favorite") or metrics.get(b"favorite") or 0
-            c = metrics.get("comment") or metrics.get(b"comment") or 0
-            item["view_count"] = int(v)
-            item["favorite_count"] = int(f)
-            item["comment_count"] = int(c)
-
-    @staticmethod
+            
+            db_base = db_map.get(gid, {"view": 0, "favorite": 0, "comment": 0})
+            redis_incr = redis_map.get(gid, {"view": 0, "favorite": 0, "comment": 0})
+            
+            item["view_count"] = max(0, db_base["view"] + redis_incr["view"])
+            item["favorite_count"] = max(0, db_base["favorite"] + redis_incr["favorite"])
+            item["comment_count"] = max(0, db_base["comment"] + redis_incr["comment"])
 
     # ------------------------------------------------------------------
-    # Redis 分布式锁（SET NX EX 原子模式，跨 Worker 安全）
+    # Redis 分布式锁（SET NX EX 原子模式，跨进程安全）
     # ------------------------------------------------------------------
 
     @staticmethod
-    async def _acquire_flush_lock(redis_client, lock_key: str, ttl: int = 60):
-        """Redis 分布式锁：SET NX EX 原子获取，返回 token 供安全释放。"""
+    async def _acquire_flush_lock(redis_client, lock_key: str, ttl: int = 60) -> Optional[str]:
+        """Redis 分布式锁：SET NX EX 原子获取，返回专属 token 供安全解锁。"""
         token = str(uuid.uuid4())
         acquired = await redis_client.set(lock_key, token, nx=True, ex=ttl)
         return token if acquired else None
 
     @staticmethod
     async def _release_flush_lock(redis_client, lock_key: str, token: str) -> None:
-        """Lua 原子释放：仅当 token 匹配时才删除 key，防止误删他人锁。"""
+        """Lua 脚本原子释放锁：严格校验 token 匹配性，防止跨进程误删他人锁。"""
         script = """
         if redis.call("GET", KEYS[1]) == ARGV[1] then
             return redis.call("DEL", KEYS[1])
@@ -190,24 +221,24 @@ class MetricsService:
         end
         """
         await redis_client.eval(script, 1, lock_key, token)
+
     @staticmethod
     async def flush_metrics_to_db(db: AsyncSession, redis_client) -> None:
-        """每分钟一次，从 Redis 分布式 Set 扫描活跃 ID，批量刷盘到 MySQL。
-
-        使用 ON DUPLICATE KEY UPDATE 原生 SQL 批量写入。
-        分布式锁由各 _flush_* 方法内部独立管理。
-        刷盘成功后原子清除 Redis 活跃集合，确保数据不丢。
-        """
+        """定时任务刷盘总调度入口。"""
         await MetricsService._flush_post_metrics(db, redis_client)
         await MetricsService._flush_goods_metrics(db, redis_client)
 
+    # ------------------------------------------------------------------
+    # 写链路异步刷盘区（100% 预编译静态绑定 + MySQL GREATEST 安全卡位）
+    # ------------------------------------------------------------------
+
     @staticmethod
     async def _flush_post_metrics(db: AsyncSession, redis_client) -> None:
-        """批量刷盘帖子计数器（分布式锁 + 参数化 SQL，跨 Worker 安全）。"""
+        """批量同步帖子并发计数器（原生参数化批量处理，彻底清除 SQL 注入隐患）。"""
         lock_key = "metrics:flush_post_lock"
         token = await MetricsService._acquire_flush_lock(redis_client, lock_key)
         if token is None:
-            logger.debug("\u23ed [Metrics Sync] 另一 Worker 正在执行帖子刷盘，本轮跳过")
+            logger.debug("[Metrics Sync] Another worker is currently executing post metrics flush, skipping this round")
             return
         try:
             raw_post_ids = await redis_client.smembers(_ACTIVE_POSTS_SET)
@@ -216,6 +247,7 @@ class MetricsService:
 
             post_ids = [int(pid) for pid in raw_post_ids]
 
+            # 幽灵脏数据内审清洗滤网
             stmt = select(Post.post_id).where(Post.post_id.in_(post_ids))
             res = await db.execute(stmt)
             existing_ids = set(res.scalars().all())
@@ -229,7 +261,7 @@ class MetricsService:
                 for g_id in ghost_ids:
                     pipe_clean.delete(f"metrics:post:{g_id}")
                 await pipe_clean.execute()
-                logger.warning(f"\u26a0 [Metrics Clean] 成功拦截并无声蒸发了帖子测试幽灵脏数据 ID: {ghost_ids}")
+                logger.warning(f"[Metrics Clean] Intercepted and wiped out post ghost IDs from cache: {ghost_ids}")
 
             if not valid_ids:
                 return
@@ -239,56 +271,69 @@ class MetricsService:
                 pipe.hgetall(f"metrics:post:{pid}")
             results = await pipe.execute()
 
-            # 参数化绑定，杜绝 SQL 注入风险
-            bind_params = {}
-            placeholders = []
-            for i, (pid, raw) in enumerate(zip(valid_ids, results)):
+            # 构建标准预编译批处理参数字典列表
+            bind_params_list = []
+            for pid, raw in zip(valid_ids, results):
                 if not raw:
                     continue
                 view = int(raw.get("view") or raw.get(b"view") or 0)
                 favorite = int(raw.get("favorite") or raw.get(b"favorite") or 0)
                 comment = int(raw.get("comment") or raw.get(b"comment") or 0)
-                placeholders.append(
-                    f"(:pid_{i}, :view_{i}, :fav_{i}, :com_{i}, "
-                    f"CONVERT_TZ(NOW(), @@session.time_zone, '+08:00'), "
-                    f"CONVERT_TZ(NOW(), @@session.time_zone, '+08:00'))"
-                )
-                bind_params[f"pid_{i}"] = pid
-                bind_params[f"view_{i}"] = view
-                bind_params[f"fav_{i}"] = favorite
-                bind_params[f"com_{i}"] = comment
+                
+                if view == 0 and favorite == 0 and comment == 0:
+                    continue
 
-            if not placeholders:
+                bind_params_list.append({
+                    "pid": pid,
+                    "view_count": view,
+                    "favorite_count": favorite,
+                    "comment_count": comment
+                })
+
+            if not bind_params_list:
                 return
 
-            sql = text(f"""
+            #  纯静态 SQL 模板契约：在 ON DUPLICATE KEY UPDATE 中引入 GREATEST(0, ...) 终极卡位防御
+            sql = text("""
                 INSERT INTO post_metrics (post_id, view_count, favorite_count, comment_count, create_time, update_time)
-                VALUES {", ".join(placeholders)}
+                VALUES (:pid, :view_count, :favorite_count, :comment_count, 
+                        CONVERT_TZ(NOW(), @@session.time_zone, '+08:00'), 
+                        CONVERT_TZ(NOW(), @@session.time_zone, '+08:00'))
                 ON DUPLICATE KEY UPDATE
-                    view_count = VALUES(view_count),
-                    favorite_count = VALUES(favorite_count),
-                    comment_count = VALUES(comment_count),
+                    view_count = GREATEST(0, view_count + VALUES(view_count)),
+                    favorite_count = GREATEST(0, favorite_count + VALUES(favorite_count)),
+                    comment_count = GREATEST(0, comment_count + VALUES(comment_count)),
                     update_time = CONVERT_TZ(NOW(), @@session.time_zone, '+08:00')
             """)
 
             try:
-                await db.execute(sql, bind_params)
+                await db.execute(sql, bind_params_list)
                 await db.commit()
-                await redis_client.srem(_ACTIVE_POSTS_SET, *valid_ids)
-                logger.info(f"\u2728 [Metrics Sync] 成功将活跃帖子 {valid_ids} 的最新计数完美对齐到 MySQL 物理表！")
+                
+                # 相对流水账增量原子对账销账
+                pipe_deduct = redis_client.pipeline()
+                for p in bind_params_list:
+                    key = f"metrics:post:{p['pid']}"
+                    pipe_deduct.hincrby(key, "view", -p["view_count"])
+                    pipe_deduct.hincrby(key, "favorite", -p["favorite_count"])
+                    pipe_deduct.hincrby(key, "comment", -p["comment_count"])
+                await pipe_deduct.execute()
+
+                await redis_client.srem(_ACTIVE_POSTS_SET, *[p["pid"] for p in bind_params_list])
+                logger.info(f"[Metrics Sync] Successfully completed parameterized flush batch for posts: {[p['pid'] for p in bind_params_list]}")
             except Exception:
                 await db.rollback()
-                logger.exception("\u274c [Metrics Sync] 刷盘 post_metrics 发生严重硬伤失败")
+                logger.exception("[Metrics Sync] Critical database exception during post metrics executemany flush")
         finally:
             await MetricsService._release_flush_lock(redis_client, lock_key, token)
 
     @staticmethod
     async def _flush_goods_metrics(db: AsyncSession, redis_client) -> None:
-        """批量刷盘商品计数器（分布式锁 + 参数化 SQL，跨 Worker 安全）。"""
+        """批量同步商品并发计数器（原生参数化批量处理，彻底清除 SQL 注入隐患）。"""
         lock_key = "metrics:flush_goods_lock"
         token = await MetricsService._acquire_flush_lock(redis_client, lock_key)
         if token is None:
-            logger.debug("\u23ed [Metrics Sync] 另一 Worker 正在执行商品刷盘，本轮跳过")
+            logger.debug("[Metrics Sync] Another worker is currently executing goods metrics flush, skipping this round")
             return
         try:
             raw_goods_ids = await redis_client.smembers(_ACTIVE_GOODS_SET)
@@ -297,6 +342,7 @@ class MetricsService:
 
             goods_ids = [int(gid) for gid in raw_goods_ids]
 
+            # 商品幽灵 ID 清洗
             stmt = select(Goods.goods_id).where(Goods.goods_id.in_(goods_ids))
             res = await db.execute(stmt)
             existing_ids = set(res.scalars().all())
@@ -310,7 +356,7 @@ class MetricsService:
                 for g_id in ghost_ids:
                     pipe_clean.delete(f"metrics:goods:{g_id}")
                 await pipe_clean.execute()
-                logger.warning(f"\u26a0 [Metrics Clean] 成功拦截并无声蒸发了商品测试幽灵脏数据 ID: {ghost_ids}")
+                logger.warning(f"[Metrics Clean] Intercepted and wiped out goods ghost IDs from cache: {ghost_ids}")
 
             if not valid_ids:
                 return
@@ -320,45 +366,58 @@ class MetricsService:
                 pipe.hgetall(f"metrics:goods:{gid}")
             results = await pipe.execute()
 
-            # 参数化绑定，杜绝 SQL 注入风险
-            bind_params = {}
-            placeholders = []
-            for i, (gid, raw) in enumerate(zip(valid_ids, results)):
+            # 构建商品域原生批量参数化字典数组
+            bind_params_list = []
+            for gid, raw in zip(valid_ids, results):
                 if not raw:
                     continue
                 view = int(raw.get("view") or raw.get(b"view") or 0)
                 favorite = int(raw.get("favorite") or raw.get(b"favorite") or 0)
                 comment = int(raw.get("comment") or raw.get(b"comment") or 0)
-                placeholders.append(
-                    f"(:gid_{i}, :view_{i}, :fav_{i}, :com_{i}, "
-                    f"CONVERT_TZ(NOW(), @@session.time_zone, '+08:00'), "
-                    f"CONVERT_TZ(NOW(), @@session.time_zone, '+08:00'))"
-                )
-                bind_params[f"gid_{i}"] = gid
-                bind_params[f"view_{i}"] = view
-                bind_params[f"fav_{i}"] = favorite
-                bind_params[f"com_{i}"] = comment
+                
+                if view == 0 and favorite == 0 and comment == 0:
+                    continue
 
-            if not placeholders:
+                bind_params_list.append({
+                    "gid": gid,
+                    "view_count": view,
+                    "favorite_count": favorite,
+                    "comment_count": comment
+                })
+
+            if not bind_params_list:
                 return
 
-            sql = text(f"""
+            # 纯静态 SQL 模板契约：引入 GREATEST(0, ...) 终极卡位防御
+            sql = text("""
                 INSERT INTO goods_metrics (goods_id, view_count, favorite_count, comment_count, create_time, update_time)
-                VALUES {", ".join(placeholders)}
+                VALUES (:gid, :view_count, :favorite_count, :comment_count, 
+                        CONVERT_TZ(NOW(), @@session.time_zone, '+08:00'), 
+                        CONVERT_TZ(NOW(), @@session.time_zone, '+08:00'))
                 ON DUPLICATE KEY UPDATE
-                    view_count = VALUES(view_count),
-                    favorite_count = VALUES(favorite_count),
-                    comment_count = VALUES(comment_count),
+                    view_count = GREATEST(0, view_count + VALUES(view_count)),
+                    favorite_count = GREATEST(0, favorite_count + VALUES(favorite_count)),
+                    comment_count = GREATEST(0, comment_count + VALUES(comment_count)),
                     update_time = CONVERT_TZ(NOW(), @@session.time_zone, '+08:00')
             """)
 
             try:
-                await db.execute(sql, bind_params)
+                await db.execute(sql, bind_params_list)
                 await db.commit()
-                await redis_client.srem(_ACTIVE_GOODS_SET, *valid_ids)
-                logger.info(f"\u2728 [Metrics Sync] 成功将活跃商品 {valid_ids} 的最新计数完美对齐到 MySQL 物理表！")
+                
+                # 流水账增量原子对账扣减
+                pipe_deduct = redis_client.pipeline()
+                for p in bind_params_list:
+                    key = f"metrics:goods:{p['gid']}"
+                    pipe_deduct.hincrby(key, "view", -p["view_count"])
+                    pipe_deduct.hincrby(key, "favorite", -p["favorite_count"])
+                    pipe_deduct.hincrby(key, "comment", -p["comment_count"])
+                await pipe_deduct.execute()
+
+                await redis_client.srem(_ACTIVE_GOODS_SET, *[p["gid"] for p in bind_params_list])
+                logger.info(f"[Metrics Sync] Successfully completed parameterized flush batch for goods: {[p['gid'] for p in bind_params_list]}")
             except Exception:
                 await db.rollback()
-                logger.exception("\u274c [Metrics Sync] 刷盘 goods_metrics 发生严重硬伤失败")
+                logger.exception("[Metrics Sync] Critical database exception during goods metrics executemany flush")
         finally:
             await MetricsService._release_flush_lock(redis_client, lock_key, token)

@@ -162,7 +162,7 @@ async def list_my_favorites(
     fav_items = result.get("list", [])
     post_items = [it for it in fav_items if it.get("target_type") == "POST"]
     if post_items:
-        await MetricsService.hydrate_posts_with_metrics(redis_client, post_items, [it["target_id"] for it in post_items], id_key="target_id")
+        await MetricsService.hydrate_posts_with_metrics(db, redis_client, post_items, [it["target_id"] for it in post_items], id_key="target_id")
 
     return ResponseModel(code=settings.SUCCESS_CODE, message=FavoriteListResponse.model_validate(result))
 
@@ -185,7 +185,7 @@ async def list_my_histories(
     hist_items = result.get("list", [])
     post_items = [it for it in hist_items if it.get("target_type") == "POST"]
     if post_items:
-        await MetricsService.hydrate_posts_with_metrics(redis_client, post_items, [it["target_id"] for it in post_items], id_key="target_id")
+        await MetricsService.hydrate_posts_with_metrics(db, redis_client, post_items, [it["target_id"] for it in post_items], id_key="target_id")
 
     return ResponseModel(code=settings.SUCCESS_CODE, message=HistoryListResponse.model_validate(result))
 

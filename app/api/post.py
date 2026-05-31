@@ -166,7 +166,7 @@ async def list_posts(
         if post_list:
             post_dicts = [pr.model_dump() for pr in post_list]
             post_ids = [pr.post_id for pr in post_list]
-            await MetricsService.hydrate_posts_with_metrics(redis_client, post_dicts, post_ids)
+            await MetricsService.hydrate_posts_with_metrics(db, redis_client, post_dicts, post_ids)
             post_list = [PostRead.model_validate(pd) for pd in post_dicts]
         return ResponseModel(
             code=settings.SUCCESS_CODE,
@@ -221,7 +221,7 @@ async def list_my_posts(
     if post_list:
         post_dicts = [pr.model_dump() for pr in post_list]
         post_ids = [pr.post_id for pr in post_list]
-        await MetricsService.hydrate_posts_with_metrics(redis_client, post_dicts, post_ids)
+        await MetricsService.hydrate_posts_with_metrics(db, redis_client, post_dicts, post_ids)
         post_list = [PostRead.model_validate(pd) for pd in post_dicts]
     return ResponseModel(
         code=settings.SUCCESS_CODE,
@@ -264,7 +264,7 @@ async def list_public_user_posts(
     if post_list:
         post_dicts = [pr.model_dump() for pr in post_list]
         post_ids = [pr.post_id for pr in post_list]
-        await MetricsService.hydrate_posts_with_metrics(redis_client, post_dicts, post_ids)
+        await MetricsService.hydrate_posts_with_metrics(db, redis_client, post_dicts, post_ids)
         post_list = [PostRead.model_validate(pd) for pd in post_dicts]
     return ResponseModel(
         code=settings.SUCCESS_CODE,
@@ -456,7 +456,7 @@ async def get_post_detail(
 
         # 灌入计数器到详情卡片
         post_detail_dict = post_detail.model_dump()
-        await MetricsService.hydrate_posts_with_metrics(redis_client, [post_detail_dict], [post_id])
+        await MetricsService.hydrate_posts_with_metrics(db, redis_client, [post_detail_dict], [post_id])
         hydrated_detail = PostDetailRead.model_validate(post_detail_dict)
 
         return ResponseModel(
