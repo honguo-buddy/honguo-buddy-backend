@@ -251,3 +251,47 @@ class TestDeleteGoods:
         msg = assert_api_success(resp.json())
         assert msg["goods_id"] == 5007
         assert msg["deleted"] is True
+
+
+
+class TestGoodsDetailHistory:
+    """GET /goods/{goods_id}: authenticated users register history footprint."""
+
+    async def test_goods_detail_registers_history_footprint(
+        self,
+        client: AsyncClient,
+        db_session,
+        test_user,
+        test_user_token,
+        fake_redis,
+    ):
+        """Visiting goods detail with auth records ZSET entry for history wall."""
+        await fake_redis.set(f"token:{test_user_token}", str(test_user.user_id))
+
+        category = Category(category_id=510, name="history-footprint-cat", config_json={})
+        db_session.add(category)
+        await db_session.flush()
+
+        goods = Goods(
+            goods_id=5001,
+            publisher_id=test_user.user_id,
+            category_id=category.category_id,
+            name="history goods",
+            price=30.0,
+            condition=GoodsCondition.BRAND_NEW,
+            status=GoodsStatus.ON_SALE,
+        )
+        db_session.add(goods)
+        await db_session.flush()
+
+        resp = await client.get(
+            f"/goods/{5001}",
+            headers={"Authorization": f"Bearer {test_user_token}"},
+        )
+        assert resp.status_code == 200
+
+        # Verify history ZSET entry was created
+        history_key = f"user:history:{test_user.user_id}"
+        zset = fake_redis._zsets.get(history_key, {})
+        assert "GOODS:5001" in zset, f"Expected GOODS:5001 in {history_key}, got {list(zset.keys())}"
+

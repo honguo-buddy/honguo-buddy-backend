@@ -467,3 +467,24 @@ OrderService.approve_order 和 reject_order 需要校验 post.publisher_id。
 【问题】incr_post_view 中每条浏览都输出 logger.info，高并发下刷屏且消耗 I/O。
 
 【解决】高频触发路径的诊断日志必须使用 logger.debug 级别，生产环境默认关闭。
+
+
+二十六、 评论目标实体存在性校验 (Comment Target Existence Verification)
+
+【问题】POST /comments 接口接受任意 target_id 并成功创建评论，不验证目标 POST/GOODS 实体是否存在或已软删除，导致孤儿评论行写入数据库，造成数据污染。
+
+【解决】在评论创建逻辑中，根据 target_type 查询对应模型（Post/Goods），校验实体存在且 is_deleted == False。若目标不存在或已软删除，立即抛出 ResourceHTTPException(code=settings.DATA_GET_FAILED_CODE, msg=“目标帖子或商品不存在或已被删除”)。
+
+
+二十七、 收藏/历史灌水双端覆盖 (Dual Hydration for Favorites/Histories)
+
+【问题】/users/me/favorites 和 /users/me/histories 端点只对 POST 类型卡片调用 hydrate_posts_with_metrics 灌水，遗漏了 GOODS 类型卡片的计数器回填，导致商品卡片的前端指标全为 0。
+
+【解决】在路由层同时提取 POST 和 GOODS 两类卡片，分别调用对应的 hydrate_posts_with_metrics 和 hydrate_goods_with_metrics 灌水方法。每新增实体类型时，必须同步检查所有聚合展示端点（收藏、历史、搜索等）的灌水覆盖完整性。
+
+
+二十八、 商品详情历史脚印记录 (Goods Detail History Footprint)
+
+【问题】访问帖子详情页时，系统会将浏览足迹写入 Redis ZSET (user:history:{user_id})，但访问商品详情页时完全遗漏了历史记录，导致用户历史足迹墙缺失商品浏览记录。
+
+【解决】商品详情路由中注入可选用户依赖 (get_current_user_optional)，若已登录则调用 SocialService.record_history 将 target_type=GOODS 的浏览足迹写入 Redis 历史 ZSET，与帖子详情保持行为对称。

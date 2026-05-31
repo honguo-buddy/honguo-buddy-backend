@@ -8,7 +8,7 @@ import uuid
 from httpx import AsyncClient
 
 from app.core import settings
-from app.models import User, Attachment, AttachmentTargetType, Category, Direction, Post, PostStatus, UrgencyLevel
+from app.models import User, Attachment, AttachmentTargetType, Category, Direction, Goods, GoodsCondition, GoodsStatus, Post, PostStatus, UrgencyLevel
 from tests.helpers import assert_api_error, assert_api_success
 
 pytestmark = pytest.mark.asyncio
@@ -812,6 +812,58 @@ class TestFavoritesHydration:
         assert card["favorite_count"] == 7
         assert card["comment_count"] == 3
 
+    async def test_favorites_goods_card_has_counters(
+        self,
+        client: AsyncClient,
+        db_session,
+        test_user,
+        test_user_token,
+        fake_redis,
+    ):
+        """GOODS-type favorite cards carry hydrated counters."""
+        await fake_redis.set(f"token:{test_user_token}", str(test_user.user_id))
+
+        category = Category(category_id=403, name="fav-goods-cat", config_json={})
+        db_session.add(category)
+        await db_session.flush()
+
+        goods = Goods(
+            goods_id=4201,
+            publisher_id=test_user.user_id,
+            category_id=category.category_id,
+            name="fav goods test",
+            price=50.0,
+            condition=GoodsCondition.BRAND_NEW,
+            status=GoodsStatus.ON_SALE,
+        )
+        db_session.add(goods)
+        await db_session.flush()
+
+        await client.post(
+            "/users/favorite",
+            headers={"Authorization": f"Bearer {test_user_token}"},
+            json={"target_type": "GOODS", "target_id": 4201},
+        )
+
+        fake_redis._data["_hash:metrics:goods:4201"] = {"view": "15", "favorite": "3", "comment": "1"}
+
+        resp = await client.get(
+            "/users/me/favorites",
+            headers={"Authorization": f"Bearer {test_user_token}"},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        msg = assert_api_success(body)
+        assert msg["total"] >= 1
+        goods_cards = [c for c in msg["list"] if c["target_type"] == "GOODS"]
+        assert len(goods_cards) >= 1
+        card = goods_cards[0]
+        assert card["target_type"] == "GOODS"
+        assert card["view_count"] == 15
+        assert card["favorite_count"] == 3
+        assert card["comment_count"] == 1
+
+
 
 class TestHistoriesHydration:
     """GET /users/me/histories: POST-type history cards carry hydrated counters."""
@@ -866,3 +918,55 @@ class TestHistoriesHydration:
         assert card["view_count"] == 30
         assert card["favorite_count"] == 5
         assert card["comment_count"] == 2
+
+    async def test_histories_goods_card_has_counters(
+        self,
+        client: AsyncClient,
+        db_session,
+        test_user,
+        test_user_token,
+        fake_redis,
+    ):
+        """GOODS-type history cards carry hydrated counters."""
+        await fake_redis.set(f"token:{test_user_token}", str(test_user.user_id))
+
+        category = Category(category_id=404, name="hist-goods-cat", config_json={})
+        db_session.add(category)
+        await db_session.flush()
+
+        goods = Goods(
+            goods_id=4202,
+            publisher_id=test_user.user_id,
+            category_id=category.category_id,
+            name="history goods test",
+            price=88.0,
+            condition=GoodsCondition.BRAND_NEW,
+            status=GoodsStatus.ON_SALE,
+        )
+        db_session.add(goods)
+        await db_session.flush()
+
+        # Record history by visiting the goods detail page
+        await client.get(
+            f"/goods/{4202}",
+            headers={"Authorization": f"Bearer {test_user_token}"},
+        )
+
+        fake_redis._data["_hash:metrics:goods:4202"] = {"view": "25", "favorite": "4", "comment": "2"}
+
+        resp = await client.get(
+            "/users/me/histories",
+            headers={"Authorization": f"Bearer {test_user_token}"},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        msg = assert_api_success(body)
+        assert msg["total"] >= 1
+        goods_cards = [c for c in msg["list"] if c["target_type"] == "GOODS"]
+        assert len(goods_cards) >= 1
+        card = goods_cards[0]
+        assert card["target_type"] == "GOODS"
+        assert card["view_count"] == 25
+        assert card["favorite_count"] == 4
+        assert card["comment_count"] == 2
+

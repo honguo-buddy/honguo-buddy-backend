@@ -5,7 +5,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api import get_current_user
+from app.api import get_current_user, get_current_user_optional
 from app.core import settings, ResourceHTTPException, AuthHTTPException
 from app.db import get_db, get_redis
 from app.schemas import (
@@ -17,7 +17,7 @@ from app.schemas import (
     GoodsListResponse,
     UserRead,
 )
-from app.services import GoodsService, MetricsService
+from app.services import GoodsService, MetricsService, SocialService
 
 logger = logging.getLogger(__name__)
 
@@ -119,13 +119,26 @@ async def get_goods_detail(
     goods_id: int,
     db: AsyncSession = Depends(get_db),
     redis_client = Depends(get_redis),
+    current_user = Depends(get_current_user_optional),
 ):
-    """Goods detail page with view counter increment and hydration."""
+    """Goods detail page with view counter increment, hydration, and history footprint."""
     await MetricsService.incr_goods_view(redis_client, goods_id)
 
     goods = await GoodsService.get_goods_by_id(db, goods_id)
     if not goods:
         raise ResourceHTTPException(code=settings.USER_GET_FAILED_CODE, msg="Goods not found or deleted")
+
+    # 已登录用户异步记录商品浏览历史足迹到 Redis ZSET
+    if current_user:
+        try:
+            await SocialService.record_history(
+                redis_client=redis_client,
+                user_id=current_user.user_id,
+                target_type="GOODS",
+                target_id=goods_id,
+            )
+        except Exception:
+            pass
 
     goods_detail = GoodsDetailRead.model_validate(goods)
     goods_detail.attachment_urls = _build_goods_urls(goods)

@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core import AuthHTTPException, BusinessHTTPException, ResourceHTTPException, settings
-from app.models import AttachmentTargetType, Comment, User, TargetType
+from app.models import AttachmentTargetType, Comment, Goods, Post, User, TargetType
 from app.services.attachment_service import AttachmentService
 from app.services.metrics_service import MetricsService
 from app.db import redis as app_redis
@@ -59,6 +59,20 @@ class CommentService:
             raise BusinessHTTPException(
                 code=settings.REQ_ERROR_CODE,
                 msg=f"无效的目标类型: {target_type}",
+            )
+
+        # 验证目标实体是否存在（防御孤儿评论写入）
+        if target_type == "POST":
+            target_obj = await db.get(Post, target_id)
+        elif target_type == "GOODS":
+            target_obj = await db.get(Goods, target_id)
+        else:
+            target_obj = None
+
+        if target_obj is None or getattr(target_obj, "is_deleted", False):
+            raise ResourceHTTPException(
+                code=settings.DATA_GET_FAILED_CODE,
+                msg="目标帖子或商品不存在或已被删除",
             )
         
         # 如果有parent_id，验证父评论是否存在且未被删除

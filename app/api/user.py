@@ -158,11 +158,14 @@ async def list_my_favorites(
     result["page"] = page
     result["page_size"] = page_size
 
-    # 批量灌水：为收藏列表中的 POST 卡片注入计数器
+    # 批量灌水：为收藏列表中的 POST + GOODS 卡片双端注入计数器
     fav_items = result.get("list", [])
     post_items = [it for it in fav_items if it.get("target_type") == "POST"]
+    goods_items = [it for it in fav_items if it.get("target_type") == "GOODS"]
     if post_items:
         await MetricsService.hydrate_posts_with_metrics(db, redis_client, post_items, [it["target_id"] for it in post_items], id_key="target_id")
+    if goods_items:
+        await MetricsService.hydrate_goods_with_metrics(db, redis_client, goods_items, [it["target_id"] for it in goods_items])
 
     return ResponseModel(code=settings.SUCCESS_CODE, message=FavoriteListResponse.model_validate(result))
 
@@ -181,11 +184,14 @@ async def list_my_histories(
     result["page"] = page
     result["page_size"] = page_size
 
-    # 批量灌水：为历史足迹中的 POST 卡片注入计数器
+    # 批量灌水：为历史足迹中的 POST + GOODS 卡片双端注入计数器
     hist_items = result.get("list", [])
     post_items = [it for it in hist_items if it.get("target_type") == "POST"]
+    goods_items = [it for it in hist_items if it.get("target_type") == "GOODS"]
     if post_items:
         await MetricsService.hydrate_posts_with_metrics(db, redis_client, post_items, [it["target_id"] for it in post_items], id_key="target_id")
+    if goods_items:
+        await MetricsService.hydrate_goods_with_metrics(db, redis_client, goods_items, [it["target_id"] for it in goods_items])
 
     return ResponseModel(code=settings.SUCCESS_CODE, message=HistoryListResponse.model_validate(result))
 
