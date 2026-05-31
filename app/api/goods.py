@@ -23,6 +23,26 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
+
+def _build_goods_dict(goods) -> dict:
+    """Build lightweight raw dict from ORM Goods object, no intermediate Pydantic overhead."""
+    attachment_urls = [att.url for att in (goods.attachments or []) if not getattr(att, 'is_deleted', False)]
+    publisher = goods.user
+    return {
+        "goods_id": goods.goods_id,
+        "category_id": goods.category_id,
+        "name": goods.name,
+        "description": goods.description,
+        "price": float(goods.price) if goods.price else None,
+        "condition": goods.condition.value if goods.condition else None,
+        "status": goods.status.value if goods.status else None,
+        "template_data": goods.template_data,
+        "publisher": UserRead.model_validate(publisher) if publisher else None,
+        "publisher_id": goods.publisher_id,
+        "create_time": goods.create_time.isoformat() if goods.create_time else "",
+        "attachment_urls": attachment_urls,
+    }
+
 def _build_goods_urls(goods) -> list[str]:
     try:
         return [att.url for att in (goods.attachments or []) if not getattr(att, "is_deleted", False)]
@@ -59,17 +79,18 @@ async def list_goods(
             db, keyword=keyword, category_id=category_id, status=status, page=page, page_size=page_size
         )
 
-        goods_list = []
+        raw_dicts = []
+        goods_ids = []
         for g in goods_items:
-            gr = GoodsRead.model_validate(g)
-            gr.attachment_urls = _build_goods_urls(g)
-            goods_list.append(gr)
+            gid = g.goods_id
+            goods_ids.append(gid)
+            raw_dicts.append(_build_goods_dict(g))
 
-        if goods_list:
-            goods_dicts = [g.model_dump() for g in goods_list]
-            goods_ids = [gd.get("goods_id") or gd.get("target_id") for gd in goods_dicts]
-            await MetricsService.hydrate_goods_with_metrics(db, redis_client, goods_dicts, goods_ids)
-            goods_list = [GoodsRead.model_validate(gd) for gd in goods_dicts]
+        if raw_dicts:
+            await MetricsService.hydrate_goods_with_metrics(db, redis_client, raw_dicts, goods_ids)
+            goods_list = [GoodsRead.model_validate(d) for d in raw_dicts]
+        else:
+            goods_list = []
 
         return ResponseModel(
             code=settings.SUCCESS_CODE,
@@ -91,17 +112,18 @@ async def list_my_goods(
     """My published goods list."""
     try:
         goods_items, total = await GoodsService.list_goods_by_user(db, current_user.user_id, page, page_size)
-        goods_list = []
+        raw_dicts = []
+        goods_ids = []
         for g in goods_items:
-            gr = GoodsRead.model_validate(g)
-            gr.attachment_urls = _build_goods_urls(g)
-            goods_list.append(gr)
+            gid = g.goods_id
+            goods_ids.append(gid)
+            raw_dicts.append(_build_goods_dict(g))
 
-        if goods_list:
-            goods_dicts = [g.model_dump() for g in goods_list]
-            goods_ids = [gd.get("goods_id") or gd.get("target_id") for gd in goods_dicts]
-            await MetricsService.hydrate_goods_with_metrics(db, redis_client, goods_dicts, goods_ids)
-            goods_list = [GoodsRead.model_validate(gd) for gd in goods_dicts]
+        if raw_dicts:
+            await MetricsService.hydrate_goods_with_metrics(db, redis_client, raw_dicts, goods_ids)
+            goods_list = [GoodsRead.model_validate(d) for d in raw_dicts]
+        else:
+            goods_list = []
 
         return ResponseModel(
             code=settings.SUCCESS_CODE,

@@ -234,7 +234,7 @@ class CommentService:
             select(Comment)
             .where(and_(*where_conditions))
             .options(
-                selectinload(Comment.user),
+                selectinload(Comment.user).selectinload(User.avatar_attachment),
                 selectinload(Comment.replies),
             )
             .order_by(Comment.comment_id.desc())
@@ -294,7 +294,7 @@ class CommentService:
         stmt = (
             select(Comment)
             .where(and_(*where_conditions))
-            .options(selectinload(Comment.user))
+            .options(selectinload(Comment.user).selectinload(User.avatar_attachment))
             .order_by(Comment.create_time.asc())
             .limit(size + 1)
         )

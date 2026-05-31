@@ -23,7 +23,12 @@ class FakeRedisForMetrics:
     async def hgetall(self, key):
         return self._hashes.get(key, {}) or None
 
-    async def hset(self, key, field, value):
+    async def hset(self, key, field=None, value=None, mapping=None):
+        if mapping:
+            bucket = self._hashes.setdefault(key, {})
+            for k, v in mapping.items():
+                bucket[k] = str(v)
+            return len(mapping)
         bucket = self._hashes.setdefault(key, {})
         bucket[field] = str(value)
         return 1
@@ -95,8 +100,8 @@ class FakeRedisForMetrics:
             self._commands.append(("hincrby", key, field, amount))
             return self
 
-        def hset(self, key, field, value):
-            self._commands.append(("hset", key, field, value))
+        def hset(self, key, field=None, value=None, mapping=None):
+            self._commands.append(("hset", key, field, value, mapping))
             return self
 
         def delete(self, key):
@@ -121,9 +126,13 @@ class FakeRedisForMetrics:
                     results.append(current)
                     i += 1
                 elif cmd[0] == "hset":
-                    key, field, value = cmd[1], cmd[2], cmd[3]
+                    key, field, value, mapping = cmd[1], cmd[2], cmd[3], cmd[4]
                     bucket = self._parent._hashes.setdefault(key, {})
-                    bucket[field] = str(value)
+                    if mapping:
+                        for k, v in mapping.items():
+                            bucket[k] = str(v)
+                    elif field is not None:
+                        bucket[field] = str(value)
                     i += 1
                 elif cmd[0] == "delete":
                     key = cmd[1]
@@ -405,7 +414,8 @@ class TestMetricsService:
     # ------------------------------------------------------------------
 
     async def test_flush_then_hydrate_round_trip(self):
-        """刷盘后 Redis 增量归零，hydrate 从 MySQL 基准恢复正确总量。"""
+        """Read-Through: cache miss falls back to MySQL and backfills Redis;
+        with live Redis increments, merge is correct; after flush, Redis zeroed."""
         from app.services.metrics_service import MetricsService
 
         redis_fake = FakeRedisForMetrics()
@@ -423,7 +433,6 @@ class TestMetricsService:
                 class FR:
                     def scalars(s):
                         if "post_id" in stmt_str and "post_metrics" not in stmt_str:
-                            # Post ID validation query (SELECT post.post_id FROM post WHERE ...)
                             class ScalarAll:
                                 def all(ss):
                                     return [post_id] if post_id in mysql_rows else []
@@ -432,8 +441,6 @@ class TestMetricsService:
                     def all(s):
                         return []
                     def mappings(s):
-                        # For SELECT FROM post_metrics query in hydrate
-                        # Return rows with post_id included
                         if post_id in mysql_rows:
                             row = dict(mysql_rows[post_id])
                             row["post_id"] = post_id
@@ -447,19 +454,30 @@ class TestMetricsService:
 
         db = FakeDBForRoundTrip()
 
-        redis_fake._hashes[key] = {"view": "10", "favorite": "2", "comment": "3"}
-        await redis_fake.sadd("metrics:active_posts_set", post_id)
-
+        # Phase 1: Cache miss (Redis empty) -> MySQL fallback + backfill
         items = [{"post_id": post_id}]
         await MetricsService.hydrate_posts_with_metrics(db, redis_fake, items, [post_id])
-        assert items[0]["view_count"] == 110
-        assert items[0]["favorite_count"] == 7
-        assert items[0]["comment_count"] == 13
+        assert items[0]["view_count"] == 100
+        assert items[0]["favorite_count"] == 5
+        assert items[0]["comment_count"] == 10
+        # Redis should now be backfilled with MySQL baseline
+        cached = await redis_fake.hgetall(key)
+        assert cached is not None
+        assert cached.get("view") == "100"
 
-        await MetricsService.flush_metrics_to_db(db, redis_fake)
-
+        # Phase 2: Add live Redis increments, hydrate again -> merge
+        redis_fake._hashes[key] = {"view": "110", "favorite": "7", "comment": "13"}
         items2 = [{"post_id": post_id}]
         await MetricsService.hydrate_posts_with_metrics(db, redis_fake, items2, [post_id])
-        assert items2[0]["view_count"] == 100
-        assert items2[0]["favorite_count"] == 5
-        assert items2[0]["comment_count"] == 10
+        assert items2[0]["view_count"] == 110  # 100 base (cached) + 10 incr
+        assert items2[0]["favorite_count"] == 7
+        assert items2[0]["comment_count"] == 13
+
+        # Phase 3: Flush to MySQL, then hydrate (cache miss -> MySQL only)
+        await redis_fake.sadd("metrics:active_posts_set", post_id)
+        await MetricsService.flush_metrics_to_db(db, redis_fake)
+        items3 = [{"post_id": post_id}]
+        await MetricsService.hydrate_posts_with_metrics(db, redis_fake, items3, [post_id])
+        assert items3[0]["view_count"] == 100
+        assert items3[0]["favorite_count"] == 5
+        assert items3[0]["comment_count"] == 10

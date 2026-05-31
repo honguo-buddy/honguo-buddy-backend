@@ -141,7 +141,7 @@ async def test_create_order_post_error_branches():
         await OrderService.create_order(db, "POST", 2001, 1002, post=build_post())
     assert "该帖子已申请过" in duplicate_err.value.detail["msg"]
 
-    db = build_db(execute_side_effect=[FakeResult(items=[None]), FakeResult(scalar_value=Direction.SELL), FakeResult(scalar_value=2)])
+    db = build_db(execute_side_effect=[FakeResult(items=[None]), FakeResult(scalar_value=2)])
     with pytest.raises(BusinessHTTPException) as full_err:
         await OrderService.create_order(db, "POST", 2001, 1002, post=build_post(max_accepters=2))
     assert "接单已满" in full_err.value.detail["msg"]
@@ -149,7 +149,7 @@ async def test_create_order_post_error_branches():
 
 async def test_create_order_post_allows_retry_after_canceled(monkeypatch):
     post = build_post(direction=Direction.BUY, publisher_id=3001, max_accepters=3)
-    db = build_db(execute_side_effect=[FakeResult(scalar_value=None), FakeResult(scalar_value=Direction.BUY), FakeResult(scalar_value=0)])
+    db = build_db(execute_side_effect=[FakeResult(scalar_value=None), FakeResult(scalar_value=0)])
 
     order = await OrderService.create_order(db, "POST", 2001, 4001, post=post)
     assert order.status == OrderStatus.PENDING
@@ -169,7 +169,7 @@ async def test_create_order_post_blocked_by_cooldown(monkeypatch):
 
 
 async def test_create_order_post_success(monkeypatch):
-    db = build_db(execute_side_effect=[FakeResult(items=[None]), FakeResult(scalar_value=Direction.BUY), FakeResult(scalar_value=0)])
+    db = build_db(execute_side_effect=[FakeResult(items=[None]), FakeResult(scalar_value=0)])
     post = build_post(direction=Direction.BUY, publisher_id=3001, max_accepters=3)
 
     order = await OrderService.create_order(
@@ -900,7 +900,7 @@ async def test_lookup_helpers_and_create_order_edge_paths(monkeypatch):
     assert db.commit.await_count == 0
 
     post = build_post(direction=Direction.SELL)
-    db_post = build_db(execute_side_effect=[FakeResult(items=[None]), FakeResult(scalar_value=Direction.SELL), FakeResult(scalar_value=0)])
+    db_post = build_db(execute_side_effect=[FakeResult(items=[None]), FakeResult(scalar_value=0)])
     order_post = await OrderService.create_order(db_post, "POST", 2001, 4001, trigger_type="APPLICATION", post=post, commit=False)
     assert order_post.trigger_type == OrderTriggerType.APPLICATION
     assert db_post.commit.await_count == 0

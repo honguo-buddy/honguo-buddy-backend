@@ -39,7 +39,7 @@ from app.schemas import (
     UserRead,
 )
 from app.services import MetricsService, PostService, OrderService, SocialService
-from app.models import Comment, Post, TargetType
+from app.models import Comment, Post, TargetType, User
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +65,30 @@ def _build_post_read(post, current_accepters: int) -> PostRead:
         create_time=post.create_time.isoformat() if post.create_time else "",
         attachment_urls=attachment_urls,
     )
+
+
+
+def _build_post_dict(post, current_accepters: int) -> dict:
+    """Build lightweight raw dict from ORM Post object, no intermediate Pydantic overhead."""
+    attachment_urls = [att.url for att in (post.attachments or []) if not att.is_deleted]
+    publisher = post.user
+    return {
+        "post_id": post.post_id,
+        "category_id": post.category_id,
+        "title": post.title,
+        "description": post.description,
+        "price": float(post.price) if post.price else None,
+        "direction": post.direction.value if post.direction else "SELL",
+        "urgency": post.urgency.value if post.urgency else "NORMAL",
+        "status": post.status.value if post.status else "OPEN",
+        "template_data": post.template_data,
+        "max_accepters": post.max_accepters,
+        "publisher": UserRead.model_validate(publisher) if publisher else None,
+        "publisher_id": post.publisher_id,
+        "current_accepters": current_accepters,
+        "create_time": post.create_time.isoformat() if post.create_time else "",
+        "attachment_urls": attachment_urls,
+    }
 
 
 def _build_application_applicant_read(applicant, completed_order_count: int) -> PostApplicationApplicantRead:
@@ -95,6 +119,7 @@ async def publish_post(
             db,
             item_type="POST",
             item_id=post.post_id,
+            _post_direction=post.direction,
         )
         
         return ResponseModel(
@@ -153,21 +178,22 @@ async def list_posts(
             db,
             item_type="POST",
             item_ids=[post.post_id for post in posts],
+            _direction_map={post.post_id: post.direction for post in posts},
         )
         
-        # 对每个帖子补充接单数和附件 URL
-        post_list = []
+        # Linear dict pipeline: ORM -> raw dict -> hydrate -> single validate
+        raw_dicts = []
+        post_ids = []
         for post in posts:
-            current_accepters = current_accepters_map.get(post.post_id, 0)
-            post_list.append(_build_post_read(post, current_accepters))
-        
+            pid = post.post_id
+            post_ids.append(pid)
+            raw_dicts.append(_build_post_dict(post, current_accepters_map.get(pid, 0)))
 
-        # 批量灌水计数器
-        if post_list:
-            post_dicts = [pr.model_dump() for pr in post_list]
-            post_ids = [pr.post_id for pr in post_list]
-            await MetricsService.hydrate_posts_with_metrics(db, redis_client, post_dicts, post_ids)
-            post_list = [PostRead.model_validate(pd) for pd in post_dicts]
+        if raw_dicts:
+            await MetricsService.hydrate_posts_with_metrics(db, redis_client, raw_dicts, post_ids)
+            post_list = [PostRead.model_validate(d) for d in raw_dicts]
+        else:
+            post_list = []
         return ResponseModel(
             code=settings.SUCCESS_CODE,
             message=PostList(
@@ -210,19 +236,20 @@ async def list_my_posts(
         db,
         item_type="POST",
         item_ids=[post.post_id for post in posts],
+        _direction_map={post.post_id: post.direction for post in posts},
     )
-    post_list = []
+    raw_dicts = []
+    post_ids = []
     for post in posts:
-        current_accepters = current_accepters_map.get(post.post_id, 0)
-        post_list.append(_build_post_read(post, current_accepters))
+        pid = post.post_id
+        post_ids.append(pid)
+        raw_dicts.append(_build_post_dict(post, current_accepters_map.get(pid, 0)))
 
-
-    # 批量灌水计数器
-    if post_list:
-        post_dicts = [pr.model_dump() for pr in post_list]
-        post_ids = [pr.post_id for pr in post_list]
-        await MetricsService.hydrate_posts_with_metrics(db, redis_client, post_dicts, post_ids)
-        post_list = [PostRead.model_validate(pd) for pd in post_dicts]
+    if raw_dicts:
+        await MetricsService.hydrate_posts_with_metrics(db, redis_client, raw_dicts, post_ids)
+        post_list = [PostRead.model_validate(d) for d in raw_dicts]
+    else:
+        post_list = []
     return ResponseModel(
         code=settings.SUCCESS_CODE,
         message=PostList(total=total, page=page, page_size=size, list=post_list),
@@ -253,19 +280,20 @@ async def list_public_user_posts(
         db,
         item_type="POST",
         item_ids=[post.post_id for post in posts],
+        _direction_map={post.post_id: post.direction for post in posts},
     )
-    post_list = []
+    raw_dicts = []
+    post_ids = []
     for post in posts:
-        current_accepters = current_accepters_map.get(post.post_id, 0)
-        post_list.append(_build_post_read(post, current_accepters))
+        pid = post.post_id
+        post_ids.append(pid)
+        raw_dicts.append(_build_post_dict(post, current_accepters_map.get(pid, 0)))
 
-
-    # 批量灌水计数器
-    if post_list:
-        post_dicts = [pr.model_dump() for pr in post_list]
-        post_ids = [pr.post_id for pr in post_list]
-        await MetricsService.hydrate_posts_with_metrics(db, redis_client, post_dicts, post_ids)
-        post_list = [PostRead.model_validate(pd) for pd in post_dicts]
+    if raw_dicts:
+        await MetricsService.hydrate_posts_with_metrics(db, redis_client, raw_dicts, post_ids)
+        post_list = [PostRead.model_validate(d) for d in raw_dicts]
+    else:
+        post_list = []
     return ResponseModel(
         code=settings.SUCCESS_CODE,
         message=PostList(total=total, page=page, page_size=size, list=post_list),
@@ -350,7 +378,7 @@ async def update_post(
         operator_id=current_user.user_id,
         is_admin=bool(current_user.is_admin),
     )
-    current_accepters = await OrderService.get_current_accepters_count(db, item_type="POST", item_id=post.post_id)
+    current_accepters = await OrderService.get_current_accepters_count(db, item_type="POST", item_id=post.post_id, _post_direction=post.direction)
     return ResponseModel(code=settings.SUCCESS_CODE, message=_build_post_read(post, current_accepters))
 
 
@@ -392,6 +420,7 @@ async def get_post_detail(
             db,
             item_type="POST",
             item_id=post_id,
+            _post_direction=post.direction,
         )
         attachment_urls = [att.url for att in (post.attachments or []) if not att.is_deleted]
 
@@ -405,7 +434,7 @@ async def get_post_detail(
                     Comment.target_id == post_id,
                     Comment.is_deleted == False,
                 )
-                .options(selectinload(Comment.user))
+                .options(selectinload(Comment.user).selectinload(User.avatar_attachment))
                 .order_by(Comment.create_time.desc())
                 .limit(comments_limit)
             )
@@ -488,14 +517,15 @@ async def accept_post(
             redis_client=redis_client,
         )
         
-        # 查询更新后的接单数
+        # 先加载帖子获取 max_accepters，再查询更新后的接单数（避免冗余方向查询）
+        post = await PostService.get_post_detail(db, post_id)
+        max_accepters = post.max_accepters
         current_accepters = await OrderService.get_current_accepters_count(
             db,
             item_type="POST",
             item_id=post_id,
+            _post_direction=post.direction,
         )
-        post = await PostService.get_post_detail(db, post_id)
-        max_accepters = post.max_accepters
         
         return ResponseModel(
             code=settings.SUCCESS_CODE,

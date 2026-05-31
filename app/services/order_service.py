@@ -189,7 +189,7 @@ class OrderService:
         return [OrderStatus.PENDING, OrderStatus.ONGOING, OrderStatus.CONFIRMED, OrderStatus.COMPLETED]
 
     @staticmethod
-    async def get_current_accepters_count(db: AsyncSession, item_type: str, item_id: int) -> int:
+    async def get_current_accepters_count(db: AsyncSession, item_type: str, item_id: int, _post_direction=None) -> int:
         """获取指定项目（Post/Goods）当前有效接单/参与人数。
         
         统一的接单数计算逻辑，避免 DRY 违反。
@@ -204,11 +204,14 @@ class OrderService:
         """
         item_type_enum = OrderService._normalize_item_type(item_type)
         if item_type_enum == ItemType.POST:
-            post_stmt = select(Post.direction).where(Post.post_id == item_id, Post.is_deleted == False)
-            post_res = await db.execute(post_stmt)
-            direction = post_res.scalar_one_or_none()
-            if direction is None:
-                return 0
+            if _post_direction is not None:
+                direction = _post_direction
+            else:
+                post_stmt = select(Post.direction).where(Post.post_id == item_id, Post.is_deleted == False)
+                post_res = await db.execute(post_stmt)
+                direction = post_res.scalar_one_or_none()
+                if direction is None:
+                    return 0
             valid_statuses = OrderService._post_accept_valid_statuses(direction)
         else:
             valid_statuses = [
@@ -232,6 +235,7 @@ class OrderService:
         db: AsyncSession,
         item_type: str,
         item_ids: list[int],
+        _direction_map: dict = None,
     ) -> dict[int, int]:
         """批量获取多个项目的接单数，避免在列表页逐条查询。"""
         unique_item_ids = [int(item_id) for item_id in dict.fromkeys(item_ids) if item_id is not None]
@@ -240,9 +244,12 @@ class OrderService:
 
         item_type_enum = OrderService._normalize_item_type(item_type)
         if item_type_enum == ItemType.POST:
-            post_stmt = select(Post.post_id, Post.direction).where(Post.post_id.in_(unique_item_ids), Post.is_deleted == False)
-            post_res = await db.execute(post_stmt)
-            direction_map = {int(post_id): direction for post_id, direction in post_res.all()}
+            if _direction_map is not None:
+                direction_map = _direction_map
+            else:
+                post_stmt = select(Post.post_id, Post.direction).where(Post.post_id.in_(unique_item_ids), Post.is_deleted == False)
+                post_res = await db.execute(post_stmt)
+                direction_map = {int(post_id): direction for post_id, direction in post_res.all()}
 
             results: dict[int, int] = {}
             buy_ids = [post_id for post_id, direction in direction_map.items() if direction == Direction.BUY]
@@ -354,7 +361,7 @@ class OrderService:
             max_accepters = getattr(post, "max_accepters", 1)
 
             # 使用统一的接单数计算方法（DRY 原则）
-            curr = await OrderService.get_current_accepters_count(db, ItemType.POST.name, item_id)
+            curr = await OrderService.get_current_accepters_count(db, ItemType.POST.name, item_id, _post_direction=post.direction)
             if curr >= max_accepters:
                 raise BusinessHTTPException(code=settings.REQ_ERROR_CODE, msg="接单已满")
 
@@ -809,7 +816,7 @@ class OrderService:
             raise BusinessHTTPException(code=settings.INSUFFICIENT_AUTHORITY_CODE, msg="只有发帖人可以同意接单")
 
         if order.trigger_type == OrderTriggerType.COLLECTIVE:
-            accepted_cnt = await OrderService.get_current_accepters_count(db, ItemType.POST.name, order.item_id)
+            accepted_cnt = await OrderService.get_current_accepters_count(db, ItemType.POST.name, order.item_id, _post_direction=post.direction)
             if accepted_cnt >= getattr(post, "max_accepters", 1):
                 pending_stmt = (
                     select(Order)
