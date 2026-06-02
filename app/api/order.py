@@ -71,6 +71,24 @@ async def list_my_orders(
         page_size=size,
     )
     raw_orders = [OrderService._serialize_order(order) for order in orders]
+    # 批量从 Post.template_data 提取公告反哺到订单列表
+    post_order_ids = [
+        (i, raw["item_id"]) for i, raw in enumerate(raw_orders)
+        if raw["item_type"] == "POST"
+    ]
+    if post_order_ids:
+        post_ids = list({pid for _, pid in post_order_ids})
+        from sqlalchemy import select as sa_select
+        bulletin_stmt = sa_select(Post.post_id, Post.template_data).where(
+            Post.post_id.in_(post_ids), Post.is_deleted == False
+        )
+        bulletin_res = await db.execute(bulletin_stmt)
+        bulletin_map = {}
+        for pid, td in bulletin_res.all():
+            bulletin_map[int(pid)] = (td or {}).get("bulletin", "") if isinstance(td, dict) else ""
+        for idx, pid in post_order_ids:
+            raw_orders[idx]["bulletin"] = bulletin_map.get(int(pid), "")
+
     return ResponseModel(
         code=settings.SUCCESS_CODE,
         message=OrderList(
@@ -92,6 +110,24 @@ async def list_orders_by_item(
     await _assert_item_owner(db, current_user, item_type, item_id)
     orders = await OrderService.list_orders_by_item(db, item_type, item_id)
     raw_orders = [OrderService._serialize_order(order) for order in orders]
+    # 批量从 Post.template_data 提取公告反哺到订单列表
+    post_order_ids = [
+        (i, raw['item_id']) for i, raw in enumerate(raw_orders)
+        if raw['item_type'] == 'POST'
+    ]
+    if post_order_ids:
+        post_ids = list({pid for _, pid in post_order_ids})
+        from sqlalchemy import select as sa_select
+        bulletin_stmt = sa_select(Post.post_id, Post.template_data).where(
+            Post.post_id.in_(post_ids), Post.is_deleted == False
+        )
+        bulletin_res = await db.execute(bulletin_stmt)
+        bulletin_map = {}
+        for pid, td in bulletin_res.all():
+            bulletin_map[int(pid)] = (td or {}).get('bulletin', '') if isinstance(td, dict) else ''
+        for idx, pid in post_order_ids:
+            raw_orders[idx]['bulletin'] = bulletin_map.get(int(pid), '')
+
     return ResponseModel(
         code=settings.SUCCESS_CODE,
         message=OrderItemList(
@@ -109,7 +145,15 @@ async def get_order_detail(
     db: AsyncSession = Depends(get_db),
 ):
     order = await OrderService.get_order_detail(db, order_id, current_user.user_id)
-    return ResponseModel(code=settings.SUCCESS_CODE, message=_order_to_read(order))
+    raw = OrderService._serialize_order(order)
+    # 从 Post.template_data 提取公告反哺到订单详情
+    if str(order.item_type.value if hasattr(order.item_type, "value") else order.item_type).upper() == "POST":
+        from sqlalchemy import select as sa_select
+        bulletin_stmt = sa_select(Post.template_data).where(Post.post_id == order.item_id, Post.is_deleted == False)
+        bulletin_res = await db.execute(bulletin_stmt)
+        td = bulletin_res.scalar_one_or_none()
+        raw["bulletin"] = (td or {}).get("bulletin", "") if isinstance(td, dict) else ""
+    return ResponseModel(code=settings.SUCCESS_CODE, message=OrderRead.model_validate(raw))
 
 
 @router.post("/{order_id}/approve", response_model=ResponseModel[OrderRead])

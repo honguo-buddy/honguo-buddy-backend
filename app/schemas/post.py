@@ -151,3 +151,8 @@ class PostApplicationListResponse(BaseModel):
     """帖子申请列表响应模型。"""
 
     applications: List[PostApplicationItem] = Field(default_factory=list)
+
+class PostBulletinUpdate(BaseModel):
+    """帖子公告更新请求。bulletin 为 None 时不修改，为空字符串时清空公告。"""
+    bulletin: Optional[str] = None
+

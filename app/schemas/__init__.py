@@ -79,6 +79,7 @@ from app.schemas.chat import (
     ChatMessageRead,
     ChatMessageListResponse,
     ChatRecallResponse,
+    ChatBroadcastRequest
 )
 from app.schemas.category import (
     CategoryCreate,
@@ -98,6 +99,7 @@ from app.schemas.post import (
     PostApplicationApplicantRead,
     PostApplicationItem,
     PostApplicationListResponse,
+    PostBulletinUpdate
 )
 from app.schemas.order import (
     OrderRead,

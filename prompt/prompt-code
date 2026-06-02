@@ -569,3 +569,16 @@ OrderService.approve_order 和 reject_order 需要校验 post.publisher_id。
 【诊断】SQLAlchemy 日志输出 [SQL: UPDATE order SET status = %s ...]。若看到 near 'order' 则 100% 是保留关键字未转义。同时 start_collective_fulfillment 内部 post.status = IN_PROGRESS 在 raw SQL 之前，若 raw SQL 失败则半截子脏状态已落库无法回滚。
 
 【解决】1) 所有 text() 原生 SQL 中的表名标识符（尤其是 order、comment、user 等 MySQL 保留关键字）强制使用反引号包裹（UPDATE order、FROM comment），绝对禁止双引号或裸写；2) 混合 ORM + raw SQL 的业务函数必须用 try/except 包裹 post.status 赋值 + raw SQL 整个块，except 中前置 await db.rollback() 彻底回滚，杜绝半截子脏落库。
+
+
+四十一、 多需协同场景优先采用流式扇出（Fan-out）私信机制 (Fan-out Broadcast via 1v1 Chat)
+
+【问题】面对 SELL 帖子发帖人需要向所有已录用买家群发通知时，若强行拼装群聊实体会导致表结构膨胀和架构污染。需在不新增表的前提下实现一对多消息分发。
+
+【解决】在后端服务层新增 broadcast_post_message 方法：1) 查询 post 关联 order 表中所有 ONGOING 状态的 buyer_id；2) 在内存中循环调用现有 init_session + send_message 对每个买家独立发送 1v1 私信；3) 路由层暴露 POST /messages/broadcast-post。0 新增表成本，维持极致的专属服务感。
+
+四十二、 跨多态业务协同数据采用寄生 JSON 扩展与读链路实时反哺 (Parasitic JSON Extension + Read-Path Backfill)
+
+【问题】帖子公告（bulletin）需要跨订单、聊天等多个下游读链路共享，若单独建表会引入额外 JOIN 开销。
+
+【解决】1) 将 bulletin 作为寄生键值存放于 Post.template_data JSON 字段内；2) OrderRead schema 追加 bulletin: Optional[str]；3) 订单详情/列表读链路中，通过批量聚合查询 Post.template_data 提取 bulletin 并反哺注入到 _serialize_order 字典管道；4) 暴露 POST/GET /posts/{post_id}/bulletin 端点供发帖人读写公告。实现一处写入、全链路自动同步。

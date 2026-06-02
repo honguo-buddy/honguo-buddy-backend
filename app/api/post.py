@@ -30,6 +30,7 @@ from app.schemas import (
     PostBatchAcceptRequest,
     PostBatchAcceptResponse,
     PostBatchAcceptResultItem,
+    PostBulletinUpdate,
     PostCreate,
     PostDetailRead,
     PostList,
@@ -318,6 +319,61 @@ async def list_public_user_posts(
         message=PostList(total=total, page=page, page_size=size, list=post_list),
     )
 
+
+
+
+@router.post("/{post_id}/bulletin", response_model=ResponseModel[dict])
+async def update_post_bulletin(
+    post_id: int,
+    payload: PostBulletinUpdate,
+    current_user: UserRead = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """更新帖子公告栏。bulletin 为 None 不修改，为空字符串清空公告。"""
+    if payload.bulletin is None:
+        post_stmt = select(Post.template_data).where(
+            Post.post_id == post_id, Post.is_deleted == False
+        )
+        post_res = await db.execute(post_stmt)
+        td = post_res.scalar_one_or_none()
+        current = (td or {}).get("bulletin", "") if isinstance(td, dict) else ""
+        return ResponseModel(
+            code=settings.SUCCESS_CODE,
+            message={"post_id": post_id, "bulletin": current},
+        )
+
+    post_stmt = (
+        select(Post)
+        .where(Post.post_id == post_id, Post.is_deleted == False)
+        .with_for_update()
+    )
+    post_res = await db.execute(post_stmt)
+    post = post_res.scalars().first()
+    if not post:
+        raise ResourceHTTPException(code=settings.DATA_GET_FAILED_CODE, msg="帖子不存在")
+    if post.publisher_id != current_user.user_id:
+        raise BusinessHTTPException(code=settings.INSUFFICIENT_AUTHORITY_CODE, msg="仅发帖人可更新公告")
+    post.template_data = dict(post.template_data or {})
+    post.template_data["bulletin"] = payload.bulletin
+    await db.flush()
+    await db.commit()
+    return ResponseModel(
+        code=settings.SUCCESS_CODE,
+        message={"post_id": post_id, "bulletin": payload.bulletin},
+    )
+
+
+@router.get("/{post_id}/bulletin", response_model=ResponseModel[dict])
+async def get_post_bulletin(
+    post_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    """获取帖子公告栏内容。"""
+    post_stmt = select(Post.template_data).where(Post.post_id == post_id, Post.is_deleted == False)
+    post_res = await db.execute(post_stmt)
+    td = post_res.scalar_one_or_none()
+    bulletin = (td or {}).get("bulletin", "") if isinstance(td, dict) else ""
+    return ResponseModel(code=settings.SUCCESS_CODE, message={"post_id": post_id, "bulletin": bulletin})
 
 @router.post("/batch-accept", response_model=ResponseModel[PostBatchAcceptResponse])
 async def batch_accept_posts(

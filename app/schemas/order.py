@@ -25,6 +25,7 @@ class OrderRead(BaseModel):
     buyer: Optional[UserRead] = None
     seller: Optional[UserRead] = None
     curr_accepters: Optional[int] = None
+    bulletin: Optional[str] = None
 
     model_config = {"from_attributes": True}
 

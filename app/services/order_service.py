@@ -67,6 +67,7 @@ class OrderService:
             "buyer": order.buyer,
             "seller": order.seller,
             "curr_accepters": getattr(order, "curr_accepters", None),
+            "bulletin": getattr(order, "bulletin", None),
         }
 
     @staticmethod

@@ -1839,6 +1839,51 @@ DATA_GET_FAILED: 301
 - code: 102 - 仅帖子拥有者可查看申请列表。
 - code: 103 - 帖子不存在。
 
+
+#### 4.5.10 帖子公告栏读写 (POST/GET: /posts/{post_id}/bulletin)
+
+用途: 发帖人读写帖子置顶公告栏，公告内容寄生存储于 Post.template_data.bulletin。
+
+**写入公告 (POST)**
+
+请求头: Authorization: Bearer <token>（仅帖子发布者可操作）。
+
+请求示例:
+
+```json
+{
+    "bulletin": "今晚18:00在图书馆门口交货，请准时"
+}
+```
+
+说明：
+- `bulletin` 为 `null` 或不传时**不修改**公告，直接返回当前值。
+- `bulletin` 为空字符串 `""` 时**清空**公告。
+
+成功响应:
+
+```json
+{
+    "code": 0,
+    "message": {
+        "post_id": 1001,
+        "bulletin": "今晚18:00在图书馆门口交货，请准时"
+    }
+}
+```
+
+**读取公告 (GET)**
+
+请求头: 无（公开接口）。
+
+成功响应: 同 POST 成功响应。
+
+常见错误:
+
+- code: 102 - 非发帖人无权修改公告。
+- code: 103 - 帖子不存在。
+
+
 ### 4.6 Order 订单模块
 
 #### 4.6.1 我的订单 (GET: /orders/me)
@@ -2562,6 +2607,51 @@ LIMIT :size
 用途：仅删除当前用户一侧可见的消息，不影响对方视图。
 
 请求头：Authorization: Bearer <token>（必须登录）
+
+
+
+#### 4.8.8 帖子群发消息 (POST: /chats/messages/broadcast-post)
+
+用途: 发帖人向所有已录用（ONGOING）买家逐一发送 1v1 私信，实现流式扇出群发。不创建群聊实体，每条消息独立落入各买家私信会话。
+
+请求头: Authorization: Bearer <token>（仅帖子发布者可操作）。
+
+请求示例:
+
+```json
+{
+    "post_id": 1001,
+    "content": "大家好，今晚18:00图书馆门口集合，请带好学生证",
+    "attachment_ids": [101, 102]
+}
+```
+
+字段说明：
+- `post_id`: 必填，目标帖子 ID
+- `content`: 必填，群发消息内容（1~4000 字符）
+- `attachment_ids`: 可选，附件 ID 列表
+
+成功响应:
+
+```json
+{
+    "code": 0,
+    "message": {
+        "sent_count": 3,
+        "buyer_ids": [2001, 2002, 2003]
+    }
+}
+```
+
+说明：
+- `sent_count` 为实际成功发送的买家数量。
+- 系统自动为每位买家初始化私信会话（若尚未存在），然后逐一射入消息。
+- 单个买家发送失败不影响其他买家。
+
+常见错误:
+
+- code: 102 - 非发帖人无权群发。
+- code: 103 - 帖子不存在。
 
 
 ### 4.9 Goods 商品模块
