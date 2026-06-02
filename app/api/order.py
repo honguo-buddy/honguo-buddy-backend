@@ -132,6 +132,27 @@ async def reject_order(
     return ResponseModel(code=settings.SUCCESS_CODE, message=_order_to_read(order))
 
 
+
+
+
+@router.post("/posts/{post_id}/start", response_model=ResponseModel[dict])
+async def start_post_fulfillment(
+    post_id: int,
+    current_user: UserRead = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """SELL direction: publisher batch-starts fulfillment, auto-rejects remaining PENDING applicants."""
+    try:
+        washed_count = await OrderService.start_collective_fulfillment(db, post_id, current_user.user_id)
+        return ResponseModel(
+            code=settings.SUCCESS_CODE,
+            message={"washed_rejected_count": washed_count},
+        )
+    except Exception:
+        await db.rollback()
+        raise
+
+
 @router.post("/reviews", response_model=ResponseModel[OrderReviewRead])
 async def create_order_review(
     payload: OrderReviewCreateRequest,

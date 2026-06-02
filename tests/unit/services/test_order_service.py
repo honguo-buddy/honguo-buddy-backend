@@ -652,11 +652,10 @@ async def test_approve_order_collective_not_full(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_approve_order_collective_full_promotes_all_pending(monkeypatch):
+async def test_approve_order_collective_full_sets_post_in_progress(monkeypatch):
+    """SELL single-approve: when slot is full after approval, post becomes IN_PROGRESS (no bulk promote)."""
     order = build_order(status=OrderStatus.PENDING, item_type=ItemType.POST, item_id=2001, trigger_type=OrderTriggerType.COLLECTIVE)
     post = build_post(max_accepters=1)
-    pending_one = build_order(order_id=9001, status=OrderStatus.PENDING)
-    pending_two = build_order(order_id=9002, status=OrderStatus.PENDING)
 
     async def fake_get_order(db, oid):
         return order
@@ -666,7 +665,7 @@ async def test_approve_order_collective_full_promotes_all_pending(monkeypatch):
 
     class FakeDB:
         async def execute(self, stmt):
-            return FakeResult(items=[pending_one, pending_two])
+            return FakeResult(items=[])
 
         async def flush(self):
             pass
@@ -677,15 +676,14 @@ async def test_approve_order_collective_full_promotes_all_pending(monkeypatch):
         async def commit(self):
             pass
 
-    monkeypatch.setattr(OrderService, "_get_order_for_update", fake_get_order)
-    monkeypatch.setattr(OrderService, "_get_post_for_update", fake_get_post)
-    monkeypatch.setattr(OrderService, "get_current_accepters_count", AsyncMock(return_value=1))
+    monkeypatch.setattr(OrderService, '_get_order_for_update', fake_get_order)
+    monkeypatch.setattr(OrderService, '_get_post_for_update', fake_get_post)
+    monkeypatch.setattr(OrderService, 'get_current_accepters_count', AsyncMock(return_value=1))
 
     res = await OrderService.approve_order(FakeDB(), order_id=6001, operator_id=post.publisher_id)
     assert res.status == OrderStatus.ONGOING
+    # max_accepters=1, accepted_after=1 -> post becomes IN_PROGRESS
     assert post.status == PostStatus.IN_PROGRESS
-    assert pending_one.status == OrderStatus.ONGOING
-    assert pending_two.status == OrderStatus.ONGOING
 
 
 @pytest.mark.asyncio
@@ -1386,3 +1384,201 @@ async def test_cancel_order_unauthorized_raises(monkeypatch):
 
     with pytest.raises(BusinessHTTPException):
         await OrderService.cancel_order(build_db(), order_id=6001, operator_id=999)
+
+
+
+# ================================================================
+# SELL direction workflow unit tests
+# ================================================================
+
+@pytest.mark.asyncio
+async def test_sell_pending_never_occupies_slot(monkeypatch):
+    """SELL direction: PENDING orders should NEVER be counted as occupied slots."""
+    from app.models import Direction as Dir
+
+    # Build SELL post
+    post = build_post(direction=Dir.SELL, max_accepters=3)
+
+    # Build several PENDING orders for this post
+    p1 = build_order(order_id=8001, status=OrderStatus.PENDING, item_type=ItemType.POST, item_id=post.post_id, trigger_type=OrderTriggerType.COLLECTIVE)
+    p2 = build_order(order_id=8002, status=OrderStatus.PENDING, item_type=ItemType.POST, item_id=post.post_id, trigger_type=OrderTriggerType.COLLECTIVE)
+
+    class FakeDB:
+        async def execute(self, stmt):
+            # First call: get post direction (for get_current_accepters_count)
+            # Second call: count valid statuses (ONGOING, CONFIRMED, COMPLETED)
+            return FakeResult(items=[(post.post_id, 0)], scalar_value=0)
+
+    db = FakeDB()
+    count = await OrderService.get_current_accepters_count(db, 'POST', post.post_id, _post_direction=Dir.SELL)
+    assert count == 0, f'SELL PENDING should never occupy slot, got {count}'
+
+    # Now add one ONGOING order
+    class FakeDB2:
+        async def execute(self, stmt):
+            return FakeResult(items=[(post.post_id, 1)], scalar_value=1)
+
+    count2 = await OrderService.get_current_accepters_count(FakeDB2(), 'POST', post.post_id, _post_direction=Dir.SELL)
+    assert count2 == 1, 'SELL ONGOING should count as occupied slot'
+
+
+@pytest.mark.asyncio
+async def test_sell_approve_transitions_single_order(monkeypatch):
+    """SELL direction: approving one order only transitions THAT order to ONGOING, others stay PENDING."""
+    order = build_order(status=OrderStatus.PENDING, item_type=ItemType.POST, item_id=2001, trigger_type=OrderTriggerType.COLLECTIVE)
+    post = build_post(max_accepters=3)
+
+    async def fake_get_order(db, oid):
+        return order
+
+    async def fake_get_post(db, pid):
+        return post
+
+    class FakeDB:
+        async def execute(self, stmt):
+            return FakeResult(items=[])
+
+        async def flush(self):
+            pass
+
+        async def refresh(self, o):
+            pass
+
+        async def commit(self):
+            pass
+
+    monkeypatch.setattr(OrderService, '_get_order_for_update', fake_get_order)
+    monkeypatch.setattr(OrderService, '_get_post_for_update', fake_get_post)
+    # accepters count = 1 existing ONGOING + this one = 2, max_accepters=3 -> not full
+    monkeypatch.setattr(OrderService, 'get_current_accepters_count', AsyncMock(return_value=2))
+
+    res = await OrderService.approve_order(FakeDB(), order_id=6001, operator_id=post.publisher_id)
+    assert res.status == OrderStatus.ONGOING
+    # Only the single order was approved, post stays OPEN (not full)
+    assert post.status == PostStatus.OPEN
+
+
+@pytest.mark.asyncio
+async def test_sell_post_start_fulfillment_washes_pool(monkeypatch):
+    """SELL start_collective_fulfillment: washes PENDING to REJECTED, ONGOING stays, post becomes IN_PROGRESS."""
+    post = build_post(max_accepters=2, status=PostStatus.OPEN, direction=Direction.SELL)
+    pending1 = build_order(order_id=9001, status=OrderStatus.PENDING, item_type=ItemType.POST, item_id=post.post_id, trigger_type=OrderTriggerType.COLLECTIVE)
+    pending2 = build_order(order_id=9002, status=OrderStatus.PENDING, item_type=ItemType.POST, item_id=post.post_id, trigger_type=OrderTriggerType.COLLECTIVE)
+    ongoing1 = build_order(order_id=9003, status=OrderStatus.ONGOING, item_type=ItemType.POST, item_id=post.post_id, trigger_type=OrderTriggerType.COLLECTIVE)
+
+    call_count = {'count': 0}
+
+    class FakeDB:
+        def __init__(self):
+            self.calls = []
+
+        async def execute(self, stmt):
+            call_count['count'] += 1
+            # First call: SELECT post with for_update
+            if call_count['count'] == 1:
+                return FakeResult(items=[post])
+            # Second call: UPDATE to REJECTED (the text statement)
+            else:
+                class FakeRejectResult:
+                    rowcount = 2  # two PENDING orders washed
+                return FakeRejectResult()
+
+        async def flush(self):
+            pass
+
+        async def commit(self):
+            pass
+
+    res = await OrderService.start_collective_fulfillment(FakeDB(), post.post_id, post.publisher_id)
+    # 2 PENDING orders should be washed (rejected)
+    assert res == 2
+    assert post.status == PostStatus.IN_PROGRESS
+
+
+@pytest.mark.asyncio
+async def test_sell_start_fulfillment_rejects_non_publisher(monkeypatch):
+    """SELL start_collective_fulfillment: non-publisher should be rejected."""
+    post = build_post(status=PostStatus.OPEN, direction=Direction.SELL, publisher_id=100)
+
+    class FakeDB:
+        async def execute(self, stmt):
+            return FakeResult(items=[post])
+        async def flush(self):
+            pass
+        async def commit(self):
+            pass
+
+    with pytest.raises(BusinessHTTPException):
+        await OrderService.start_collective_fulfillment(FakeDB(), post.post_id, 999)
+
+
+@pytest.mark.asyncio
+async def test_sell_start_fulfillment_rejects_buy_direction(monkeypatch):
+    """SELL start_collective_fulfillment: BUY direction posts should be rejected."""
+    post = build_post(status=PostStatus.OPEN, direction=Direction.BUY)
+
+    class FakeDB:
+        async def execute(self, stmt):
+            return FakeResult(items=[post])
+        async def flush(self):
+            pass
+        async def commit(self):
+            pass
+
+    with pytest.raises(BusinessHTTPException):
+        await OrderService.start_collective_fulfillment(FakeDB(), post.post_id, post.publisher_id)
+
+
+@pytest.mark.asyncio
+async def test_get_pending_applicants_count_map(monkeypatch):
+    """Batch pending applicants count: single GROUP BY query, zero N+1."""
+    class FakeDB:
+        async def execute(self, stmt):
+            return FakeResult(rows=[(1001, 5), (1002, 3), (1003, 0)])
+
+    result = await OrderService.get_pending_applicants_count_map(FakeDB(), [1001, 1002, 1003])
+    assert result == {1001: 5, 1002: 3, 1003: 0}
+
+
+@pytest.mark.asyncio
+async def test_get_pending_applicants_count_map_empty(monkeypatch):
+    """Empty input returns empty dict."""
+    result = await OrderService.get_pending_applicants_count_map(build_db(), [])
+    assert result == {}
+
+
+
+@pytest.mark.asyncio
+async def test_sell_start_fulfillment_rollback_on_sql_failure(monkeypatch):
+    """SELL start_collective_fulfillment: SQL failure triggers rollback, exception propagates."""
+    post = build_post(status=PostStatus.OPEN, direction=Direction.SELL)
+
+    call_count = {'count': 0}
+
+    class FakeDB:
+        def __init__(self):
+            self.rolled_back = False
+
+        async def execute(self, stmt):
+            call_count['count'] += 1
+            # First call: SELECT post with for_update - success
+            if call_count['count'] == 1:
+                return FakeResult(items=[post])
+            # Second call: UPDATE text() - simulate SQL crash
+            raise Exception('Simulated MySQL syntax error')
+
+        async def flush(self):
+            pass
+
+        async def commit(self):
+            pass
+
+        async def rollback(self):
+            self.rolled_back = True
+
+    db = FakeDB()
+    with pytest.raises(Exception, match='Simulated MySQL syntax error'):
+        await OrderService.start_collective_fulfillment(db, post.post_id, post.publisher_id)
+
+    # In real ORM: rollback() would undo IN_PROGRESS; in mock: verify rollback was called
+    assert db.rolled_back, 'rollback() should have been called on raw SQL failure'

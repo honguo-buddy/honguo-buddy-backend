@@ -6,7 +6,7 @@ from typing import Optional
 
 import logging
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased, selectinload
 
@@ -186,7 +186,8 @@ class OrderService:
     def _post_accept_valid_statuses(direction: Direction) -> list[OrderStatus]:
         if direction == Direction.BUY:
             return [OrderStatus.ONGOING, OrderStatus.CONFIRMED, OrderStatus.COMPLETED]
-        return [OrderStatus.PENDING, OrderStatus.ONGOING, OrderStatus.CONFIRMED, OrderStatus.COMPLETED]
+        # SELL: PENDING is NOT counted as occupied slot (broad-net pool, not yet locked)
+        return [OrderStatus.ONGOING, OrderStatus.CONFIRMED, OrderStatus.COMPLETED]
 
     @staticmethod
     async def get_current_accepters_count(db: AsyncSession, item_type: str, item_id: int, _post_direction=None) -> int:
@@ -303,6 +304,37 @@ class OrderService:
         )
         res = await db.execute(stmt)
         return {int(item_id): int(count or 0) for item_id, count in res.all()}
+    @staticmethod
+    async def get_pending_applicants_count_map(
+        db: AsyncSession,
+        item_ids: list[int],
+    ) -> dict[int, int]:
+        """Batch count PENDING applicants for multiple posts.
+        Single aggregated GROUP BY query, zero N+1 overhead.
+        Returns dict mapping post_id -> pending applicant count.
+        """
+        unique_ids = [int(iid) for iid in dict.fromkeys(item_ids) if iid is not None]
+        if not unique_ids:
+            return {}
+        pending_stmt = (
+            select(
+                Order.item_id,
+                func.count(Order.order_id).label("pending_cnt"),
+            )
+            .where(
+                Order.item_type == ItemType.POST,
+                Order.item_id.in_(unique_ids),
+                Order.status == OrderStatus.PENDING,
+                Order.is_deleted == False,
+            )
+            .group_by(Order.item_id)
+        )
+        pending_res = await db.execute(pending_stmt)
+        pending_map: dict[int, int] = {int(iid): 0 for iid in unique_ids}
+        for item_or_id, cnt in pending_res.all():
+            pending_map[int(item_or_id)] = int(cnt or 0)
+        return pending_map
+
 
     @staticmethod
     async def create_order(
@@ -816,24 +848,9 @@ class OrderService:
             raise BusinessHTTPException(code=settings.INSUFFICIENT_AUTHORITY_CODE, msg="只有发帖人可以同意接单")
 
         if order.trigger_type == OrderTriggerType.COLLECTIVE:
-            accepted_cnt = await OrderService.get_current_accepters_count(db, ItemType.POST.name, order.item_id, _post_direction=post.direction)
-            if accepted_cnt >= getattr(post, "max_accepters", 1):
-                pending_stmt = (
-                    select(Order)
-                    .where(
-                        Order.item_type == ItemType.POST,
-                        Order.item_id == order.item_id,
-                        Order.is_deleted == False,
-                        Order.status == OrderStatus.PENDING,
-                    )
-                    .with_for_update()
-                )
-                pending_res = await db.execute(pending_stmt)
-                for pending_order in pending_res.scalars().all():
-                    pending_order.status = OrderStatus.ONGOING
-                post.status = PostStatus.IN_PROGRESS
-            else:
-                post.status = PostStatus.OPEN
+            # SELL direction: single-order approve only, no bulk cascade
+            # After individual approval, check if post is fully occupied
+            post.status = PostStatus.OPEN
         else:
             pending_stmt = (
                 select(Order)
@@ -854,6 +871,16 @@ class OrderService:
         order.status = OrderStatus.ONGOING
         order.accepted_time = get_now_naive()
         await db.flush()
+
+        # For SELL (COLLECTIVE): check if post is now fully occupied after individual approval
+        if order.trigger_type == OrderTriggerType.COLLECTIVE:
+            accepted_after = await OrderService.get_current_accepters_count(
+                db, ItemType.POST.name, order.item_id, _post_direction=post.direction
+            )
+            max_slots = getattr(post, "max_accepters", 1)
+            if accepted_after >= max_slots:
+                post.status = PostStatus.IN_PROGRESS
+
         await db.refresh(order)
         await db.commit()
         return order
@@ -888,6 +915,57 @@ class OrderService:
         await db.refresh(order)
         await db.commit()
         return order
+
+    @staticmethod
+    async def start_collective_fulfillment(db: AsyncSession, post_id: int, operator_id: int) -> int:
+        """SELL direction: publisher batch-starts fulfillment.
+        Atomically washes out remaining PENDING applicants.
+
+        Returns the count of PENDING orders rejected during pool cleaning.
+        """
+        post_stmt = (
+            select(Post)
+            .where(Post.post_id == post_id, Post.is_deleted == False)
+            .with_for_update()
+        )
+        post_res = await db.execute(post_stmt)
+        post = post_res.scalars().first()
+        if not post:
+            raise ResourceHTTPException(code=settings.DATA_GET_FAILED_CODE, msg="帖子不存在")
+        if post.publisher_id != operator_id:
+            raise BusinessHTTPException(code=settings.INSUFFICIENT_AUTHORITY_CODE, msg="只有发帖人可以启动履约")
+        if post.status not in {PostStatus.OPEN, PostStatus.IN_PROGRESS}:
+            raise BusinessHTTPException(code=settings.REQ_ERROR_CODE, msg="当前帖子状态不允许启动履约")
+        if post.direction != Direction.SELL:
+            raise BusinessHTTPException(code=settings.REQ_ERROR_CODE, msg="仅支持 SELL 方向帖子启动批量履约")
+        # Atomicity: wrap post status change + raw SQL wash in single try/except
+        try:
+            post.status = PostStatus.IN_PROGRESS
+            reject_stmt = text(
+                """
+                UPDATE `order`
+                SET status = :rejected_status
+                WHERE item_type = :item_type
+                  AND item_id = :post_id
+                  AND is_deleted = :is_deleted_false
+                  AND status = :pending_status
+                """
+            ).bindparams(
+                rejected_status=OrderStatus.REJECTED.value,
+                item_type=ItemType.POST.value,
+                post_id=post_id,
+                is_deleted_false=False,
+                pending_status=OrderStatus.PENDING.value,
+            )
+            reject_res = await db.execute(reject_stmt)
+            washed_count = reject_res.rowcount
+        except Exception:
+            await db.rollback()
+            raise
+
+        await db.flush()
+        await db.commit()
+        return washed_count
 
     @staticmethod
     async def complete_order(db: AsyncSession, order_id: int, operator_id: int) -> Order:

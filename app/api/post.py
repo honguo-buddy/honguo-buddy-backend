@@ -68,7 +68,7 @@ def _build_post_read(post, current_accepters: int) -> PostRead:
 
 
 
-def _build_post_dict(post, current_accepters: int) -> dict:
+def _build_post_dict(post, current_accepters: int, applicant_count: int = 0) -> dict:
     """Build lightweight raw dict from ORM Post object, no intermediate Pydantic overhead."""
     attachment_urls = [att.url for att in (post.attachments or []) if not att.is_deleted]
     publisher = post.user
@@ -86,6 +86,7 @@ def _build_post_dict(post, current_accepters: int) -> dict:
         "publisher": UserRead.model_validate(publisher) if publisher else None,
         "publisher_id": post.publisher_id,
         "current_accepters": current_accepters,
+        "applicant_count": applicant_count,
         "create_time": post.create_time.isoformat() if post.create_time else "",
         "attachment_urls": attachment_urls,
     }
@@ -174,12 +175,14 @@ async def list_posts(
             page=page,
             page_size=page_size,
         )
+        post_id_list = [post.post_id for post in posts]
         current_accepters_map = await OrderService.get_current_accepters_count_map(
             db,
             item_type="POST",
-            item_ids=[post.post_id for post in posts],
+            item_ids=post_id_list,
             _direction_map={post.post_id: post.direction for post in posts},
         )
+        applicant_count_map = await OrderService.get_pending_applicants_count_map(db, post_id_list)
         
         # Linear dict pipeline: ORM -> raw dict -> hydrate -> single validate
         raw_dicts = []
@@ -187,7 +190,11 @@ async def list_posts(
         for post in posts:
             pid = post.post_id
             post_ids.append(pid)
-            raw_dicts.append(_build_post_dict(post, current_accepters_map.get(pid, 0)))
+            raw_dicts.append(_build_post_dict(
+                post,
+                current_accepters_map.get(pid, 0),
+                applicant_count_map.get(pid, 0),
+            ))
 
         if raw_dicts:
             await MetricsService.hydrate_posts_with_metrics(db, redis_client, raw_dicts, post_ids)
@@ -232,18 +239,24 @@ async def list_my_posts(
         status=status,
         public_only=False,
     )
+    my_post_ids = [post.post_id for post in posts]
     current_accepters_map = await OrderService.get_current_accepters_count_map(
         db,
         item_type="POST",
-        item_ids=[post.post_id for post in posts],
+        item_ids=my_post_ids,
         _direction_map={post.post_id: post.direction for post in posts},
     )
+    applicant_count_map = await OrderService.get_pending_applicants_count_map(db, my_post_ids)
     raw_dicts = []
     post_ids = []
     for post in posts:
         pid = post.post_id
         post_ids.append(pid)
-        raw_dicts.append(_build_post_dict(post, current_accepters_map.get(pid, 0)))
+        raw_dicts.append(_build_post_dict(
+            post,
+            current_accepters_map.get(pid, 0),
+            applicant_count_map.get(pid, 0),
+        ))
 
     if raw_dicts:
         await MetricsService.hydrate_posts_with_metrics(db, redis_client, raw_dicts, post_ids)
@@ -276,18 +289,24 @@ async def list_public_user_posts(
         category_id=category_id,
         status=status,
     )
+    public_post_ids = [post.post_id for post in posts]
     current_accepters_map = await OrderService.get_current_accepters_count_map(
         db,
         item_type="POST",
-        item_ids=[post.post_id for post in posts],
+        item_ids=public_post_ids,
         _direction_map={post.post_id: post.direction for post in posts},
     )
+    applicant_count_map = await OrderService.get_pending_applicants_count_map(db, public_post_ids)
     raw_dicts = []
     post_ids = []
     for post in posts:
         pid = post.post_id
         post_ids.append(pid)
-        raw_dicts.append(_build_post_dict(post, current_accepters_map.get(pid, 0)))
+        raw_dicts.append(_build_post_dict(
+            post,
+            current_accepters_map.get(pid, 0),
+            applicant_count_map.get(pid, 0),
+        ))
 
     if raw_dicts:
         await MetricsService.hydrate_posts_with_metrics(db, redis_client, raw_dicts, post_ids)
@@ -422,6 +441,7 @@ async def get_post_detail(
             item_id=post_id,
             _post_direction=post.direction,
         )
+        applicant_count = (await OrderService.get_pending_applicants_count_map(db, [post_id])).get(post_id, 0)
         attachment_urls = [att.url for att in (post.attachments or []) if not att.is_deleted]
 
         # 构建评论列表（仅查询前 N 条热评，按时间倒序）
@@ -469,6 +489,7 @@ async def get_post_detail(
             publisher=publisher_public,
             publisher_id=post.publisher_id,
             current_accepters=current_accepters,
+            applicant_count=applicant_count,
             create_time=post.create_time.isoformat() if post.create_time else "",
             status=post.status.value if post.status else None,
             attachment_urls=attachment_urls,
@@ -517,7 +538,7 @@ async def accept_post(
             redis_client=redis_client,
         )
         
-        # 先加载帖子获取 max_accepters，再查询更新后的接单数（避免冗余方向查询）
+        # 先加载帖子获取 direction/max_accepters，再查询更新后的接单数
         post = await PostService.get_post_detail(db, post_id)
         max_accepters = post.max_accepters
         current_accepters = await OrderService.get_current_accepters_count(
@@ -526,7 +547,13 @@ async def accept_post(
             item_id=post_id,
             _post_direction=post.direction,
         )
-        
+
+        # Polymorphic response: BUY vs SELL direction
+        if post.direction and str(post.direction.value).upper() == "BUY":
+            accept_msg = "接单申请递交成功，等待发帖人审批"
+        else:
+            accept_msg = "已成功加入沟通池，火速去和帖主私信聊聊吧"
+
         return ResponseModel(
             code=settings.SUCCESS_CODE,
             message={
@@ -534,8 +561,9 @@ async def accept_post(
                 "post_id": post_id,
                 "current_accepters": current_accepters,
                 "max_accepters": max_accepters,
-                "accepted": True,
+                "accepted": False,
                 "status": order.status.value,
+                "message": accept_msg,
             },
         )
     except Exception as e:

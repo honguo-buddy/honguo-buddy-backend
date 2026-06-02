@@ -1391,6 +1391,7 @@ DATA_GET_FAILED: 301
                 },
                 "publisher_id": 2001,
                 "current_accepters": 0,
+                "applicant_count": 3,
                 "view_count": 128,
                 "favorite_count": 15,
                 "comment_count": 9,
@@ -1574,6 +1575,7 @@ DATA_GET_FAILED: 301
         },
         "publisher_id": 1001,
         "current_accepters": 0,
+        "applicant_count": 2,
         "view_count": 256,
         "favorite_count": 32,
         "comment_count": 14,
@@ -1742,30 +1744,49 @@ DATA_GET_FAILED: 301
 
 #### 4.5.8.1 单个帖子接单 (POST: /posts/{post_id}/accept)
 
-用途: 当前用户对指定帖子发起接单申请。
+用途: 当前用户对指定帖子发起接单申请。申请成功后订单处于 PENDING 状态（未录用），不占用帖子已录用名额。
 
 请求头: Authorization: Bearer <token>。
 
 说明：
-- `BUY` 方向帖子为申请制，申请后须等待发布者同意；该帖的 `PENDING` 订单不计入当前接单数。
-- `SELL` 方向帖子为征集制，`PENDING` 订单即时计入当前接单数。
+- BUY 方向帖子为申请制，申请后须等待发布者逐一审批；ccepted 为 alse，message 提示"接单申请递交成功，等待发帖人审批"。
+- SELL 方向帖子为征集制（广撒网进池子），申请后直接加入沟通池；ccepted 为 alse，message 提示"已成功加入沟通池，火速去和帖主私信聊聊吧"。
+- SELL 方向的 current_accepters 永远返回 0（PENDING 不计入占坑），前端应使用 pplicant_count（大厅列表/详情）展示排队人数。
 - 若用户刚刚取消过该帖子的申请，后端会返回 99 并提示冷静期。
 
-成功响应:
+成功响应（BUY 方向）:
 
-```json
+`json
 {
     "code": 0,
     "message": {
         "order_id": 1001,
         "post_id": 2001,
-        "current_accepters": 1,
+        "current_accepters": 0,
         "max_accepters": 3,
-        "accepted": true,
-        "status": "PENDING"
+        "accepted": false,
+        "status": "PENDING",
+        "message": "接单申请递交成功，等待发帖人审批"
     }
 }
-```
+`
+
+成功响应（SELL 方向）:
+
+`json
+{
+    "code": 0,
+    "message": {
+        "order_id": 1001,
+        "post_id": 2001,
+        "current_accepters": 0,
+        "max_accepters": 3,
+        "accepted": false,
+        "status": "PENDING",
+        "message": "已成功加入沟通池，火速去和帖主私信聊聊吧"
+    }
+}
+`
 
 #### 4.5.9 查看接单申请列表 (GET: /posts/{post_id}/applications)
 
@@ -2185,6 +2206,35 @@ JSON
 - code: 105 - Token 失效或缺失。
 - code: 102 - 仅订单相关方可查看评价。
 - code: 301 - 订单不存在、订单未完成，或评价查询失败。
+
+
+
+#### 4.6.7 SELL 方向一键批量开工 (POST: /orders/posts/{post_id}/start)
+
+用途: 【仅 SELL 方向】发帖人一键启动履约，系统自动将所有未被录用的 PENDING 排队申请单批量清洗为已拒绝（REJECTED），同时帖子状态变更为 IN_PROGRESS。
+
+请求头: Authorization: Bearer <token>（仅帖子发布者可操作）。
+
+权限说明：
+- 仅 SELL 方向帖子支持此操作。
+- 帖子状态必须为 OPEN 或 IN_PROGRESS。
+- 仅帖子发布者本人可操作。
+
+成功响应:
+
+`json
+{
+    "code": 0,
+    "message": {
+        "washed_rejected_count": 5
+    }
+}
+`
+
+说明：
+- washed_rejected_count 返回本次被自动拒绝清洗的 PENDING 申请数量。
+- 已被录用的 ONGOING 订单不受影响，安全保持在进行中状态。
+- 接口内部使用行级排他锁（FOR UPDATE）+ 事务原子性保护，SQL 异常时自动 rollback 回滚帖子状态。
 
 
 ### 4.7 评论模块 (Comments)

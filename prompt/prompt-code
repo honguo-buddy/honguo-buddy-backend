@@ -541,3 +541,31 @@ OrderService.approve_order 和 reject_order 需要校验 post.publisher_id。
 【问题】get_user_public 每次请求都执行多表关联 SQL 加载用户公开资料和头像，无缓存层。update_me 仅失效 user:profile:cache:{uid}，遗漏了 user:profile:me:{uid} 和 user:profile:public:{uid}，导致 get_me 和 get_user_public 继续返回过期脏数据。
 
 【解决】1) get_user_public 新增 user:profile:public:{user_id} Read-Through 缓存键；2) update_me 写入后同时删除 user:profile:cache:{uid}、user:profile:me:{uid}、user:profile:public:{uid} 三个缓存键；3) update_user_admin 也加入对目标用户的三键全量失效。确保所有用户画像读取链路（网关守卫、本人资料、公开资料）缓存与数据库绝对一致。
+
+
+三十七、 SELL 方向状态机名额隔离 (SELL Direction Slot Isolation)
+
+【问题】_post_accept_valid_statuses 对 SELL 方向包含了 OrderStatus.PENDING，导致 create_order 时把未录用的 PENDING 排队申请人也计为已占坑，广撒网进池子的体验被"接单已满"错误拦截。approve_order 对 SELL（COLLECTIVE）方向触发横向级联批量通过所有排队订单。
+
+【解决】1) SELL 方向的 _post_accept_valid_statuses 移除 PENDING，仅保留 ONGOING / CONFIRMED / COMPLETED；2) approve_order 对 COLLECTIVE 方向改为单笔逐批准（PENDING → ONGOING），批准后动态检查是否满员 → 设置 IN_PROGRESS，禁止横向级联。实现"广撒网进池子聊天，不聊定不锁坑"。
+
+三十八、 一键批量开工 + 池子自动清洗 (Batch Fulfillment + Pool Auto-Wash)
+
+【问题】SELL 方向存在发帖人逐单手动操作的低效率流程，且被拒绝的 PENDING 申请单无自动清理机制。
+
+【解决】新增 OrderService.start_collective_fulfillment(post_id, operator_id)：1) 行级排他锁 check Post；2) 校验发布者身份；3) Post.status → IN_PROGRESS；4) 参数化 text() 批量 UPDATE 将所有剩余 PENDING → REJECTED；5) 返回清洗数量。路由层暴露 POST /posts/{post_id}/start。
+
+三十九、 排队申请人指标独立灌水 (Applicant Count Independent Hydration)
+
+【问题】前端缺乏"已有 X 人申请沟通 | 剩余 Y 个名额"的全透明展示数据，applicant_count 与 current_accepters 语义完全不同（前者 = PENDING 排队数，后者 = ONGOING 已录用占坑数）。
+
+【解决】1) 新增 OrderService.get_pending_applicants_count_map(db, item_ids) 批量子查询（GROUP BY item_id，零 N+1）；2) PostRead / PostDetailRead Schema 追加 applicant_count: int = 0 字段；3) _build_post_dict 增加 applicant_count 参数；4) 所有列表 + 详情路由同步灌入 applicant_count。确保前端可渲染"申请人数 vs 剩余名额"双维指标。
+
+
+四十、 MySQL 原生 SQL 严禁使用双引号或无引号包裹保留关键字标识符 + 事务原子性强制保护 (MySQL Reserved Keyword Escape + Atomic Rollback)
+
+【问题】text() 原生 SQL 中表名 order 以裸写形式出现（UPDATE order SET ...），而 order 是 MySQL 系统绝对保留关键字，直接导致 ProgrammingError (1064): "You have an error in your SQL syntax near 'order'"。MySQL 解析器遇到裸写 order 时无法区分是表名还是 ORDER BY 关键字。
+
+【诊断】SQLAlchemy 日志输出 [SQL: UPDATE order SET status = %s ...]。若看到 near 'order' 则 100% 是保留关键字未转义。同时 start_collective_fulfillment 内部 post.status = IN_PROGRESS 在 raw SQL 之前，若 raw SQL 失败则半截子脏状态已落库无法回滚。
+
+【解决】1) 所有 text() 原生 SQL 中的表名标识符（尤其是 order、comment、user 等 MySQL 保留关键字）强制使用反引号包裹（UPDATE order、FROM comment），绝对禁止双引号或裸写；2) 混合 ORM + raw SQL 的业务函数必须用 try/except 包裹 post.status 赋值 + raw SQL 整个块，except 中前置 await db.rollback() 彻底回滚，杜绝半截子脏落库。
