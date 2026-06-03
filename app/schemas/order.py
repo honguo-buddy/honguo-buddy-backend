@@ -26,6 +26,8 @@ class OrderRead(BaseModel):
     seller: Optional[UserRead] = None
     curr_accepters: Optional[int] = None
     bulletin: Optional[str] = None
+    rest_cancel_times: Optional[int] = None
+    cancel_message: Optional[str] = None
 
     model_config = {"from_attributes": True}
 

@@ -8,7 +8,6 @@ from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
 from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
-
 from app.core import settings, AuthHTTPException, BusinessHTTPException
 from app.db import get_db, redis, User
 from app.schemas import (

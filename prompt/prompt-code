@@ -582,3 +582,16 @@ OrderService.approve_order 和 reject_order 需要校验 post.publisher_id。
 【问题】帖子公告（bulletin）需要跨订单、聊天等多个下游读链路共享，若单独建表会引入额外 JOIN 开销。
 
 【解决】1) 将 bulletin 作为寄生键值存放于 Post.template_data JSON 字段内；2) OrderRead schema 追加 bulletin: Optional[str]；3) 订单详情/列表读链路中，通过批量聚合查询 Post.template_data 提取 bulletin 并反哺注入到 _serialize_order 字典管道；4) 暴露 POST/GET /posts/{post_id}/bulletin 端点供发帖人读写公告。实现一处写入、全链路自动同步。
+
+
+四十三、 撮合平台采用"时限分水岭"规则实现体验与放权平衡 (Time-Watershed Cancel Policy)
+
+【问题】旧版手动取消采用硬性全局每日10次取消配额（user:global_cancel:count:{uid}），对所有取消行为一刀切限制，且附带同帖冷却期（_record_post_cancel + _raise_post_accept_rate_limit）针对同一帖子反复接单-取消设置了额外拦截。校园撮合场景下买卖双方通过私信沟通后完全可能友好取消重新协商，过于严苛的硬性惩罚破坏了撮合灵活性。
+
+【解决】1) 废除全局每日取消配额（user:global_cancel:count）与同帖冷却锁定（_record_post_cancel / _raise_post_accept_rate_limit）；2) 以订单 create_time 为基准划定"10分钟分水岭"：<=600秒为闪电退单，采用 Redis 日期维度键 order:cancel:limit:{uid}:{YYYYMMDD} 执行每日10次硬性限频拦截，附带 86400s 自动过期；>600秒的常规取消全面松绑、无惩罚放行、不撞击任何 Redis 计数器；3) 彻底解除同单死锁限制，同一笔订单可自由多次取消。将履约选择权完整交还给校园买卖双端。
+
+四十四、 业务魔法数字严禁硬编码，必须统一收敛至 config.py (No Magic Numbers — Centralize to Settings)
+
+【问题】cancel_order 与对应路由中直接硬编码了 600（10分钟分水岭秒数）、10（闪电退单每日上限次数）、86400（Redis TTL秒数），以及错误提示文案中的"10分钟""10次"等。一旦产品需求微调（如改为5分钟/15次），需要逐行在全链路代码中检索替换，极易遗漏造成行为不一致。
+
+【解决】1) 在 config.py 中新增 LIGHTNING_CANCEL_LIMIT_SECONDS (默认600) 与 LIGHTNING_CANCEL_DAILY_LIMIT (默认10)；2) Service 层、路由层、单元测试中所有魔法数字全部替换为 settings 引用；3) 错误提示文案使用 f-string 动态拼接 settings 值，保证文案与逻辑始终同源一致。铁律：任何可调业务参数不得以字面量形式散落在业务代码中，必须通过 config.py 统一管理。

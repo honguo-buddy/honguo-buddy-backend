@@ -976,18 +976,29 @@ class OrderService:
 
     @staticmethod
     async def cancel_order(db: AsyncSession, order_id: int, operator_id: int, redis_client=None) -> Order:
-        # 检查全局每日10次取消限制
-        if redis_client is not None:
-            cancel_key = f"user:global_cancel:count:{operator_id}"
-            cancel_count = await redis_client.get(cancel_key)
-            if cancel_count is not None and int(cancel_count) >= settings.GLOBAL_CANCEL_DAILY_LIMIT:
-                raise BusinessHTTPException(code=settings.REQ_ERROR_CODE, msg="您今日取消申请过于频繁，请明天再试")
-        
+        """取消订单，10分钟分水岭规则：<=10分钟为闪电退单（每日10次上限），>10分钟无限制放行。"""
         order = await OrderService._get_order_for_update(db, order_id)
         if order.status not in {OrderStatus.PENDING, OrderStatus.ONGOING, OrderStatus.CONFIRMED}:
             raise BusinessHTTPException(code=settings.REQ_ERROR_CODE, msg="该状态不允许取消订单")
         if operator_id not in {order.buyer_id, order.seller_id}:
             raise BusinessHTTPException(code=settings.INSUFFICIENT_AUTHORITY_CODE, msg="只有订单相关方可以取消订单")
+
+        # 10分钟分水岭：闪电退单限频检查
+        now = get_now_naive()
+        if order.create_time is not None:
+            duration_seconds = (now - order.create_time).total_seconds()
+        else:
+            duration_seconds = 999999
+
+        if redis_client is not None and duration_seconds <= settings.LIGHTNING_CANCEL_LIMIT_SECONDS:
+            today_str = now.strftime("%Y%m%d")
+            lightning_key = f"order:cancel:limit:{operator_id}:{today_str}"
+            current_count = await redis_client.get(lightning_key)
+            if current_count is not None and int(current_count) >= settings.LIGHTNING_CANCEL_DAILY_LIMIT:
+                raise BusinessHTTPException(
+                    code=settings.REQ_ERROR_CODE,
+                    msg=f"每日{settings.LIGHTNING_CANCEL_LIMIT_SECONDS // 60}分钟内闪电退单次数已达{settings.LIGHTNING_CANCEL_DAILY_LIMIT}次上限，请稍后再试或与对端私信沟通"
+                )
 
         order.status = OrderStatus.CANCELED
         if order.item_type == ItemType.POST:
@@ -1013,25 +1024,18 @@ class OrderService:
                 locked.pop("locked", None)
                 goods.template_data = locked
 
-        if order.item_type == ItemType.POST and operator_id == order.initiator_id and redis_client is not None:
-            await OrderService._record_post_cancel(redis_client, operator_id, order.item_id)
-
-        # 成功取消后增加全局计数
-        if redis_client is not None:
-            cancel_key = f"user:global_cancel:count:{operator_id}"
-            await redis_client.incr(cancel_key)
-            # 首次增加时设置过期时间为今天午夜
-            ttl = await redis_client.ttl(cancel_key)
-            if ttl == -1:  # 新建的 key，还没有设置过期时间
-                from app.core.datetime_utils import get_now_naive
-                now = get_now_naive()
-                midnight = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
-                seconds_until_midnight = int((midnight - now).total_seconds())
-                await redis_client.expire(cancel_key, seconds_until_midnight)
+        # 闪电退单：累加Redis日期维度计数器并设置24h过期
+        if redis_client is not None and duration_seconds <= settings.LIGHTNING_CANCEL_LIMIT_SECONDS:
+            today_str = now.strftime("%Y%m%d")
+            lightning_key = f"order:cancel:limit:{operator_id}:{today_str}"
+            await redis_client.incr(lightning_key)
+            await redis_client.expire(lightning_key, 86400)
 
         await db.flush()
         await db.refresh(order)
         await db.commit()
+        return order
+
         return order
 
     @staticmethod

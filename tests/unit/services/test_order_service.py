@@ -413,6 +413,7 @@ async def test_cancel_order_goods_unlocks_template(monkeypatch):
             self.item_type = ItemType.GOODS
             self.item_id = 4001
             self.meta_data = {}
+            self.create_time = datetime(2026, 5, 27, 8, 0)
 
     class GoodsObj:
         def __init__(self):
@@ -445,16 +446,18 @@ async def test_cancel_order_goods_unlocks_template(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_cancel_order_records_post_cooldown_and_daily_limit(monkeypatch):
+async def test_cancel_order_lightning_limit_and_regular_bypass(monkeypatch):
+    """测试10分钟分水岭：闪电退单限频（每日10次）+ 超时无限制放行。"""
+    from datetime import datetime, timedelta
+    from app.core.datetime_utils import get_now_naive
+
     class FakeRedis:
         def __init__(self):
             self.data = {}
             self.expiries = {}
 
-        async def set(self, key, value, ex=None):
-            self.data[key] = value
-            if ex is not None:
-                self.expiries[key] = ex
+        async def get(self, key):
+            return self.data.get(key)
 
         async def incr(self, key):
             self.data[key] = int(self.data.get(key, 0)) + 1
@@ -463,14 +466,13 @@ async def test_cancel_order_records_post_cooldown_and_daily_limit(monkeypatch):
         async def expire(self, key, seconds):
             self.expiries[key] = seconds
 
-        async def get(self, key):
-            return self.data.get(key)
-        
-        async def ttl(self, name: str) -> int:
-            #默认返回 -2 (代表 key 不存在/已过期)，让测试顺畅通过冷却期判定
-            return -2
-
-    order = build_order(status=OrderStatus.PENDING, buyer_id=1, seller_id=2, initiator_id=1, item_type=ItemType.POST, item_id=2001)
+    # 构建一个create_time为最近1分钟的订单（闪电退单场景）
+    now = get_now_naive()
+    recent_time = now - timedelta(seconds=60)
+    order = build_order(
+        status=OrderStatus.PENDING, buyer_id=1, seller_id=2, initiator_id=1,
+        item_type=ItemType.POST, item_id=2001, create_time=recent_time
+    )
     post = build_post()
 
     async def fake_get_order(db, oid):
@@ -495,13 +497,56 @@ async def test_cancel_order_records_post_cooldown_and_daily_limit(monkeypatch):
         async def commit(self):
             pass
 
+    # 场景1：闪电退单成功，Redis记录应被正确累加
     fake_redis = FakeRedis()
+    today_str = now.strftime("%Y%m%d")
+    lightning_key = f"order:cancel:limit:1:{today_str}"
     res = await OrderService.cancel_order(FakeDB(), order_id=order.order_id, operator_id=1, redis_client=fake_redis)
     assert res.status == OrderStatus.CANCELED
-    assert await fake_redis.get(OrderService._post_accept_cooldown_key(1, 2001)) is not None
-    assert fake_redis.data[OrderService._post_cancel_count_key(1, 2001)] == 1
-    assert fake_redis.expiries[OrderService._post_cancel_count_key(1, 2001)] == 86400
+    assert int(fake_redis.data.get(lightning_key, 0)) == 1
+    assert fake_redis.expiries.get(lightning_key) == 86400
 
+    # 场景2：闪电退单累计 settings.LIGHTNING_CANCEL_DAILY_LIMIT-1 次后，最后一次仍可通过
+    fake_redis2 = FakeRedis()
+    fake_redis2.data[lightning_key] = settings.LIGHTNING_CANCEL_DAILY_LIMIT - 1
+    order2 = build_order(
+        status=OrderStatus.PENDING, buyer_id=1, seller_id=2, initiator_id=1,
+        item_type=ItemType.POST, item_id=2002, create_time=recent_time
+    )
+    async def fake_get_order2(db, oid):
+        return order2
+    monkeypatch.setattr(OrderService, "_get_order_for_update", fake_get_order2)
+    res2 = await OrderService.cancel_order(FakeDB(), order_id=order2.order_id, operator_id=1, redis_client=fake_redis2)
+    assert res2.status == OrderStatus.CANCELED
+    assert int(fake_redis2.data[lightning_key]) == settings.LIGHTNING_CANCEL_DAILY_LIMIT
+
+    # 场景3：闪电退单已达上限，超限应被拦截
+    fake_redis3 = FakeRedis()
+    fake_redis3.data[lightning_key] = settings.LIGHTNING_CANCEL_DAILY_LIMIT
+    order3 = build_order(
+        status=OrderStatus.PENDING, buyer_id=1, seller_id=2, initiator_id=1,
+        item_type=ItemType.POST, item_id=2003, create_time=recent_time
+    )
+    async def fake_get_order3(db, oid):
+        return order3
+    monkeypatch.setattr(OrderService, "_get_order_for_update", fake_get_order3)
+    with pytest.raises(BusinessHTTPException) as exc_info:
+        await OrderService.cancel_order(FakeDB(), order_id=order3.order_id, operator_id=1, redis_client=fake_redis3)
+    assert "闪电退单" in exc_info.value.detail["msg"]
+
+    # 场景4：超过10分钟的常规取消，不触发闪电退单计数器
+    old_time = now - timedelta(seconds=1200)  # 20分钟前
+    order4 = build_order(
+        status=OrderStatus.PENDING, buyer_id=1, seller_id=2, initiator_id=1,
+        item_type=ItemType.POST, item_id=2004, create_time=old_time
+    )
+    async def fake_get_order4(db, oid):
+        return order4
+    monkeypatch.setattr(OrderService, "_get_order_for_update", fake_get_order4)
+    fake_redis4 = FakeRedis()
+    res4 = await OrderService.cancel_order(FakeDB(), order_id=order4.order_id, operator_id=1, redis_client=fake_redis4)
+    assert res4.status == OrderStatus.CANCELED
+    assert lightning_key not in fake_redis4.data  # 不累加闪电退单计数
 
 @pytest.mark.asyncio
 async def test_approve_and_reject_order_branches(monkeypatch):

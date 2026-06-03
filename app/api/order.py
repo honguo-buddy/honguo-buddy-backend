@@ -314,6 +314,12 @@ async def cancel_order(
     db: AsyncSession = Depends(get_db),
     redis_client = Depends(get_redis),
 ):
+    """取消订单：settings.LIGHTNING_CANCEL_LIMIT_SECONDS//60分钟内为闪电退单，超时无限制放行。"""
+    from app.core.datetime_utils import get_now_naive
+
+    limit_minutes = settings.LIGHTNING_CANCEL_LIMIT_SECONDS // 60
+    limit_count = settings.LIGHTNING_CANCEL_DAILY_LIMIT
+
     order = await OrderService.cancel_order(db, order_id, current_user.user_id, redis_client=redis_client)
     result = OrderService._serialize_order(order)
     if order.item_type == ItemType.POST:
@@ -322,4 +328,23 @@ async def cancel_order(
             item_type="POST",
             item_id=order.item_id,
         )
+
+    # 计算闪电退单剩余次数与提示信息
+    result["rest_cancel_times"] = None
+    result["cancel_message"] = None
+    if redis_client is not None and order.create_time is not None:
+        now = get_now_naive()
+        duration_seconds = (now - order.create_time).total_seconds()
+        today_str = now.strftime("%Y%m%d")
+        lightning_key = f"order:cancel:limit:{current_user.user_id}:{today_str}"
+        current_raw = await redis_client.get(lightning_key)
+        used = int(current_raw) if current_raw else 0
+        if duration_seconds <= settings.LIGHTNING_CANCEL_LIMIT_SECONDS:
+            remaining = max(0, limit_count - used)
+            result["rest_cancel_times"] = remaining
+            result["cancel_message"] = f"闪电退单！今日剩余 {remaining} 次提前主动取消次数"
+        else:
+            result["rest_cancel_times"] = limit_count
+            result["cancel_message"] = "无闪电退单限制，可直接取消"
+
     return ResponseModel(code=settings.SUCCESS_CODE, message=OrderRead.model_validate(result))

@@ -2116,8 +2116,8 @@ JSON
 - `approve` 和 `reject` 仅限卖家（帖子发布者）操作。
 - `submit-delivery` 由卖家提交已交付状态。
 - `accept-delivery` 由买家确认收货并完成订单；`complete` 为兼容接口，内部等价于 `accept-delivery`。
-- `cancel` 仅限买家或卖家取消，若订单为 PENDING，则发起人也可取消。
-- `cancel` 接口会额外返回 `curr_accepters`，用于客户端更新当前帖子接单数。
+- `cancel` 仅限买家或卖家取消，遵循分水岭规则：订单创建后在配置时限内取消为闪电退单（每人每日限次，由 settings 控制），超时可无限制取消。同笔订单可多次取消，不再锁定。
+- `cancel` 接口额外返回 `curr_accepters`（当前已录用人数）、`rest_cancel_times`（闪电退单今日剩余次数）和 `cancel_message`（中文提示语）。闪电退单超额时返回 code:99。
 
 成功响应示例:
 
