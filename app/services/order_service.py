@@ -362,6 +362,8 @@ class OrderService:
             if post.publisher_id == initiator_id:
                 raise BusinessHTTPException(code=settings.REQ_ERROR_CODE, msg="不能接自己的帖子")
 
+            if post.status == PostStatus.SUSPENDED:
+                raise BusinessHTTPException(code=settings.REQ_ERROR_CODE, msg="楼主已暂停招募新人")
             if post.status != PostStatus.OPEN:
                 raise BusinessHTTPException(code=settings.REQ_ERROR_CODE, msg="当前帖子状态不允许接单")
 
@@ -935,10 +937,18 @@ class OrderService:
             raise ResourceHTTPException(code=settings.DATA_GET_FAILED_CODE, msg="帖子不存在")
         if post.publisher_id != operator_id:
             raise BusinessHTTPException(code=settings.INSUFFICIENT_AUTHORITY_CODE, msg="只有发帖人可以启动履约")
-        if post.status not in {PostStatus.OPEN, PostStatus.IN_PROGRESS}:
+        if post.status not in {PostStatus.OPEN, PostStatus.IN_PROGRESS, PostStatus.SUSPENDED}:
             raise BusinessHTTPException(code=settings.REQ_ERROR_CODE, msg="当前帖子状态不允许启动履约")
         if post.direction != Direction.SELL:
             raise BusinessHTTPException(code=settings.REQ_ERROR_CODE, msg="仅支持 SELL 方向帖子启动批量履约")
+
+        # 前置校验：必须有已录用的接单人，否则无法启动履约
+        curr_accepters = await OrderService.get_current_accepters_count(
+            db, ItemType.POST.name, post_id, _post_direction=post.direction
+        )
+        if curr_accepters == 0:
+            raise BusinessHTTPException(code=settings.REQ_ERROR_CODE, msg="当前没有已录用的接单人，无法启动履约")
+
         # Atomicity: wrap post status change + raw SQL wash in single try/except
         try:
             post.status = PostStatus.IN_PROGRESS

@@ -1752,7 +1752,8 @@ DATA_GET_FAILED: 301
 - BUY 方向帖子为申请制，申请后须等待发布者逐一审批；ccepted 为 alse，message 提示"接单申请递交成功，等待发帖人审批"。
 - SELL 方向帖子为征集制（广撒网进池子），申请后直接加入沟通池；ccepted 为 alse，message 提示"已成功加入沟通池，火速去和帖主私信聊聊吧"。
 - SELL 方向的 current_accepters 永远返回 0（PENDING 不计入占坑），前端应使用 pplicant_count（大厅列表/详情）展示排队人数。
-- 若用户刚刚取消过该帖子的申请，后端会返回 99 并提示冷静期。
+- 若帖子处于 SUSPENDED（暂停招募）状态，后端会返回 99 并提示“楼主已暂停招募新人”。
+- `/accept` 响应新增 `applicant_count` 字段，实时返回当前排队申请总人数供前端即时刷新。
 
 成功响应（BUY 方向）:
 
@@ -1764,6 +1765,7 @@ DATA_GET_FAILED: 301
         "post_id": 2001,
         "current_accepters": 0,
         "max_accepters": 3,
+        "applicant_count": 1,
         "accepted": false,
         "status": "PENDING",
         "message": "接单申请递交成功，等待发帖人审批"
@@ -1781,6 +1783,7 @@ DATA_GET_FAILED: 301
         "post_id": 2001,
         "current_accepters": 0,
         "max_accepters": 3,
+        "applicant_count": 2,
         "accepted": false,
         "status": "PENDING",
         "message": "已成功加入沟通池，火速去和帖主私信聊聊吧"
@@ -1883,6 +1886,56 @@ DATA_GET_FAILED: 301
 - code: 102 - 非发帖人无权修改公告。
 - code: 103 - 帖子不存在。
 
+#### 4.5.11 暂停/恢复招募 (POST: /posts/{post_id}/suspend 与 POST: /posts/{post_id}/resume)
+
+用途: 发帖人快捷控制帖子的招募状态：暂停招募（OPEN -> SUSPENDED）或恢复招募（SUSPENDED -> OPEN）。SUSPENDED 状态的帖子在大厅中依然可见，但禁止新用户接单。
+
+请求头: Authorization: Bearer <token>（仅帖子发布者可操作）。
+
+**暂停招募 (POST /posts/{post_id}/suspend)**
+
+请求示例:
+
+```json
+{}
+```
+
+成功响应:
+
+```json
+{
+    "code": 0,
+    "message": {
+        "post_id": 2001,
+        "status": "SUSPENDED"
+    }
+}
+```
+
+**恢复招募 (POST /posts/{post_id}/resume)**
+
+请求示例:
+
+```json
+{}
+```
+
+成功响应:
+
+```json
+{
+    "code": 0,
+    "message": {
+        "post_id": 2001,
+        "status": "OPEN"
+    }
+}
+```
+
+常见错误:
+
+- code: 102 - 仅帖子发布者可操作。
+- code: 99 - 当前状态不允许该操作（如对非 OPEN 状态调用 suspend，或对非 SUSPENDED 状态调用 resume）。
 
 ### 4.6 Order 订单模块
 
@@ -2262,7 +2315,8 @@ JSON
 
 权限说明：
 - 仅 SELL 方向帖子支持此操作。
-- 帖子状态必须为 OPEN 或 IN_PROGRESS。
+- 帖子状态必须为 OPEN、IN_PROGRESS 或 SUSPENDED（暂停招募但有已录用接单人时仍可启动）。
+- 必须有至少一名已录用的接单人（ONGOING 订单），否则提示"当前没有已录用的接单人，无法启动履约"。
 - 仅帖子发布者本人可操作。
 
 成功响应:

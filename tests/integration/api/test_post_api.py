@@ -974,3 +974,135 @@ async def test_hydrated_list_without_redis_data_defaults_to_zero(
 	assert card["view_count"] == 0
 	assert card["favorite_count"] == 0
 	assert card["comment_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_post_suspended_visible_in_lobby(
+	client: AsyncClient,
+	db_session,
+	test_user,
+):
+	"""SUSPENDED 状态的帖子在大厅列表中仍然可见。"""
+	category = Category(category_id=401, name="suspend-lobby-cat", config_json={})
+	db_session.add(category)
+	await db_session.flush()
+
+	post = Post(
+		post_id=3201,
+		publisher_id=test_user.user_id,
+		category_id=category.category_id,
+		title="暂停招募测试帖",
+		description="该帖子已暂停，但大厅仍应可见",
+		price=5.0,
+		direction=Direction.SELL,
+		urgency=UrgencyLevel.NORMAL,
+		status=PostStatus.SUSPENDED,
+	)
+	db_session.add(post)
+	await db_session.flush()
+
+	resp = await client.get("/posts/")
+	assert resp.status_code == 200
+	body = resp.json()
+	msg = assert_api_success(body)
+	cards = [c for c in msg["list"] if c["post_id"] == 3201]
+	assert len(cards) == 1, "SUSPENDED 帖子应出现在大厅列表中"
+
+
+@pytest.mark.asyncio
+async def test_create_order_blocked_under_suspended(
+	client: AsyncClient,
+	db_session,
+	test_user,
+	fake_redis,
+):
+	"""尝试对 SUSPENDED 状态的帖子接单应被拦截。"""
+	# 创建发布者
+	publisher = await _create_user_with_avatar(
+		db_session,
+		user_id=9101,
+		user_name="suspended_publisher",
+		openid="wx_suspend_pub",
+		avatar_url="/avatars/suspend_pub.png",
+	)
+	publisher_token = await _bind_user_token(fake_redis, publisher)
+
+	category = Category(category_id=402, name="suspend-block-cat", config_json={})
+	db_session.add(category)
+	await db_session.flush()
+
+	post = Post(
+		post_id=3202,
+		publisher_id=publisher.user_id,
+		category_id=category.category_id,
+		title="暂停招募的帖子",
+		description="不能被接单",
+		price=10.0,
+		direction=Direction.SELL,
+		urgency=UrgencyLevel.NORMAL,
+		status=PostStatus.SUSPENDED,
+	)
+	db_session.add(post)
+	await db_session.flush()
+
+	# 另一个用户尝试接单
+	token = await _bind_user_token(fake_redis, test_user)
+	resp = await client.post(
+		f"/posts/{post.post_id}/accept",
+		headers={"Authorization": f"Bearer {token}"},
+	)
+	assert resp.status_code == 200
+	body = resp.json()
+	assert body["code"] == settings.REQ_ERROR_CODE
+	assert "暂停" in body.get("message", {}).get("msg", "")
+
+
+@pytest.mark.asyncio
+async def test_accept_interface_returns_applicant_count(
+	client: AsyncClient,
+	db_session,
+	test_user,
+	fake_redis,
+):
+	"""POST /accept 成功后返回正确的 applicant_count 字段。"""
+	publisher = await _create_user_with_avatar(
+		db_session,
+		user_id=9201,
+		user_name="applicant_count_pub",
+		openid="wx_app_cnt_pub",
+		avatar_url="/avatars/app_cnt_pub.png",
+	)
+	publisher_token = await _bind_user_token(fake_redis, publisher)
+
+	category = Category(category_id=403, name="applicant-count-cat", config_json={})
+	db_session.add(category)
+	await db_session.flush()
+
+	post = Post(
+		post_id=3203,
+		publisher_id=publisher.user_id,
+		category_id=category.category_id,
+		title="测试 applicant_count 的帖子",
+		description="接单后应返回申请人数",
+		price=15.0,
+		direction=Direction.SELL,
+		urgency=UrgencyLevel.NORMAL,
+		status=PostStatus.OPEN,
+		template_data={"max_accepters": 10},
+	)
+	db_session.add(post)
+	await db_session.flush()
+
+	# test_user 接单
+	token = await _bind_user_token(fake_redis, test_user)
+	resp = await client.post(
+		f"/posts/{post.post_id}/accept",
+		headers={"Authorization": f"Bearer {token}"},
+	)
+	assert resp.status_code == 200
+	body = resp.json()
+	assert body["code"] == settings.SUCCESS_CODE
+	msg = body["message"]
+	assert "applicant_count" in msg, "响应应包含 applicant_count 字段"
+	assert msg["applicant_count"] == 1, f"当前应有 1 个申请人，实际为 {msg['applicant_count']}"
+	assert msg["accepted"] == False

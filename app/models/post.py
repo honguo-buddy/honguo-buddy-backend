@@ -12,6 +12,7 @@ class PostStatus(enum.Enum):
     IN_PROGRESS = "IN_PROGRESS"
     CLOSED = "CLOSED"
     CANCELLED = "CANCELLED"
+    SUSPENDED = "SUSPENDED"
 
 
 class Direction(enum.Enum):

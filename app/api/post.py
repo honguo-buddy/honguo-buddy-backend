@@ -40,7 +40,7 @@ from app.schemas import (
     UserRead,
 )
 from app.services import MetricsService, PostService, OrderService, SocialService
-from app.models import Comment, Post, TargetType, User
+from app.models import Comment, Post, PostStatus, TargetType, User
 
 logger = logging.getLogger(__name__)
 
@@ -604,6 +604,10 @@ async def accept_post(
             _post_direction=post.direction,
         )
 
+        # 查询当前排队申请人数
+        pending_counts = await OrderService.get_pending_applicants_count_map(db, [post_id])
+        applicant_count = pending_counts.get(post_id, 0)
+
         # Polymorphic response: BUY vs SELL direction
         if post.direction and str(post.direction.value).upper() == "BUY":
             accept_msg = "接单申请递交成功，等待发帖人审批"
@@ -617,6 +621,7 @@ async def accept_post(
                 "post_id": post_id,
                 "current_accepters": current_accepters,
                 "max_accepters": max_accepters,
+                "applicant_count": applicant_count,
                 "accepted": False,
                 "status": order.status.value,
                 "message": accept_msg,
@@ -624,4 +629,50 @@ async def accept_post(
         )
     except Exception as e:
         logger.error(f"接单失败 post_id={post_id} user_id={current_user.user_id}: {e}")
+        raise
+
+
+@router.post("/{post_id}/suspend", response_model=ResponseModel)
+async def suspend_post(
+    post_id: int,
+    current_user: UserRead = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """暂停招募：将帖子状态从 OPEN 变更为 SUSPENDED。"""
+    try:
+        post = await PostService.get_post_detail(db, post_id)
+        if post.publisher_id != current_user.user_id:
+            raise BusinessHTTPException(code=settings.INSUFFICIENT_AUTHORITY_CODE, msg="仅帖子发布者可操作")
+        if post.status != PostStatus.OPEN:
+            raise BusinessHTTPException(code=settings.REQ_ERROR_CODE, msg="仅 OPEN 状态可暂停招募")
+        post.status = PostStatus.SUSPENDED
+        await db.commit()
+        return ResponseModel(code=settings.SUCCESS_CODE, message={"post_id": post_id, "status": PostStatus.SUSPENDED.value})
+    except BusinessHTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"暂停招募失败 post_id={post_id}: {e}")
+        raise
+
+
+@router.post("/{post_id}/resume", response_model=ResponseModel)
+async def resume_post(
+    post_id: int,
+    current_user: UserRead = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """恢复招募：将帖子状态从 SUSPENDED 还原为 OPEN。"""
+    try:
+        post = await PostService.get_post_detail(db, post_id)
+        if post.publisher_id != current_user.user_id:
+            raise BusinessHTTPException(code=settings.INSUFFICIENT_AUTHORITY_CODE, msg="仅帖子发布者可操作")
+        if post.status != PostStatus.SUSPENDED:
+            raise BusinessHTTPException(code=settings.REQ_ERROR_CODE, msg="仅 SUSPENDED 状态可恢复招募")
+        post.status = PostStatus.OPEN
+        await db.commit()
+        return ResponseModel(code=settings.SUCCESS_CODE, message={"post_id": post_id, "status": PostStatus.OPEN.value})
+    except BusinessHTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"恢复招募失败 post_id={post_id}: {e}")
         raise

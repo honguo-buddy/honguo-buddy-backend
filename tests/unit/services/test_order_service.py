@@ -1534,6 +1534,8 @@ async def test_sell_post_start_fulfillment_washes_pool(monkeypatch):
         async def commit(self):
             pass
 
+    monkeypatch.setattr(OrderService, "get_current_accepters_count", AsyncMock(return_value=1))
+
     res = await OrderService.start_collective_fulfillment(FakeDB(), post.post_id, post.publisher_id)
     # 2 PENDING orders should be washed (rejected)
     assert res == 2
@@ -1622,6 +1624,7 @@ async def test_sell_start_fulfillment_rollback_on_sql_failure(monkeypatch):
             self.rolled_back = True
 
     db = FakeDB()
+    monkeypatch.setattr(OrderService, "get_current_accepters_count", AsyncMock(return_value=1))
     with pytest.raises(Exception, match='Simulated MySQL syntax error'):
         await OrderService.start_collective_fulfillment(db, post.post_id, post.publisher_id)
 
