@@ -17,6 +17,8 @@ pytestmark = pytest.mark.asyncio
 def build_db(*, execute_side_effect=None):
     db = SimpleNamespace()
     db.execute = AsyncMock(side_effect=execute_side_effect or [])
+    _stub = type("_Stub", (), {"is_deleted": False})()
+    db.get = AsyncMock(return_value=_stub)
     db.add = MagicMock()
     db.flush = AsyncMock()
     db.refresh = AsyncMock()
@@ -110,3 +112,74 @@ async def test_comment_query_helpers(monkeypatch):
     get_urls = AsyncMock(return_value={1: ["/a.png"]})
     monkeypatch.setattr("app.services.comment_service.AttachmentService.get_urls_by_target", get_urls)
     assert await CommentService.get_comment_attachment_urls_map(build_db(), [1]) == {1: ["/a.png"]}
+
+
+async def test_create_comment_on_non_existent_target():
+    """评论不存在的 POST/GOODS 目标应被拦截，返回 ResourceHTTPException。"""
+    from app.services.comment_service import CommentService
+    from app.core.exception_handler import ResourceHTTPException
+
+    # Non-existent POST target
+    db = build_db()
+    _stub = type("_Stub", (), {"is_deleted": False})()
+    db.get = AsyncMock(return_value=None)
+    with pytest.raises(ResourceHTTPException) as exc_info:
+        await CommentService.create_comment(
+            db, user_id=1001, target_type="POST", target_id=999999,
+            content="orphan comment",
+        )
+    assert "不存在" in exc_info.value.detail["msg"]
+
+    # Non-existent GOODS target
+    db2 = build_db()
+    db2.get = AsyncMock(return_value=None)
+    with pytest.raises(ResourceHTTPException) as exc_info2:
+        await CommentService.create_comment(
+            db2, user_id=1001, target_type="GOODS", target_id=888888,
+            content="orphan goods comment",
+        )
+    assert "不存在" in exc_info2.value.detail["msg"]
+
+    # Soft-deleted POST target
+    fake_post = type("Post", (), {"is_deleted": True, "post_id": 1})()
+    db3 = build_db()
+    db3.get = AsyncMock(return_value=fake_post)
+    with pytest.raises(ResourceHTTPException) as exc_info3:
+        await CommentService.create_comment(
+            db3, user_id=1001, target_type="POST", target_id=1,
+            content="comment on deleted post",
+        )
+    assert "不存在" in exc_info3.value.detail["msg"]
+
+
+async def test_create_comment_on_existing_target_succeeds(monkeypatch):
+    """评论已存在的 POST 目标应该成功创建。"""
+    from app.services.comment_service import CommentService
+    from app.models import Post, PostStatus
+
+    # Mock the metrics incr to avoid Redis dependency
+    monkeypatch.setattr(
+        "app.services.comment_service.MetricsService.incr_post_comment",
+        AsyncMock()
+    )
+
+    fake_post = type("Post", (), {
+        "is_deleted": False,
+        "post_id": 100,
+        "user_id": 2001,
+    })()
+    db = build_db()
+    db.get = AsyncMock(return_value=fake_post)
+    db.add = MagicMock()
+    db.flush = AsyncMock()
+    db.commit = AsyncMock()
+    db.refresh = AsyncMock()
+
+    comment = await CommentService.create_comment(
+        db, user_id=1001, target_type="POST", target_id=100,
+        content="valid comment",
+    )
+    assert comment is not None
+    assert comment.content == "valid comment"
+    assert comment.target_id == 100
+

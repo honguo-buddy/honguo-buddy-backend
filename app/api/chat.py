@@ -9,6 +9,7 @@ from app.api import get_current_user
 from app.core import settings
 from app.db import get_db
 from app.schemas import (
+	ChatBroadcastRequest,
 	ChatMessageCreateRequest,
 	ChatMessageListResponse,
 	ChatMessageRead,
@@ -165,4 +166,20 @@ async def delete_local_message(
 			"is_deleted_by_receiver": message.is_deleted_by_receiver,
 		},
 	)
+
+@router.post("/messages/broadcast-post", response_model=ResponseModel[dict])
+async def broadcast_post_message(
+    payload: ChatBroadcastRequest,
+    current_user: UserSchema = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """发帖人向所有已录用买家群发 1v1 私信（流式扇出）。"""
+    result = await ChatService.broadcast_post_message(
+        db=db,
+        post_id=payload.post_id,
+        sender_id=current_user.user_id,
+        content=payload.content,
+        attachment_ids=payload.attachment_ids,
+    )
+    return ResponseModel(code=settings.SUCCESS_CODE, message=result)
 

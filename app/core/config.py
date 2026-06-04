@@ -51,6 +51,7 @@ class Settings(BaseSettings):
     SMS_TEMPLATE_CODE: str | None = None
     SMS_SIGN_NAME: str | None = None
     SMS_CODE_TTL_SECONDS: int = 300
+    USER_PROFILE_CACHE_TTL: int = 3600  # user profile Read-Through cache TTL (seconds)
     SMS_RATE_LIMIT_SECONDS: int = 60
     SMS_VERIFIED_WINDOW_SECONDS: int = 900
 
@@ -63,7 +64,9 @@ class Settings(BaseSettings):
     REVIEW_DOUBLE_BLIND_DAYS: int = 1    # 评价双盲期（天）
     HISTORY_TTL_SECONDS: int = 30 * 86400 # 历史记录过期时间（秒），默认30天
     HISTORY_MAX_SIZE: int = 100 # 历史记录最大条数
-    GLOBAL_CANCEL_DAILY_LIMIT: int = 10 # 全局取消申请每日限制次数
+    GLOBAL_CANCEL_DAILY_LIMIT: int = 10 # 全局取消申请每日限制次数（已弃用，保留兼容）
+    LIGHTNING_CANCEL_LIMIT_SECONDS: int = 600  # 闪电退单分水岭阈值（秒），订单创建后此时限内取消视为闪电退单
+    LIGHTNING_CANCEL_DAILY_LIMIT: int = 10  # 闪电退单每人每日上限次数
     
     # 业务常数配置 - 错误码
     
@@ -91,6 +94,16 @@ class Settings(BaseSettings):
     
     #data
     DATA_GET_FAILED_CODE: int = 301 #数据获取失败
+
+    # 微信订阅消息配置
+    WX_APP_ID: str = ""
+    WX_APP_SECRET: str = ""
+    WX_ACCESS_TOKEN_URL: str = "https://api.weixin.qq.com/cgi-bin/token"
+    WX_SUBSCRIBE_SEND_URL: str = "https://api.weixin.qq.com/cgi-bin/message/subscribe/send"
+    WX_TEMPLATE_ORDER_STATUS: str = "Q3HbZnyQcTQgN61DJPfzEQGGeWfwjx19sE9MavHhyBI"  # 发货状态提醒·万能订单流转模板
+    WX_TEMPLATE_NEW_APPLICATION: str = "FDpm9NoLGRMa0LlE6beYuhh2vTKl541qHvauNW0smZY"  # 购买申请通知·万能前置审批互动
+    WX_ACCESS_TOKEN_CACHE_KEY: str = "wx:access_token:cache"  # Redis 缓存键
+    WX_ACCESS_TOKEN_CACHE_TTL: int = 6600  # access_token 缓存有效期（秒），110分钟
 
 
 settings = Settings()

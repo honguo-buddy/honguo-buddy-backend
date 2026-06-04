@@ -68,3 +68,9 @@ class ChatRecallResponse(BaseModel):
     message_id: int
     is_recalled: bool
     content: str
+
+class ChatBroadcastRequest(BaseModel):
+    post_id: int = Field(default=None, description="帖子ID")
+    content: str = Field(default=None, min_length=1, max_length=4000, description="消息内容")
+    attachment_ids: Optional[List[int]] = Field(default=None, description="附件ID列表，可选")
+

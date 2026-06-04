@@ -467,3 +467,188 @@ OrderService.approve_order 和 reject_order 需要校验 post.publisher_id。
 【问题】incr_post_view 中每条浏览都输出 logger.info，高并发下刷屏且消耗 I/O。
 
 【解决】高频触发路径的诊断日志必须使用 logger.debug 级别，生产环境默认关闭。
+
+
+二十六、 评论目标实体存在性校验 (Comment Target Existence Verification)
+
+【问题】POST /comments 接口接受任意 target_id 并成功创建评论，不验证目标 POST/GOODS 实体是否存在或已软删除，导致孤儿评论行写入数据库，造成数据污染。
+
+【解决】在评论创建逻辑中，根据 target_type 查询对应模型（Post/Goods），校验实体存在且 is_deleted == False。若目标不存在或已软删除，立即抛出 ResourceHTTPException(code=settings.DATA_GET_FAILED_CODE, msg=“目标帖子或商品不存在或已被删除”)。
+
+
+二十七、 收藏/历史灌水双端覆盖 (Dual Hydration for Favorites/Histories)
+
+【问题】/users/me/favorites 和 /users/me/histories 端点只对 POST 类型卡片调用 hydrate_posts_with_metrics 灌水，遗漏了 GOODS 类型卡片的计数器回填，导致商品卡片的前端指标全为 0。
+
+【解决】在路由层同时提取 POST 和 GOODS 两类卡片，分别调用对应的 hydrate_posts_with_metrics 和 hydrate_goods_with_metrics 灌水方法。每新增实体类型时，必须同步检查所有聚合展示端点（收藏、历史、搜索等）的灌水覆盖完整性。
+
+
+二十八、 商品详情历史脚印记录 (Goods Detail History Footprint)
+
+【问题】访问帖子详情页时，系统会将浏览足迹写入 Redis ZSET (user:history:{user_id})，但访问商品详情页时完全遗漏了历史记录，导致用户历史足迹墙缺失商品浏览记录。
+
+【解决】商品详情路由中注入可选用户依赖 (get_current_user_optional)，若已登录则调用 SocialService.record_history 将 target_type=GOODS 的浏览足迹写入 Redis 历史 ZSET，与帖子详情保持行为对称。
+
+二十九、 Read-Through 缓存模式替代 Always-Query-MySQL (Metrics Hydration Cache-Aside)
+
+【问题】hydrate_posts_with_metrics / hydrate_goods_with_metrics 每次调用都无条件执行 SELECT ... FROM post_metrics/goods_metrics WHERE id IN (...)，即使 Redis 已有数据也不会跳过，造成无意义 MySQL 查询开销。
+
+【解决】采用 Read-Through (Cache-Aside with Backfill) 模式：1) Redis Pipeline HGETALL 批量获取；2) 识别 cache-hit/cache-miss；3) 仅对 miss 的 ID 执行 MySQL IN 查询；4) MySQL 结果 HSET Pipeline 回填 Redis（自愈）；5) 合并注入。稳态下所有 hydrate 请求均 Redis 命中，MySQL 查询数为 0。另需防御 flush 后 Redis 残留全零 hash：全零视为 cache miss。
+
+
+三十、 线性字典管道消除双重 Pydantic 序列化 (Linear Dictionary Pipeline)
+
+【问题】列表接口存在 model_validate → model_dump → re-validate 双重序列化反模式，每页 20 条产生 40 次 Pydantic 构造 + 20 次 model_dump，CPU 开销巨大。
+
+【解决】采用 ORM 属性直出原生 dict → hydrate 灌水 → 单次 PostRead.model_validate 的线性管道。每页仅 20 次 Pydantic 构造，去除所有 model_dump。适用于所有列表/批量查询接口：Post、Goods、Order、Comment、Chat。
+
+
+三十一、 消除评论预览回复 N+1 查询 (Batch Preview Replies)
+
+【问题】get_root_comments 端点在循环内逐条调用 CommentService.get_preview_replies(db, comment_id)，每页 20 条评论产生 20 次单独的 SELECT 查询。
+
+【解决】新增 get_preview_replies_map(db, comment_ids, limit=3) 批量方法，使用 ROW_NUMBER() OVER (PARTITION BY parent_id) 窗口函数一次查询获取所有根评论的最新回复。路由层改为内存 map 查找，彻底消除 N+1。
+
+
+三十二、 订单评价三重序列化消除 (Order Review Triple-Pass Elimination)
+
+【问题】list_order_reviews 端点使用 OrderReviewRead.model_validate({**OrderReviewRead.model_validate(review).model_dump(), ...}) 三重嵌套 pattern。
+
+【解决】改为 ORM 属性直接提取为原生 dict，注入 attachment_urls 后单次 OrderReviewRead.model_validate。同样适用于所有嵌套 validate+dump+validate 的场景。
+
+三十三、 网关守卫 Read-Through 缓存盾 (Gateway Dependency Injection Cache Shield)
+
+【问题】get_current_user / get_current_user_optional 作为全系统最高频依赖注入，每次请求都执行 SELECT ... FROM user WHERE user_id=? ，高并发下 MySQL 被身份验证流量直接击穿。
+
+【解决】在依赖注入函数内部实现 Read-Through 缓存层：1) 验证 Token 后先查 Redis user:profile:cache:{user_id} ；2) 命中则 0 DB I/O 直接返回；3) Miss 时执行单次 MySQL SELECT 并 SETEX 回填 Redis（TTL 3600s）。将身份验证流量从 MySQL 隔离到 Redis 内存层。
+
+
+三十四、 用户画像读取缓存 + 写入失效 (User Profile Read-Through with Write Invalidation)
+
+【问题】get_me 、get_user_public 等画像接口每次请求都走多表关联 SQL 加载用户资料和头像，无缓存层。
+
+【解决】get_me 新增 user:profile:me:{user_id} 缓存键，存储 UserProfileResponse 全量字段（含 avatar）；update_me 写入后同时删除 user:profile:cache:{uid} 和 user:profile:me:{uid}，确保缓存与数据库绝对一致。
+
+
+三十五、 分类模板列表线性字典管道 (Category Template List Dict Pipeline)
+
+【问题】list_category_templates 使用 [CategoryRead.model_validate(c) for c in categories] 行级 Pydantic 榨汁机。
+
+【解决】改为 ORM 属性直接提取为原生 dict 列表，统一在返回前单次 model_validate。适用于所有集合查询接口。
+
+三十六、 用户公开画像 Read-Through 缓存 + 写入全量失效 (User Public Profile Cache with Write Invalidation)
+
+【问题】get_user_public 每次请求都执行多表关联 SQL 加载用户公开资料和头像，无缓存层。update_me 仅失效 user:profile:cache:{uid}，遗漏了 user:profile:me:{uid} 和 user:profile:public:{uid}，导致 get_me 和 get_user_public 继续返回过期脏数据。
+
+【解决】1) get_user_public 新增 user:profile:public:{user_id} Read-Through 缓存键；2) update_me 写入后同时删除 user:profile:cache:{uid}、user:profile:me:{uid}、user:profile:public:{uid} 三个缓存键；3) update_user_admin 也加入对目标用户的三键全量失效。确保所有用户画像读取链路（网关守卫、本人资料、公开资料）缓存与数据库绝对一致。
+
+
+三十七、 SELL 方向状态机名额隔离 (SELL Direction Slot Isolation)
+
+【问题】_post_accept_valid_statuses 对 SELL 方向包含了 OrderStatus.PENDING，导致 create_order 时把未录用的 PENDING 排队申请人也计为已占坑，广撒网进池子的体验被"接单已满"错误拦截。approve_order 对 SELL（COLLECTIVE）方向触发横向级联批量通过所有排队订单。
+
+【解决】1) SELL 方向的 _post_accept_valid_statuses 移除 PENDING，仅保留 ONGOING / CONFIRMED / COMPLETED；2) approve_order 对 COLLECTIVE 方向改为单笔逐批准（PENDING → ONGOING），批准后动态检查是否满员 → 设置 IN_PROGRESS，禁止横向级联。实现"广撒网进池子聊天，不聊定不锁坑"。
+
+三十八、 一键批量开工 + 池子自动清洗 (Batch Fulfillment + Pool Auto-Wash)
+
+【问题】SELL 方向存在发帖人逐单手动操作的低效率流程，且被拒绝的 PENDING 申请单无自动清理机制。
+
+【解决】新增 OrderService.start_collective_fulfillment(post_id, operator_id)：1) 行级排他锁 check Post；2) 校验发布者身份；3) Post.status → IN_PROGRESS；4) 参数化 text() 批量 UPDATE 将所有剩余 PENDING → REJECTED；5) 返回清洗数量。路由层暴露 POST /posts/{post_id}/start。
+
+三十九、 排队申请人指标独立灌水 (Applicant Count Independent Hydration)
+
+【问题】前端缺乏"已有 X 人申请沟通 | 剩余 Y 个名额"的全透明展示数据，applicant_count 与 current_accepters 语义完全不同（前者 = PENDING 排队数，后者 = ONGOING 已录用占坑数）。
+
+【解决】1) 新增 OrderService.get_pending_applicants_count_map(db, item_ids) 批量子查询（GROUP BY item_id，零 N+1）；2) PostRead / PostDetailRead Schema 追加 applicant_count: int = 0 字段；3) _build_post_dict 增加 applicant_count 参数；4) 所有列表 + 详情路由同步灌入 applicant_count。确保前端可渲染"申请人数 vs 剩余名额"双维指标。
+
+
+四十、 MySQL 原生 SQL 严禁使用双引号或无引号包裹保留关键字标识符 + 事务原子性强制保护 (MySQL Reserved Keyword Escape + Atomic Rollback)
+
+【问题】text() 原生 SQL 中表名 order 以裸写形式出现（UPDATE order SET ...），而 order 是 MySQL 系统绝对保留关键字，直接导致 ProgrammingError (1064): "You have an error in your SQL syntax near 'order'"。MySQL 解析器遇到裸写 order 时无法区分是表名还是 ORDER BY 关键字。
+
+【诊断】SQLAlchemy 日志输出 [SQL: UPDATE order SET status = %s ...]。若看到 near 'order' 则 100% 是保留关键字未转义。同时 start_collective_fulfillment 内部 post.status = IN_PROGRESS 在 raw SQL 之前，若 raw SQL 失败则半截子脏状态已落库无法回滚。
+
+【解决】1) 所有 text() 原生 SQL 中的表名标识符（尤其是 order、comment、user 等 MySQL 保留关键字）强制使用反引号包裹（UPDATE order、FROM comment），绝对禁止双引号或裸写；2) 混合 ORM + raw SQL 的业务函数必须用 try/except 包裹 post.status 赋值 + raw SQL 整个块，except 中前置 await db.rollback() 彻底回滚，杜绝半截子脏落库。
+
+
+四十一、 多需协同场景优先采用流式扇出（Fan-out）私信机制 (Fan-out Broadcast via 1v1 Chat)
+
+【问题】面对 SELL 帖子发帖人需要向所有已录用买家群发通知时，若强行拼装群聊实体会导致表结构膨胀和架构污染。需在不新增表的前提下实现一对多消息分发。
+
+【解决】在后端服务层新增 broadcast_post_message 方法：1) 查询 post 关联 order 表中所有 ONGOING 状态的 buyer_id；2) 在内存中循环调用现有 init_session + send_message 对每个买家独立发送 1v1 私信；3) 路由层暴露 POST /messages/broadcast-post。0 新增表成本，维持极致的专属服务感。
+
+四十二、 跨多态业务协同数据采用寄生 JSON 扩展与读链路实时反哺 (Parasitic JSON Extension + Read-Path Backfill)
+
+【问题】帖子公告（bulletin）需要跨订单、聊天等多个下游读链路共享，若单独建表会引入额外 JOIN 开销。
+
+【解决】1) 将 bulletin 作为寄生键值存放于 Post.template_data JSON 字段内；2) OrderRead schema 追加 bulletin: Optional[str]；3) 订单详情/列表读链路中，通过批量聚合查询 Post.template_data 提取 bulletin 并反哺注入到 _serialize_order 字典管道；4) 暴露 POST/GET /posts/{post_id}/bulletin 端点供发帖人读写公告。实现一处写入、全链路自动同步。
+
+
+四十三、 撮合平台采用"时限分水岭"规则实现体验与放权平衡 (Time-Watershed Cancel Policy)
+
+【问题】旧版手动取消采用硬性全局每日10次取消配额（user:global_cancel:count:{uid}），对所有取消行为一刀切限制，且附带同帖冷却期（_record_post_cancel + _raise_post_accept_rate_limit）针对同一帖子反复接单-取消设置了额外拦截。校园撮合场景下买卖双方通过私信沟通后完全可能友好取消重新协商，过于严苛的硬性惩罚破坏了撮合灵活性。
+
+【解决】1) 废除全局每日取消配额（user:global_cancel:count）与同帖冷却锁定（_record_post_cancel / _raise_post_accept_rate_limit）；2) 以订单 create_time 为基准划定"10分钟分水岭"：<=600秒为闪电退单，采用 Redis 日期维度键 order:cancel:limit:{uid}:{YYYYMMDD} 执行每日10次硬性限频拦截，附带 86400s 自动过期；>600秒的常规取消全面松绑、无惩罚放行、不撞击任何 Redis 计数器；3) 彻底解除同单死锁限制，同一笔订单可自由多次取消。将履约选择权完整交还给校园买卖双端。
+
+四十四、 业务魔法数字严禁硬编码，必须统一收敛至 config.py (No Magic Numbers — Centralize to Settings)
+
+【问题】cancel_order 与对应路由中直接硬编码了 600（10分钟分水岭秒数）、10（闪电退单每日上限次数）、86400（Redis TTL秒数），以及错误提示文案中的"10分钟""10次"等。一旦产品需求微调（如改为5分钟/15次），需要逐行在全链路代码中检索替换，极易遗漏造成行为不一致。
+
+【解决】1) 在 config.py 中新增 LIGHTNING_CANCEL_LIMIT_SECONDS (默认600) 与 LIGHTNING_CANCEL_DAILY_LIMIT (默认10)；2) Service 层、路由层、单元测试中所有魔法数字全部替换为 settings 引用；3) 错误提示文案使用 f-string 动态拼接 settings 值，保证文案与逻辑始终同源一致。铁律：任何可调业务参数不得以字面量形式散落在业务代码中，必须通过 config.py 统一管理。
+
+四十五、 Post.max_accepters 为 @property 只读属性，构造/测试时不可直接赋值 (Property vs Column Awareness)
+
+【问题】Post 模型中 max_accepters 被定义为 @property（从 template_data 安全读取），并非 SQLAlchemy Column。在集成测试中直接通过 Post(..., max_accepters=10) 构造对象时，SQLAlchemy 底层 setattr 因该属性无 setter 而抛出 AttributeError: property 'max_accepters' of 'Post' object has no setter。
+
+【解决】所有涉及 Post 对象构造的代码（含测试 fixture），必须通过 template_data={"max_accepters": N} 间接写入最大接单数。读取时则始终通过 post.max_accepters 属性安全访问。铁律：遇到 ORM 模型的 @property 装饰字段，必须在构造时追溯其底层存储路径，严禁想当然直接赋值。
+
+四十六、 三方异步通知服务必须强制执行独立解耦，严禁堵塞核心业务事务 (Decoupled Notification Service via BackgroundTasks)
+
+【问题】微信订阅消息、短信、邮件等所有依赖外部网络抖动的第三方通知若直接嵌入核心路由或Service逻辑中，会因三方API超时/熔断导致主接口响应延迟飙升，甚至污染订单状态事务的原子性。
+
+【解决】1) 全量封装独立的 WeChatNotificationService，统一管理 access_token 的 Redis 自愈缓存（TTL 6600s）、参数字数强制清洗（phrase<=5字、thing<=20字截断）；2) 上游核心API路由仅通过 FastAPI 的 BackgroundTasks.add_task() 单行托管投递，确保主事务 commit 后接口 0 延迟返回；3) 所有微信模板 ID、网关 URL 统一收敛至 config.py，禁止散落硬编码。铁律：任何第三方通知绝不越过 BackgroundTasks 直接在主线程同步发送。
+
+四十七、 高并发声誉计算严禁物理表级实时聚合，必须采用 Redis-ZSET 滚动窗口裁剪 (Redis ZSET Rolling Window for Credit Score)
+
+【问题】信用分计算若在每次读/写时直接对 MySQL 执行 COUNT/SUM 聚合，高并发大厅场景下会引发严重的行锁竞争与慢查询堆积。
+
+【解决】1) 为每个用户建立 user:credit:rolling:{uid} ZSET，以 Unix 时间戳为 Score、delta:event:ref_id 为 Member；2) 每次事件通过 ZREMRANGEBYSCORE 裁剪30天前过期记录，在内存中秒级累加算分；3) 最终分值 = min(100, max(0, 60 + total_delta))；4) 分值同步回写 user:profile:cache:{uid} Hash 字典的 credit_score 字段，供大厅 0 DB I/O 秒开读取。CreditService 作为独立服务封装全部读写逻辑。
+
+四十八、 微信订阅消息 phrase 短语凭证清洗必须死锁 5 字符物理极限 (Phrase Sanitization Hard 5-char Limit)
+
+【问题】_sanitize_phrase 原实现使用 value[:4] + "..." 拼接后实际长度为 7 字符，超过微信 phrase 参数硬性 5 字限制，直接触发 47003 参数非法错误导致消息发送全线退单。
+
+【解决】强制修改为 value[:3] + ".."，确保截断后总长度绝对等于且不超过 5 个字符。thing 类型同步复核：value[:17] + "..."，总长度 = 20。
+
+四十九、 严禁在异步高频循环内部重复生灭 HTTP 客户端，必须强制复用长连接池 (HTTP Client Connection Pool Reuse)
+
+【问题】微信通知服务的 _get_access_token 与 send_subscribe_message 内部分别使用 async with httpx.AsyncClient() 创建短连接，每次调用即生即灭。高并发批量通知场景下操作系统 TCP 端口被 TIME_WAIT 填满，引发套接字耗尽假死。
+
+【解决】1) 在模块级别定义 _httpx_client: Optional[httpx.AsyncClient] 全局连接池句柄；2) 通过 _get_httpx_client() 懒初始化并全局复用；3) 所有 HTTP 调用统一走此长连接池。铁律：任何需要复用 HTTP 的服务模块，必须在模块级维护单例连接池，严禁在方法体内反复构造销毁 AsyncClient。
+
+五十、 三方异步通知服务必须强制执行独立解耦，严禁堵塞核心业务事务 (Decoupled Notification Service via BackgroundTasks)
+
+【问题】微信订阅消息、短信、邮件等所有依赖外部网络抖动的第三方通知若直接嵌入核心路由或Service逻辑中，会因三方API超时/熔断导致主接口响应延迟飙升，甚至污染订单状态事务的原子性。
+
+【解决】1) 全量封装独立的 WeChatNotificationService，统一管理 access_token 的 Redis 自愈缓存（TTL 6600s）、参数字数强制清洗（phrase<=5字、thing<=20字截断）；2) 上游核心API路由仅通过 FastAPI 的 BackgroundTasks.add_task() 单行托管投递，确保主事务 commit 后接口 0 延迟返回；3) 所有微信模板 ID、网关 URL 统一收敛至 config.py，禁止散落硬编码。铁律：任何第三方通知绝不越过 BackgroundTasks 直接在主线程同步发送。
+
+五十一、 独占类商品订单流转取消必须配套执行"资产状态自动多态恢复" (Goods Status Auto-Restore on Cancel)
+
+【问题】针对一对一的独占类闲置商品（Goods）交易，买家下单成功后商品立即变为已下架（OFF_SHELF）以拦截并发二次购买。但当该进行中订单不幸触发手动取消时，若不将商品重新吐回大厅，该商品将永久卡死在已下架状态成为孤儿资产。
+
+【解决】1) 买家下单时商品立即从 ON_SALE 变更为 OFF_SHELF；2) 订单完成（accept-delivery/complete）时商品变更为 SOLD（已售出）；3) 订单取消（cancel）时商品自动恢复为 ON_SALE（上架中），确保资产重新流入大厅曝光；4) 买家确认验收时商品状态从任何当前状态强行推进至 SOLD。铁律：独占类资产的状态流转必须覆盖下单→完成→取消三条全路径，禁止留存中间态孤儿。
+五十二、 路由层严禁包含业务逻辑，必须全部下沉至 Service 层 (Routes Must Be Thin, Business Logic in Service Layer)
+
+【问题】新增接口时直接在路由文件（app/api/*.py）中编写数据库查询、状态转换、订单创建等业务逻辑，导致代码重复、测试困难、架构混乱。例如 goods.py 的 buy/delist/relist 路由直接操作 Goods 模型和 Order 模型，order.py 的 accept_delivery/complete_order/cancel_order 路由直接操作 GoodsStatus 状态流转。
+
+【解决】1) 所有业务逻辑（数据库 CRUD、状态机流转、校验规则）必须封装在对应的 Service 类（GoodsService、OrderService 等）中；2) 路由层仅负责参数解析、用户认证、调用 Service 方法、BackgroundTasks 异步通知投递和返回 ResponseModel；3) 路由函数体一般不超过 20 行；4) 状态变更的副作用（如订单完成→商品 SOLD、订单取消→商品 ON_SALE）必须由 Service 层在对应方法内统一处理，禁止在路由中重复实现。
+
+【示例】商品购买路由：
+# ❌ 错误：路由直接创建 Order、设置 goods.status
+order = Order(...)
+db.add(order)
+goods.status = GoodsStatus.OFF_SHELF
+await db.commit()
+
+# ✅ 正确：委托 Service 层
+order = await OrderService.create_order(db, item_type="GOODS", item_id=goods_id, initiator_id=current_user.user_id)

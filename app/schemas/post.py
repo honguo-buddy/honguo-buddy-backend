@@ -73,7 +73,8 @@ class PostRead(BaseModel):
     max_accepters: int = 1
     publisher: Optional[UserRead] = None
     publisher_id: int
-    current_accepters: int = 0  # 当前接单人数
+    current_accepters: int = 0  # 当前接单人数（已录用的有效占坑数）
+    applicant_count: int = 0  # 当前排队申请人数（PENDING 未录用）
     view_count: int = Field(default=0, description="浏览计数（Redis 灌水）")
     favorite_count: int = Field(default=0, description="收藏计数（Redis 灌水）")
     comment_count: int = Field(default=0, description="评论计数（Redis 灌水）")
@@ -150,3 +151,8 @@ class PostApplicationListResponse(BaseModel):
     """帖子申请列表响应模型。"""
 
     applications: List[PostApplicationItem] = Field(default_factory=list)
+
+class PostBulletinUpdate(BaseModel):
+    """帖子公告更新请求。bulletin 为 None 时不修改，为空字符串时清空公告。"""
+    bulletin: Optional[str] = None
+

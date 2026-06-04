@@ -12,13 +12,13 @@
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from app.api import get_current_user, get_current_user_optional
-from app.core import AuthHTTPException, BusinessHTTPException, ResourceHTTPException, settings
+from app.core import AuthHTTPException, BusinessHTTPException, ResourceHTTPException, get_now_naive, settings
 from app.db import get_db, get_redis, redis
 from app.schemas import (
     FavoriteRequest,
@@ -30,6 +30,7 @@ from app.schemas import (
     PostBatchAcceptRequest,
     PostBatchAcceptResponse,
     PostBatchAcceptResultItem,
+    PostBulletinUpdate,
     PostCreate,
     PostDetailRead,
     PostList,
@@ -38,8 +39,8 @@ from app.schemas import (
     ResponseModel,
     UserRead,
 )
-from app.services import MetricsService, PostService, OrderService, SocialService
-from app.models import Comment, Post, TargetType
+from app.services import MetricsService, PostService, OrderService, SocialService, WeChatNotificationService
+from app.models import Comment, Post, PostStatus, TargetType, User
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +66,31 @@ def _build_post_read(post, current_accepters: int) -> PostRead:
         create_time=post.create_time.isoformat() if post.create_time else "",
         attachment_urls=attachment_urls,
     )
+
+
+
+def _build_post_dict(post, current_accepters: int, applicant_count: int = 0) -> dict:
+    """Build lightweight raw dict from ORM Post object, no intermediate Pydantic overhead."""
+    attachment_urls = [att.url for att in (post.attachments or []) if not att.is_deleted]
+    publisher = post.user
+    return {
+        "post_id": post.post_id,
+        "category_id": post.category_id,
+        "title": post.title,
+        "description": post.description,
+        "price": float(post.price) if post.price else None,
+        "direction": post.direction.value if post.direction else "SELL",
+        "urgency": post.urgency.value if post.urgency else "NORMAL",
+        "status": post.status.value if post.status else "OPEN",
+        "template_data": post.template_data,
+        "max_accepters": post.max_accepters,
+        "publisher": UserRead.model_validate(publisher) if publisher else None,
+        "publisher_id": post.publisher_id,
+        "current_accepters": current_accepters,
+        "applicant_count": applicant_count,
+        "create_time": post.create_time.isoformat() if post.create_time else "",
+        "attachment_urls": attachment_urls,
+    }
 
 
 def _build_application_applicant_read(applicant, completed_order_count: int) -> PostApplicationApplicantRead:
@@ -95,6 +121,7 @@ async def publish_post(
             db,
             item_type="POST",
             item_id=post.post_id,
+            _post_direction=post.direction,
         )
         
         return ResponseModel(
@@ -149,25 +176,32 @@ async def list_posts(
             page=page,
             page_size=page_size,
         )
+        post_id_list = [post.post_id for post in posts]
         current_accepters_map = await OrderService.get_current_accepters_count_map(
             db,
             item_type="POST",
-            item_ids=[post.post_id for post in posts],
+            item_ids=post_id_list,
+            _direction_map={post.post_id: post.direction for post in posts},
         )
+        applicant_count_map = await OrderService.get_pending_applicants_count_map(db, post_id_list)
         
-        # 对每个帖子补充接单数和附件 URL
-        post_list = []
+        # Linear dict pipeline: ORM -> raw dict -> hydrate -> single validate
+        raw_dicts = []
+        post_ids = []
         for post in posts:
-            current_accepters = current_accepters_map.get(post.post_id, 0)
-            post_list.append(_build_post_read(post, current_accepters))
-        
+            pid = post.post_id
+            post_ids.append(pid)
+            raw_dicts.append(_build_post_dict(
+                post,
+                current_accepters_map.get(pid, 0),
+                applicant_count_map.get(pid, 0),
+            ))
 
-        # 批量灌水计数器
-        if post_list:
-            post_dicts = [pr.model_dump() for pr in post_list]
-            post_ids = [pr.post_id for pr in post_list]
-            await MetricsService.hydrate_posts_with_metrics(redis_client, post_dicts, post_ids)
-            post_list = [PostRead.model_validate(pd) for pd in post_dicts]
+        if raw_dicts:
+            await MetricsService.hydrate_posts_with_metrics(db, redis_client, raw_dicts, post_ids)
+            post_list = [PostRead.model_validate(d) for d in raw_dicts]
+        else:
+            post_list = []
         return ResponseModel(
             code=settings.SUCCESS_CODE,
             message=PostList(
@@ -206,23 +240,30 @@ async def list_my_posts(
         status=status,
         public_only=False,
     )
+    my_post_ids = [post.post_id for post in posts]
     current_accepters_map = await OrderService.get_current_accepters_count_map(
         db,
         item_type="POST",
-        item_ids=[post.post_id for post in posts],
+        item_ids=my_post_ids,
+        _direction_map={post.post_id: post.direction for post in posts},
     )
-    post_list = []
+    applicant_count_map = await OrderService.get_pending_applicants_count_map(db, my_post_ids)
+    raw_dicts = []
+    post_ids = []
     for post in posts:
-        current_accepters = current_accepters_map.get(post.post_id, 0)
-        post_list.append(_build_post_read(post, current_accepters))
+        pid = post.post_id
+        post_ids.append(pid)
+        raw_dicts.append(_build_post_dict(
+            post,
+            current_accepters_map.get(pid, 0),
+            applicant_count_map.get(pid, 0),
+        ))
 
-
-    # 批量灌水计数器
-    if post_list:
-        post_dicts = [pr.model_dump() for pr in post_list]
-        post_ids = [pr.post_id for pr in post_list]
-        await MetricsService.hydrate_posts_with_metrics(redis_client, post_dicts, post_ids)
-        post_list = [PostRead.model_validate(pd) for pd in post_dicts]
+    if raw_dicts:
+        await MetricsService.hydrate_posts_with_metrics(db, redis_client, raw_dicts, post_ids)
+        post_list = [PostRead.model_validate(d) for d in raw_dicts]
+    else:
+        post_list = []
     return ResponseModel(
         code=settings.SUCCESS_CODE,
         message=PostList(total=total, page=page, page_size=size, list=post_list),
@@ -249,28 +290,90 @@ async def list_public_user_posts(
         category_id=category_id,
         status=status,
     )
+    public_post_ids = [post.post_id for post in posts]
     current_accepters_map = await OrderService.get_current_accepters_count_map(
         db,
         item_type="POST",
-        item_ids=[post.post_id for post in posts],
+        item_ids=public_post_ids,
+        _direction_map={post.post_id: post.direction for post in posts},
     )
-    post_list = []
+    applicant_count_map = await OrderService.get_pending_applicants_count_map(db, public_post_ids)
+    raw_dicts = []
+    post_ids = []
     for post in posts:
-        current_accepters = current_accepters_map.get(post.post_id, 0)
-        post_list.append(_build_post_read(post, current_accepters))
+        pid = post.post_id
+        post_ids.append(pid)
+        raw_dicts.append(_build_post_dict(
+            post,
+            current_accepters_map.get(pid, 0),
+            applicant_count_map.get(pid, 0),
+        ))
 
-
-    # 批量灌水计数器
-    if post_list:
-        post_dicts = [pr.model_dump() for pr in post_list]
-        post_ids = [pr.post_id for pr in post_list]
-        await MetricsService.hydrate_posts_with_metrics(redis_client, post_dicts, post_ids)
-        post_list = [PostRead.model_validate(pd) for pd in post_dicts]
+    if raw_dicts:
+        await MetricsService.hydrate_posts_with_metrics(db, redis_client, raw_dicts, post_ids)
+        post_list = [PostRead.model_validate(d) for d in raw_dicts]
+    else:
+        post_list = []
     return ResponseModel(
         code=settings.SUCCESS_CODE,
         message=PostList(total=total, page=page, page_size=size, list=post_list),
     )
 
+
+
+
+@router.post("/{post_id}/bulletin", response_model=ResponseModel[dict])
+async def update_post_bulletin(
+    post_id: int,
+    payload: PostBulletinUpdate,
+    current_user: UserRead = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """更新帖子公告栏。bulletin 为 None 不修改，为空字符串清空公告。"""
+    if payload.bulletin is None:
+        post_stmt = select(Post.template_data).where(
+            Post.post_id == post_id, Post.is_deleted == False
+        )
+        post_res = await db.execute(post_stmt)
+        td = post_res.scalar_one_or_none()
+        current = (td or {}).get("bulletin", "") if isinstance(td, dict) else ""
+        return ResponseModel(
+            code=settings.SUCCESS_CODE,
+            message={"post_id": post_id, "bulletin": current},
+        )
+
+    post_stmt = (
+        select(Post)
+        .where(Post.post_id == post_id, Post.is_deleted == False)
+        .with_for_update()
+    )
+    post_res = await db.execute(post_stmt)
+    post = post_res.scalars().first()
+    if not post:
+        raise ResourceHTTPException(code=settings.DATA_GET_FAILED_CODE, msg="帖子不存在")
+    if post.publisher_id != current_user.user_id:
+        raise BusinessHTTPException(code=settings.INSUFFICIENT_AUTHORITY_CODE, msg="仅发帖人可更新公告")
+    post.template_data = dict(post.template_data or {})
+    post.template_data["bulletin"] = payload.bulletin
+    await db.flush()
+    await db.commit()
+    return ResponseModel(
+        code=settings.SUCCESS_CODE,
+        message={"post_id": post_id, "bulletin": payload.bulletin},
+    )
+
+
+@router.get("/{post_id}/bulletin", response_model=ResponseModel[dict])
+async def get_post_bulletin(
+    post_id: int,
+    db: AsyncSession = Depends(get_db),
+):
+    """获取帖子公告栏内容。"""
+    post_stmt = select(Post.template_data).where(Post.post_id == post_id, Post.is_deleted == False)
+    post_res = await db.execute(post_stmt)
+    td = post_res.scalar_one_or_none()
+    bulletin = (td or {}).get("bulletin", "") if isinstance(td, dict) else ""
+    return ResponseModel(code=settings.SUCCESS_CODE, message={"post_id": post_id, "bulletin": bulletin})
 
 @router.post("/batch-accept", response_model=ResponseModel[PostBatchAcceptResponse])
 async def batch_accept_posts(
@@ -350,7 +453,7 @@ async def update_post(
         operator_id=current_user.user_id,
         is_admin=bool(current_user.is_admin),
     )
-    current_accepters = await OrderService.get_current_accepters_count(db, item_type="POST", item_id=post.post_id)
+    current_accepters = await OrderService.get_current_accepters_count(db, item_type="POST", item_id=post.post_id, _post_direction=post.direction)
     return ResponseModel(code=settings.SUCCESS_CODE, message=_build_post_read(post, current_accepters))
 
 
@@ -392,7 +495,9 @@ async def get_post_detail(
             db,
             item_type="POST",
             item_id=post_id,
+            _post_direction=post.direction,
         )
+        applicant_count = (await OrderService.get_pending_applicants_count_map(db, [post_id])).get(post_id, 0)
         attachment_urls = [att.url for att in (post.attachments or []) if not att.is_deleted]
 
         # 构建评论列表（仅查询前 N 条热评，按时间倒序）
@@ -405,7 +510,7 @@ async def get_post_detail(
                     Comment.target_id == post_id,
                     Comment.is_deleted == False,
                 )
-                .options(selectinload(Comment.user))
+                .options(selectinload(Comment.user).selectinload(User.avatar_attachment))
                 .order_by(Comment.create_time.desc())
                 .limit(comments_limit)
             )
@@ -440,6 +545,7 @@ async def get_post_detail(
             publisher=publisher_public,
             publisher_id=post.publisher_id,
             current_accepters=current_accepters,
+            applicant_count=applicant_count,
             create_time=post.create_time.isoformat() if post.create_time else "",
             status=post.status.value if post.status else None,
             attachment_urls=attachment_urls,
@@ -456,7 +562,7 @@ async def get_post_detail(
 
         # 灌入计数器到详情卡片
         post_detail_dict = post_detail.model_dump()
-        await MetricsService.hydrate_posts_with_metrics(redis_client, [post_detail_dict], [post_id])
+        await MetricsService.hydrate_posts_with_metrics(db, redis_client, [post_detail_dict], [post_id])
         hydrated_detail = PostDetailRead.model_validate(post_detail_dict)
 
         return ResponseModel(
@@ -471,6 +577,7 @@ async def get_post_detail(
 @router.post("/{post_id}/accept", response_model=ResponseModel)
 async def accept_post(
     post_id: int,
+    background_tasks: BackgroundTasks,
     current_user: UserRead = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
     redis_client = Depends(get_redis),
@@ -488,15 +595,34 @@ async def accept_post(
             redis_client=redis_client,
         )
         
-        # 查询更新后的接单数
+        # 先加载帖子获取 direction/max_accepters，再查询更新后的接单数
+        post = await PostService.get_post_detail(db, post_id)
+        max_accepters = post.max_accepters
         current_accepters = await OrderService.get_current_accepters_count(
             db,
             item_type="POST",
             item_id=post_id,
+            _post_direction=post.direction,
         )
-        post = await PostService.get_post_detail(db, post_id)
-        max_accepters = post.max_accepters
-        
+
+        # 查询当前排队申请人数
+        pending_counts = await OrderService.get_pending_applicants_count_map(db, [post_id])
+        applicant_count = pending_counts.get(post_id, 0)
+
+        # Polymorphic response: BUY vs SELL direction
+        if post.direction and str(post.direction.value).upper() == "BUY":
+            accept_msg = "接单申请递交成功，等待发帖人审批"
+        else:
+            accept_msg = "已成功加入沟通池，火速去和帖主私信聊聊吧"
+
+        # 钩子 A：异步通知发帖人收到新申请
+        post_title = post.title or ""
+        applicant_name = current_user.user_name or "匿名用户"
+        background_tasks.add_task(
+            WeChatNotificationService.notify_new_application,
+            db, redis_client, order, post_title, applicant_name,
+        )
+
         return ResponseModel(
             code=settings.SUCCESS_CODE,
             message={
@@ -504,10 +630,58 @@ async def accept_post(
                 "post_id": post_id,
                 "current_accepters": current_accepters,
                 "max_accepters": max_accepters,
-                "accepted": True,
+                "applicant_count": applicant_count,
+                "accepted": False,
                 "status": order.status.value,
+                "message": accept_msg,
             },
         )
     except Exception as e:
         logger.error(f"接单失败 post_id={post_id} user_id={current_user.user_id}: {e}")
+        raise
+
+
+@router.post("/{post_id}/suspend", response_model=ResponseModel)
+async def suspend_post(
+    post_id: int,
+    current_user: UserRead = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """暂停招募：将帖子状态从 OPEN 变更为 SUSPENDED。"""
+    try:
+        post = await PostService.get_post_detail(db, post_id)
+        if post.publisher_id != current_user.user_id:
+            raise BusinessHTTPException(code=settings.INSUFFICIENT_AUTHORITY_CODE, msg="仅帖子发布者可操作")
+        if post.status != PostStatus.OPEN:
+            raise BusinessHTTPException(code=settings.REQ_ERROR_CODE, msg="仅 OPEN 状态可暂停招募")
+        post.status = PostStatus.SUSPENDED
+        await db.commit()
+        return ResponseModel(code=settings.SUCCESS_CODE, message={"post_id": post_id, "status": PostStatus.SUSPENDED.value})
+    except BusinessHTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"暂停招募失败 post_id={post_id}: {e}")
+        raise
+
+
+@router.post("/{post_id}/resume", response_model=ResponseModel)
+async def resume_post(
+    post_id: int,
+    current_user: UserRead = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """恢复招募：将帖子状态从 SUSPENDED 还原为 OPEN。"""
+    try:
+        post = await PostService.get_post_detail(db, post_id)
+        if post.publisher_id != current_user.user_id:
+            raise BusinessHTTPException(code=settings.INSUFFICIENT_AUTHORITY_CODE, msg="仅帖子发布者可操作")
+        if post.status != PostStatus.SUSPENDED:
+            raise BusinessHTTPException(code=settings.REQ_ERROR_CODE, msg="仅 SUSPENDED 状态可恢复招募")
+        post.status = PostStatus.OPEN
+        await db.commit()
+        return ResponseModel(code=settings.SUCCESS_CODE, message={"post_id": post_id, "status": PostStatus.OPEN.value})
+    except BusinessHTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"恢复招募失败 post_id={post_id}: {e}")
         raise

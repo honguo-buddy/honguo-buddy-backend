@@ -236,7 +236,7 @@ class PostService:
         if status:
             status_values = [s.strip().upper() for s in status.split(",") if s.strip()]
             if public_only:
-                allowed_statuses = {PostStatus.OPEN, PostStatus.IN_PROGRESS, PostStatus.CLOSED}
+                allowed_statuses = {PostStatus.OPEN, PostStatus.IN_PROGRESS, PostStatus.CLOSED, PostStatus.SUSPENDED}
                 filtered = []
                 for item in status_values:
                     try:
@@ -289,7 +289,7 @@ class PostService:
         status: Optional[str] = None,
     ) -> Tuple[List[Post], int]:
         """公开查询指定用户的帖子，仅返回允许公开可见的状态。"""
-        allowed_statuses = [PostStatus.OPEN, PostStatus.IN_PROGRESS, PostStatus.CLOSED]
+        allowed_statuses = [PostStatus.OPEN, PostStatus.IN_PROGRESS, PostStatus.CLOSED, PostStatus.SUSPENDED]
         conditions = [
             Post.publisher_id == user_id,
             Post.is_deleted == False,
@@ -358,9 +358,9 @@ class PostService:
                 post_status = PostStatus(status)
                 conditions.append(Post.status == post_status)
             except ValueError:
-                conditions.append(Post.status == PostStatus.OPEN)
+                conditions.append(Post.status.in_([PostStatus.OPEN, PostStatus.SUSPENDED]))
         else:
-            conditions.append(Post.status == PostStatus.OPEN)
+            conditions.append(Post.status.in_([PostStatus.OPEN, PostStatus.SUSPENDED]))
         
         if keyword:
             keyword_pattern = f"%{keyword}%"

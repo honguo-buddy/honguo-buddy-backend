@@ -10,12 +10,12 @@
 import logging
 from typing import List, Optional, Tuple
 
-from sqlalchemy import and_, select, func
+from sqlalchemy import and_, bindparam, func, select, text as sa_text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core import AuthHTTPException, BusinessHTTPException, ResourceHTTPException, settings
-from app.models import AttachmentTargetType, Comment, User, TargetType
+from app.models import AttachmentTargetType, Comment, Goods, Post, User, TargetType
 from app.services.attachment_service import AttachmentService
 from app.services.metrics_service import MetricsService
 from app.db import redis as app_redis
@@ -59,6 +59,20 @@ class CommentService:
             raise BusinessHTTPException(
                 code=settings.REQ_ERROR_CODE,
                 msg=f"无效的目标类型: {target_type}",
+            )
+
+        # 验证目标实体是否存在（防御孤儿评论写入）
+        if target_type == "POST":
+            target_obj = await db.get(Post, target_id)
+        elif target_type == "GOODS":
+            target_obj = await db.get(Goods, target_id)
+        else:
+            target_obj = None
+
+        if target_obj is None or getattr(target_obj, "is_deleted", False):
+            raise ResourceHTTPException(
+                code=settings.DATA_GET_FAILED_CODE,
+                msg="目标帖子或商品不存在或已被删除",
             )
         
         # 如果有parent_id，验证父评论是否存在且未被删除
@@ -220,7 +234,7 @@ class CommentService:
             select(Comment)
             .where(and_(*where_conditions))
             .options(
-                selectinload(Comment.user),
+                selectinload(Comment.user).selectinload(User.avatar_attachment),
                 selectinload(Comment.replies),
             )
             .order_by(Comment.comment_id.desc())
@@ -280,7 +294,7 @@ class CommentService:
         stmt = (
             select(Comment)
             .where(and_(*where_conditions))
-            .options(selectinload(Comment.user))
+            .options(selectinload(Comment.user).selectinload(User.avatar_attachment))
             .order_by(Comment.create_time.asc())
             .limit(size + 1)
         )
@@ -379,6 +393,53 @@ class CommentService:
         # 反序以保持时间正序
         return list(reversed(replies))
 
+
+    @staticmethod
+    async def get_preview_replies_map(
+        db: AsyncSession,
+        comment_ids: List[int],
+        limit: int = 3,
+    ) -> dict[int, List[Comment]]:
+        """Batch fetch latest N preview replies for multiple root comments.
+
+        Single IN query replaces N individual get_preview_replies calls,
+        eliminating the N+1 query trap in the root comments lobby.
+        Uses a correlated subquery with ROW_NUMBER() to get
+        the latest {limit} replies per root comment in one pass.
+        """
+        if not comment_ids:
+            return {}
+
+        sql = sa_text("""
+            SELECT c.comment_id, c.parent_id, c.user_id, c.target_type,
+                   c.target_id, c.content, c.is_deleted, c.create_time, c.update_time
+            FROM (
+                SELECT c.*,
+                       ROW_NUMBER() OVER (
+                           PARTITION BY c.parent_id ORDER BY c.create_time DESC
+                       ) AS rn
+                FROM comment c
+                WHERE c.parent_id IN :pids
+                  AND c.is_deleted = 0
+            ) c
+            WHERE c.rn <= :lim
+            ORDER BY c.parent_id, c.create_time ASC
+        """).bindparams(
+            bindparam('pids', expanding=True),
+            bindparam('lim', value=limit),
+        )
+
+        res = await db.execute(sql, {'pids': comment_ids, 'lim': limit})
+        rows = res.mappings().all()
+
+        result: dict[int, list] = {cid: [] for cid in comment_ids}
+        for row in rows:
+            pid = row['parent_id']
+            result.setdefault(pid, []).append(row)
+
+        return result
+
     @staticmethod
     async def get_comment_attachment_urls_map(db: AsyncSession, comment_ids: List[int]) -> dict[int, list[str]]:
         return await AttachmentService.get_urls_by_target(db, AttachmentTargetType.COMMENT.value, comment_ids)
+

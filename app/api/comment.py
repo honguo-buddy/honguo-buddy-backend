@@ -132,9 +132,25 @@ async def get_replies(
         size=size,
     )
     
-    attachment_urls_map = await CommentService.get_comment_attachment_urls_map(db, [r.comment_id for r in replies])
-    items = [_build_comment_response(r, attachment_urls_map.get(r.comment_id, [])) for r in replies]
-    
+    reply_ids = [r.comment_id for r in replies]
+    attachment_urls_map = await CommentService.get_comment_attachment_urls_map(db, reply_ids)
+    raw_items = [
+        {
+            "comment_id": r.comment_id,
+            "user_id": r.user_id,
+            "target_type": r.target_type.value,
+            "target_id": r.target_id,
+            "parent_id": r.parent_id,
+            "content": r.content,
+            "is_deleted": r.is_deleted,
+            "create_time": r.create_time,
+            "update_time": r.update_time,
+            "attachment_urls": attachment_urls_map.get(r.comment_id, []),
+        }
+        for r in replies
+    ]
+    items = [CommentResponse.model_validate(d) for d in raw_items]
+
     return ResponseModel(
         code=settings.SUCCESS_CODE,
         message=CommentReplyListResponse(items=items, next_cursor=next_cursor),
@@ -164,31 +180,34 @@ async def get_root_comments(
         size=size,
     )
     
-    # 批量获取回复计数
+    # Batch fetch reply counts, attachment URLs, and preview replies in 3 queries total
     comment_ids = [c.comment_id for c in comments]
     reply_count_map = await CommentService.get_reply_count_map(db, comment_ids)
     attachment_urls_map = await CommentService.get_comment_attachment_urls_map(db, comment_ids)
-    
-    # 为每个根评论构建响应，包含回复计数和预览
-    items = []
+    preview_replies_map = await CommentService.get_preview_replies_map(db, comment_ids, limit=3)
+
+    # Linear dict pipeline: raw dict -> final validate once per item
+    raw_items = []
     for comment in comments:
-        reply_count = reply_count_map.get(comment.comment_id, 0)
-        
-        # 获取预览回复
-        preview_replies_objs = await CommentService.get_preview_replies(
-            db, comment.comment_id, limit=3
-        )
-        preview_replies = [
-            CommentReplyPreview.model_validate(r) for r in preview_replies_objs
-        ]
-        
-        comment_response = _build_comment_with_reply_count_response(
-            comment=comment,
-            reply_count=reply_count,
-            preview_replies=preview_replies,
-            attachment_urls=attachment_urls_map.get(comment.comment_id, []),
-        )
-        items.append(comment_response)
+        cid = comment.comment_id
+        preview_rows = preview_replies_map.get(cid, [])
+        raw_items.append({
+            "comment_id": cid,
+            "user_id": comment.user_id,
+            "target_type": comment.target_type.value,
+            "target_id": comment.target_id,
+            "content": comment.content,
+            "is_deleted": comment.is_deleted,
+            "create_time": comment.create_time,
+            "update_time": comment.update_time,
+            "reply_count": reply_count_map.get(cid, 0),
+            "preview_replies": [
+                CommentReplyPreview.model_validate(r) for r in preview_rows
+            ],
+            "attachment_urls": attachment_urls_map.get(cid, []),
+        })
+
+    items = [CommentWithReplyCountResponse.model_validate(d) for d in raw_items]
     
     return ResponseModel(
         code=settings.SUCCESS_CODE,

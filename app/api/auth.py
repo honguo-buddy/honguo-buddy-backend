@@ -1,4 +1,6 @@
+import json as _json
 import logging
+from types import SimpleNamespace
 from typing import Optional, Union
 
 from fastapi import APIRouter, Depends, Request
@@ -6,7 +8,6 @@ from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
 from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
-
 from app.core import settings, AuthHTTPException, BusinessHTTPException
 from app.db import get_db, redis, User
 from app.schemas import (
@@ -29,7 +30,11 @@ async def get_current_user(
     token: str = Depends(oauth2_scheme),
     db: AsyncSession = Depends(get_db),
 ) -> UserSchema:
-    """基于 Bearer Token 获取当前用户。"""
+    """Read-Through gateway shield: Redis profile cache hit first, MySQL fallback only on miss.
+
+    High-frequency dependency injected into every protected route.
+    Eliminates mandatory per-request SELECT from user table under traffic spikes.
+    """
     if not token:
         raise AuthHTTPException(
             code=settings.TOKEN_INVALID_CODE,
@@ -70,10 +75,23 @@ async def get_current_user(
             status_code=401,
         )
 
+    uid = int(cached_user_id)
+    cache_key = f"user:profile:cache:{uid}"
+
+    # Step 1: Try Redis profile cache hit (0 DB I/O)
+    try:
+        cached_raw = await redis.get(cache_key)
+        if cached_raw:
+            data = _json.loads(cached_raw)
+            return UserSchema.model_validate(SimpleNamespace(**data))
+    except Exception:
+        pass
+
+    # Step 2: Cache miss - single MySQL SELECT
     user_res = await db.execute(
         select(User).where(
             and_(
-                User.user_id == int(cached_user_id),
+                User.user_id == uid,
                 User.is_deleted == False,
                 User.is_active == True,
             )
@@ -87,6 +105,25 @@ async def get_current_user(
             status_code=401,
         )
 
+    # Step 3: Backfill Redis cache with TTL
+    try:
+        import json as _json
+        profile = {
+            "user_id": db_user.user_id,
+            "user_uuid": db_user.user_uuid.hex() if db_user.user_uuid else "",
+            "user_name": db_user.user_name,
+            "is_admin": db_user.is_admin,
+            "is_verified": db_user.is_verified,
+            "email": db_user.email,
+            "phonenumber": db_user.phonenumber,
+            "user_type": db_user.user_type.value if getattr(db_user.user_type, 'value', None) else str(db_user.user_type),
+            "last_login_ip": db_user.last_login_ip,
+            "identifier": db_user.user_name,
+        }
+        await redis.setex(cache_key, settings.USER_PROFILE_CACHE_TTL, _json.dumps(profile, ensure_ascii=False))
+    except Exception:
+        pass
+
     return UserSchema.model_validate(db_user)
 
 
@@ -94,6 +131,7 @@ async def get_current_user_optional(
     token: Optional[str] = Depends(oauth2_scheme),
     db: AsyncSession = Depends(get_db),
 ) -> Optional[UserSchema]:
+    """Read-Through optional gateway: same cache-first pattern as get_current_user."""
     if not token:
         return None
 
@@ -106,17 +144,52 @@ async def get_current_user_optional(
         if str(payload.get("sub")) != str(cached_user_id):
             return None
 
+        uid = int(cached_user_id)
+        cache_key = f"user:profile:cache:{uid}"
+
+        # Step 1: Try Redis profile cache hit
+        try:
+            cached_raw = await redis.get(cache_key)
+            if cached_raw:
+                data = _json.loads(cached_raw)
+                return UserSchema.model_validate(SimpleNamespace(**data))
+        except Exception:
+            pass
+
+        # Step 2: Cache miss - MySQL SELECT
         user_res = await db.execute(
             select(User).where(
                 and_(
-                    User.user_id == int(cached_user_id),
+                    User.user_id == uid,
                     User.is_deleted == False,
                     User.is_active == True,
                 )
             )
         )
         db_user = user_res.scalar_one_or_none()
-        return UserSchema.model_validate(db_user) if db_user else None
+        if not db_user:
+            return None
+
+        # Step 3: Backfill Redis cache
+        try:
+            import json as _json
+            profile = {
+                "user_id": db_user.user_id,
+                "user_uuid": db_user.user_uuid.hex() if db_user.user_uuid else "",
+                "user_name": db_user.user_name,
+                "is_admin": db_user.is_admin,
+                "is_verified": db_user.is_verified,
+                "email": db_user.email,
+                "phonenumber": db_user.phonenumber,
+                "user_type": db_user.user_type.value if getattr(db_user.user_type, 'value', None) else str(db_user.user_type),
+                "last_login_ip": db_user.last_login_ip,
+                "identifier": db_user.user_name,
+            }
+            await redis.setex(cache_key, settings.USER_PROFILE_CACHE_TTL, _json.dumps(profile, ensure_ascii=False))
+        except Exception:
+            pass
+
+        return UserSchema.model_validate(db_user)
     except Exception:
         return None
 

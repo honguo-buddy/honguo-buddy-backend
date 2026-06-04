@@ -5,10 +5,10 @@ from typing import Optional, List, Tuple, Any
 from sqlalchemy import select, func, update, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
-
+from app.core import AuthHTTPException, BusinessHTTPException, ResourceHTTPException, settings
 from app.models.goods import Goods, GoodsStatus, GoodsCondition
 from app.models.attachment import Attachment
-from app.models.user import User  # 确保导入 User 模型
+from app.models.user import User
 from app.schemas.goods import GoodsCreate, GoodsUpdate
 
 logger = logging.getLogger(__name__)
@@ -173,3 +173,36 @@ class GoodsService:
         """Soft-delete a goods item."""
         goods.is_deleted = True
         await db.commit()
+
+
+    @staticmethod
+    async def delist_goods(db: AsyncSession, goods_id: int, user_id: int) -> Goods:
+        """卖家下架商品：ON_SALE → OFF_SHELF。"""
+        stmt = select(Goods).where(Goods.goods_id == goods_id, Goods.is_deleted == False)
+        res = await db.execute(stmt)
+        goods = res.scalar_one_or_none()
+        if goods is None:
+            raise ResourceHTTPException(code=settings.USER_GET_FAILED_CODE, msg="商品不存在或已删除")
+        if goods.publisher_id != user_id:
+            raise AuthHTTPException(code=settings.INSUFFICIENT_AUTHORITY_CODE, msg="仅商品发布者可操作")
+        if goods.status != GoodsStatus.ON_SALE:
+            raise BusinessHTTPException(code=settings.REQ_ERROR_CODE, msg="仅上架中商品可下架")
+        goods.status = GoodsStatus.OFF_SHELF
+        await db.commit()
+        return goods
+
+    @staticmethod
+    async def relist_goods(db: AsyncSession, goods_id: int, user_id: int) -> Goods:
+        """卖家重新上架商品：OFF_SHELF → ON_SALE。"""
+        stmt = select(Goods).where(Goods.goods_id == goods_id, Goods.is_deleted == False)
+        res = await db.execute(stmt)
+        goods = res.scalar_one_or_none()
+        if goods is None:
+            raise ResourceHTTPException(code=settings.USER_GET_FAILED_CODE, msg="商品不存在或已删除")
+        if goods.publisher_id != user_id:
+            raise AuthHTTPException(code=settings.INSUFFICIENT_AUTHORITY_CODE, msg="仅商品发布者可操作")
+        if goods.status != GoodsStatus.OFF_SHELF:
+            raise BusinessHTTPException(code=settings.REQ_ERROR_CODE, msg="仅已下架商品可重新上架")
+        goods.status = GoodsStatus.ON_SALE
+        await db.commit()
+        return goods

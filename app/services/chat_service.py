@@ -9,7 +9,7 @@ from sqlalchemy import and_, case, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import BusinessHTTPException, ResourceHTTPException, get_now_naive, settings
-from app.models import Attachment, AttachmentTargetType, ChatMessage, ChatSession, User
+from app.models import Attachment, AttachmentTargetType, ChatMessage, ChatSession, ItemType, Order, OrderStatus, Post, User
 from app.services.attachment_service import AttachmentService
 
 
@@ -310,3 +310,49 @@ class ChatService:
                 continue
             attachment_map.setdefault(int(target_id), []).append(AttachmentService.to_public_url(url) or url)
         return attachment_map
+
+    @staticmethod
+    async def broadcast_post_message(
+        db: AsyncSession,
+        post_id: int,
+        sender_id: int,
+        content: str,
+        attachment_ids: Optional[list[int]] = None,
+    ) -> dict:
+        """流式扇出：发帖人向所有已录用买家逐一发送 1v1 私信。"""
+        post_stmt = select(Post).where(Post.post_id == post_id, Post.is_deleted == False)
+        post_res = await db.execute(post_stmt)
+        post = post_res.scalars().first()
+        if not post:
+            raise ResourceHTTPException(code=settings.DATA_GET_FAILED_CODE, msg="帖子不存在")
+        if post.publisher_id != sender_id:
+            raise BusinessHTTPException(code=settings.INSUFFICIENT_AUTHORITY_CODE, msg="仅发帖人可以群发消息")
+        order_stmt = (
+            select(Order.buyer_id)
+            .where(
+                Order.item_type == ItemType.POST,
+                Order.item_id == post_id,
+                Order.status == OrderStatus.ONGOING,
+                Order.is_deleted == False,
+            )
+            .distinct()
+        )
+        order_res = await db.execute(order_stmt)
+        buyer_ids = [int(row[0]) for row in order_res.all() if row[0] is not None]
+        sent_count = 0
+        for buyer_id in buyer_ids:
+            try:
+                session = await ChatService.init_session(
+                    db=db, current_user_id=sender_id, peer_id=buyer_id,
+                    context_type="POST", context_id=post_id,
+                )
+                await ChatService.send_message(
+                    db=db, current_user_id=sender_id, session_id=session.session_id,
+                    content=content, attachment_ids=attachment_ids,
+                    context_type="POST", context_id=post_id,
+                )
+                sent_count += 1
+            except Exception:
+                continue
+        return {"sent_count": sent_count, "buyer_ids": buyer_ids}
+

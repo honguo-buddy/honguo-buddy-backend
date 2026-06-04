@@ -1391,6 +1391,7 @@ DATA_GET_FAILED: 301
                 },
                 "publisher_id": 2001,
                 "current_accepters": 0,
+                "applicant_count": 3,
                 "view_count": 128,
                 "favorite_count": 15,
                 "comment_count": 9,
@@ -1574,6 +1575,7 @@ DATA_GET_FAILED: 301
         },
         "publisher_id": 1001,
         "current_accepters": 0,
+        "applicant_count": 2,
         "view_count": 256,
         "favorite_count": 32,
         "comment_count": 14,
@@ -1742,30 +1744,52 @@ DATA_GET_FAILED: 301
 
 #### 4.5.8.1 单个帖子接单 (POST: /posts/{post_id}/accept)
 
-用途: 当前用户对指定帖子发起接单申请。
+用途: 当前用户对指定帖子发起接单申请。申请成功后订单处于 PENDING 状态（未录用），不占用帖子已录用名额。
 
 请求头: Authorization: Bearer <token>。
 
 说明：
-- `BUY` 方向帖子为申请制，申请后须等待发布者同意；该帖的 `PENDING` 订单不计入当前接单数。
-- `SELL` 方向帖子为征集制，`PENDING` 订单即时计入当前接单数。
-- 若用户刚刚取消过该帖子的申请，后端会返回 99 并提示冷静期。
+- BUY 方向帖子为申请制，申请后须等待发布者逐一审批；ccepted 为 alse，message 提示"接单申请递交成功，等待发帖人审批"。
+- SELL 方向帖子为征集制（广撒网进池子），申请后直接加入沟通池；ccepted 为 alse，message 提示"已成功加入沟通池，火速去和帖主私信聊聊吧"。
+- SELL 方向的 current_accepters 永远返回 0（PENDING 不计入占坑），前端应使用 pplicant_count（大厅列表/详情）展示排队人数。
+- 若帖子处于 SUSPENDED（暂停招募）状态，后端会返回 99 并提示“楼主已暂停招募新人”。
+- `/accept` 响应新增 `applicant_count` 字段，实时返回当前排队申请总人数供前端即时刷新。
 
-成功响应:
+成功响应（BUY 方向）:
 
-```json
+`json
 {
     "code": 0,
     "message": {
         "order_id": 1001,
         "post_id": 2001,
-        "current_accepters": 1,
+        "current_accepters": 0,
         "max_accepters": 3,
-        "accepted": true,
-        "status": "PENDING"
+        "applicant_count": 1,
+        "accepted": false,
+        "status": "PENDING",
+        "message": "接单申请递交成功，等待发帖人审批"
     }
 }
-```
+`
+
+成功响应（SELL 方向）:
+
+`json
+{
+    "code": 0,
+    "message": {
+        "order_id": 1001,
+        "post_id": 2001,
+        "current_accepters": 0,
+        "max_accepters": 3,
+        "applicant_count": 2,
+        "accepted": false,
+        "status": "PENDING",
+        "message": "已成功加入沟通池，火速去和帖主私信聊聊吧"
+    }
+}
+`
 
 #### 4.5.9 查看接单申请列表 (GET: /posts/{post_id}/applications)
 
@@ -1817,6 +1841,101 @@ DATA_GET_FAILED: 301
 - code: 105 - Token 失效或缺失。
 - code: 102 - 仅帖子拥有者可查看申请列表。
 - code: 103 - 帖子不存在。
+
+
+#### 4.5.10 帖子公告栏读写 (POST/GET: /posts/{post_id}/bulletin)
+
+用途: 发帖人读写帖子置顶公告栏，公告内容寄生存储于 Post.template_data.bulletin。
+
+**写入公告 (POST)**
+
+请求头: Authorization: Bearer <token>（仅帖子发布者可操作）。
+
+请求示例:
+
+```json
+{
+    "bulletin": "今晚18:00在图书馆门口交货，请准时"
+}
+```
+
+说明：
+- `bulletin` 为 `null` 或不传时**不修改**公告，直接返回当前值。
+- `bulletin` 为空字符串 `""` 时**清空**公告。
+
+成功响应:
+
+```json
+{
+    "code": 0,
+    "message": {
+        "post_id": 1001,
+        "bulletin": "今晚18:00在图书馆门口交货，请准时"
+    }
+}
+```
+
+**读取公告 (GET)**
+
+请求头: 无（公开接口）。
+
+成功响应: 同 POST 成功响应。
+
+常见错误:
+
+- code: 102 - 非发帖人无权修改公告。
+- code: 103 - 帖子不存在。
+
+#### 4.5.11 暂停/恢复招募 (POST: /posts/{post_id}/suspend 与 POST: /posts/{post_id}/resume)
+
+用途: 发帖人快捷控制帖子的招募状态：暂停招募（OPEN -> SUSPENDED）或恢复招募（SUSPENDED -> OPEN）。SUSPENDED 状态的帖子在大厅中依然可见，但禁止新用户接单。
+
+请求头: Authorization: Bearer <token>（仅帖子发布者可操作）。
+
+**暂停招募 (POST /posts/{post_id}/suspend)**
+
+请求示例:
+
+```json
+{}
+```
+
+成功响应:
+
+```json
+{
+    "code": 0,
+    "message": {
+        "post_id": 2001,
+        "status": "SUSPENDED"
+    }
+}
+```
+
+**恢复招募 (POST /posts/{post_id}/resume)**
+
+请求示例:
+
+```json
+{}
+```
+
+成功响应:
+
+```json
+{
+    "code": 0,
+    "message": {
+        "post_id": 2001,
+        "status": "OPEN"
+    }
+}
+```
+
+常见错误:
+
+- code: 102 - 仅帖子发布者可操作。
+- code: 99 - 当前状态不允许该操作（如对非 OPEN 状态调用 suspend，或对非 SUSPENDED 状态调用 resume）。
 
 ### 4.6 Order 订单模块
 
@@ -2050,8 +2169,8 @@ JSON
 - `approve` 和 `reject` 仅限卖家（帖子发布者）操作。
 - `submit-delivery` 由卖家提交已交付状态。
 - `accept-delivery` 由买家确认收货并完成订单；`complete` 为兼容接口，内部等价于 `accept-delivery`。
-- `cancel` 仅限买家或卖家取消，若订单为 PENDING，则发起人也可取消。
-- `cancel` 接口会额外返回 `curr_accepters`，用于客户端更新当前帖子接单数。
+- `cancel` 仅限买家或卖家取消，遵循分水岭规则：订单创建后在配置时限内取消为闪电退单（每人每日限次，由 settings 控制），超时可无限制取消。同笔订单可多次取消，不再锁定。
+- `cancel` 接口额外返回 `curr_accepters`（当前已录用人数）、`rest_cancel_times`（闪电退单今日剩余次数）和 `cancel_message`（中文提示语）。闪电退单超额时返回 code:99。
 
 成功响应示例:
 
@@ -2187,6 +2306,36 @@ JSON
 - code: 301 - 订单不存在、订单未完成，或评价查询失败。
 
 
+
+#### 4.6.7 SELL 方向一键批量开工 (POST: /orders/posts/{post_id}/start)
+
+用途: 【仅 SELL 方向】发帖人一键启动履约，系统自动将所有未被录用的 PENDING 排队申请单批量清洗为已拒绝（REJECTED），同时帖子状态变更为 IN_PROGRESS。
+
+请求头: Authorization: Bearer <token>（仅帖子发布者可操作）。
+
+权限说明：
+- 仅 SELL 方向帖子支持此操作。
+- 帖子状态必须为 OPEN、IN_PROGRESS 或 SUSPENDED（暂停招募但有已录用接单人时仍可启动）。
+- 必须有至少一名已录用的接单人（ONGOING 订单），否则提示"当前没有已录用的接单人，无法启动履约"。
+- 仅帖子发布者本人可操作。
+
+成功响应:
+
+`json
+{
+    "code": 0,
+    "message": {
+        "washed_rejected_count": 5
+    }
+}
+`
+
+说明：
+- washed_rejected_count 返回本次被自动拒绝清洗的 PENDING 申请数量。
+- 已被录用的 ONGOING 订单不受影响，安全保持在进行中状态。
+- 接口内部使用行级排他锁（FOR UPDATE）+ 事务原子性保护，SQL 异常时自动 rollback 回滚帖子状态。
+
+
 ### 4.7 评论模块 (Comments)
 
 说明：评论模块支持对帖子/商品/订单的多层回复（盖楼）机制。所有响应遵循统一返回格式 `{ "code": int, "message": ... }`。
@@ -2237,6 +2386,7 @@ JSON
 - code: 105 - Token 无效或已失效（未登录）。
 - code: 99  - 请求参数校验失败（例如 `target_id` 类型不正确、`content` 为空）。
 - code: 301 - 父评论不存在或已被删除（当 `parent_id` 指向的评论不可用时）。
+- code: 106 - 目标帖子或商品不存在或已被软删除（评论挂载的目标实体不可用）。
 
 #### 4.7.2 软删除评论 (DELETE: /comments/{comment_id})
 
@@ -2270,7 +2420,7 @@ JSON
 
 用途：获取指定目标（帖子/商品/订单）的顶级根评论列表（不含被软删除的根评论），按 `comment_id` 倒序返回并支持游标分页。
 
-请求头：无（公开接口）
+请求头：无（公开接口，已登录用户将自动记录浏览历史脚印至 Redis 集群 `user:history:{user_id}` ZSET）
 
 查询参数（示例用 JSON 表示）：
 
@@ -2330,7 +2480,7 @@ LIMIT :size
 
 用途：当用户点击“查看全部回复”时，平铺拉取该根评论下的所有子回复，按创建时间正序返回，支持游标分页。
 
-请求头：无（公开接口）
+请求头：无（公开接口，已登录用户将自动记录浏览历史脚印至 Redis 集群 `user:history:{user_id}` ZSET）
 
 查询参数（示例用 JSON 表示）：
 
@@ -2513,6 +2663,51 @@ LIMIT :size
 请求头：Authorization: Bearer <token>（必须登录）
 
 
+
+#### 4.8.8 帖子群发消息 (POST: /chats/messages/broadcast-post)
+
+用途: 发帖人向所有已录用（ONGOING）买家逐一发送 1v1 私信，实现流式扇出群发。不创建群聊实体，每条消息独立落入各买家私信会话。
+
+请求头: Authorization: Bearer <token>（仅帖子发布者可操作）。
+
+请求示例:
+
+```json
+{
+    "post_id": 1001,
+    "content": "大家好，今晚18:00图书馆门口集合，请带好学生证",
+    "attachment_ids": [101, 102]
+}
+```
+
+字段说明：
+- `post_id`: 必填，目标帖子 ID
+- `content`: 必填，群发消息内容（1~4000 字符）
+- `attachment_ids`: 可选，附件 ID 列表
+
+成功响应:
+
+```json
+{
+    "code": 0,
+    "message": {
+        "sent_count": 3,
+        "buyer_ids": [2001, 2002, 2003]
+    }
+}
+```
+
+说明：
+- `sent_count` 为实际成功发送的买家数量。
+- 系统自动为每位买家初始化私信会话（若尚未存在），然后逐一射入消息。
+- 单个买家发送失败不影响其他买家。
+
+常见错误:
+
+- code: 102 - 非发帖人无权群发。
+- code: 103 - 帖子不存在。
+
+
 ### 4.9 Goods 商品模块
 
 说明：商品模块为闲置交易大厅，支持发布、列表筛选、详情浏览、更新上下架状态和软删除。所有列表/详情卡片均通过 Redis 计数器中心实时注入 view_count、favorite_count、comment_count。路由前缀固定为 `/goods`。
@@ -2577,7 +2772,7 @@ LIMIT :size
 
 用途：分页查询商品大厅，支持关键词、分类、状态筛选。返回卡片均携带 Redis 实时灌水计数器。
 
-请求头：无（公开接口）
+请求头：无（公开接口，已登录用户将自动记录浏览历史脚印至 Redis 集群 `user:history:{user_id}` ZSET）
 
 请求示例：
 
@@ -2656,7 +2851,7 @@ LIMIT :size
 
 用途：获取单个商品完整详情，自动触发浏览计数自增（Redis），并注入实时计数器到卡片。
 
-请求头：无（公开接口）
+请求头：无（公开接口，已登录用户将自动记录浏览历史脚印至 Redis 集群 `user:history:{user_id}` ZSET）
 
 成功响应：
 
@@ -2740,6 +2935,109 @@ LIMIT :size
 
 - code: 102 - 非发布者无权删除。
 - code: 103 - 商品不存在。
+
+#### 4.9.7 快捷下单购买商品 (POST: /goods/{goods_id}/buy)
+
+用途：买家一键下单购买商品。商品立即从「上架中」变更为「已下架」，同步创建 ONGOING 订单，并异步推送微信通知至卖家。
+
+请求头：Authorization: Bearer <token>（必须登录）
+
+请求示例：
+
+```
+POST /goods/5001/buy
+```
+
+（无需请求体）
+
+成功响应：
+
+```json
+{
+    "code": 0,
+    "message": {
+        "order_id": 8001,
+        "goods_id": 5001,
+        "status": "进行中"
+    }
+}
+```
+
+常见错误：
+
+- code: 99  - 不能购买自己发布的商品 / 商品当前不可购买 / 商品已售出 / 商品已被锁定
+- code: 103 - 商品不存在或已删除
+- code: 105 - Token 无效
+
+---
+
+#### 4.9.8 卖家下架商品 (POST: /goods/{goods_id}/delist)
+
+用途：卖家主动下架商品（ON_SALE → OFF_SHELF），下架后大厅不再展示。仅商品发布者可操作。
+
+请求头：Authorization: Bearer <token>（必须登录）
+
+请求示例：
+
+```
+POST /goods/5001/delist
+```
+
+（无需请求体）
+
+成功响应：
+
+```json
+{
+    "code": 0,
+    "message": {
+        "goods_id": 5001,
+        "status": "已下架"
+    }
+}
+```
+
+常见错误：
+
+- code: 99  - 仅上架中商品可下架
+- code: 102 - 仅商品发布者可操作
+- code: 103 - 商品不存在或已删除
+- code: 105 - Token 无效
+
+---
+
+#### 4.9.9 卖家重新上架商品 (POST: /goods/{goods_id}/relist)
+
+用途：卖家将已下架商品重新上架（OFF_SHELF → ON_SALE），恢复大厅曝光。仅商品发布者可操作。
+
+请求头：Authorization: Bearer <token>（必须登录）
+
+请求示例：
+
+```
+POST /goods/5001/relist
+```
+
+（无需请求体）
+
+成功响应：
+
+```json
+{
+    "code": 0,
+    "message": {
+        "goods_id": 5001,
+        "status": "上架中"
+    }
+}
+```
+
+常见错误：
+
+- code: 99  - 仅已下架商品可重新上架
+- code: 102 - 仅商品发布者可操作
+- code: 103 - 商品不存在或已删除
+- code: 105 - Token 无效
 
 ---
 

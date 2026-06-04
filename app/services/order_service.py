@@ -6,13 +6,13 @@ from typing import Optional
 
 import logging
 
-from sqlalchemy import and_, func, or_, select
+from sqlalchemy import and_, func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased, selectinload
 
 from app.core import BusinessHTTPException, ResourceHTTPException, get_now, get_now_naive, parse_datetime_to_beijing_naive, settings
 from app.core.delay_queue import ORDER_AUTO_CONFIRM_QUEUE_KEY, enqueue_delayed_task
-from app.models import CreditLog, Direction, Goods, ItemType, Order, OrderStatus, OrderTriggerType, Post, PostStatus, User
+from app.models import CreditLog, Direction, Goods, GoodsStatus, ItemType, Order, OrderStatus, OrderTriggerType, Post, PostStatus, User
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +67,7 @@ class OrderService:
             "buyer": order.buyer,
             "seller": order.seller,
             "curr_accepters": getattr(order, "curr_accepters", None),
+            "bulletin": getattr(order, "bulletin", None),
         }
 
     @staticmethod
@@ -133,7 +134,7 @@ class OrderService:
         if post is not None:
             post.status = PostStatus.CLOSED
         if goods is not None:
-            goods.is_sold = True
+            goods.status = GoodsStatus.SOLD
             td = goods.template_data or {}
             if isinstance(td, dict) and td.get("locked"):
                 td = dict(td)
@@ -186,10 +187,11 @@ class OrderService:
     def _post_accept_valid_statuses(direction: Direction) -> list[OrderStatus]:
         if direction == Direction.BUY:
             return [OrderStatus.ONGOING, OrderStatus.CONFIRMED, OrderStatus.COMPLETED]
-        return [OrderStatus.PENDING, OrderStatus.ONGOING, OrderStatus.CONFIRMED, OrderStatus.COMPLETED]
+        # SELL: PENDING is NOT counted as occupied slot (broad-net pool, not yet locked)
+        return [OrderStatus.ONGOING, OrderStatus.CONFIRMED, OrderStatus.COMPLETED]
 
     @staticmethod
-    async def get_current_accepters_count(db: AsyncSession, item_type: str, item_id: int) -> int:
+    async def get_current_accepters_count(db: AsyncSession, item_type: str, item_id: int, _post_direction=None) -> int:
         """获取指定项目（Post/Goods）当前有效接单/参与人数。
         
         统一的接单数计算逻辑，避免 DRY 违反。
@@ -204,11 +206,14 @@ class OrderService:
         """
         item_type_enum = OrderService._normalize_item_type(item_type)
         if item_type_enum == ItemType.POST:
-            post_stmt = select(Post.direction).where(Post.post_id == item_id, Post.is_deleted == False)
-            post_res = await db.execute(post_stmt)
-            direction = post_res.scalar_one_or_none()
-            if direction is None:
-                return 0
+            if _post_direction is not None:
+                direction = _post_direction
+            else:
+                post_stmt = select(Post.direction).where(Post.post_id == item_id, Post.is_deleted == False)
+                post_res = await db.execute(post_stmt)
+                direction = post_res.scalar_one_or_none()
+                if direction is None:
+                    return 0
             valid_statuses = OrderService._post_accept_valid_statuses(direction)
         else:
             valid_statuses = [
@@ -232,6 +237,7 @@ class OrderService:
         db: AsyncSession,
         item_type: str,
         item_ids: list[int],
+        _direction_map: dict = None,
     ) -> dict[int, int]:
         """批量获取多个项目的接单数，避免在列表页逐条查询。"""
         unique_item_ids = [int(item_id) for item_id in dict.fromkeys(item_ids) if item_id is not None]
@@ -240,9 +246,12 @@ class OrderService:
 
         item_type_enum = OrderService._normalize_item_type(item_type)
         if item_type_enum == ItemType.POST:
-            post_stmt = select(Post.post_id, Post.direction).where(Post.post_id.in_(unique_item_ids), Post.is_deleted == False)
-            post_res = await db.execute(post_stmt)
-            direction_map = {int(post_id): direction for post_id, direction in post_res.all()}
+            if _direction_map is not None:
+                direction_map = _direction_map
+            else:
+                post_stmt = select(Post.post_id, Post.direction).where(Post.post_id.in_(unique_item_ids), Post.is_deleted == False)
+                post_res = await db.execute(post_stmt)
+                direction_map = {int(post_id): direction for post_id, direction in post_res.all()}
 
             results: dict[int, int] = {}
             buy_ids = [post_id for post_id, direction in direction_map.items() if direction == Direction.BUY]
@@ -296,6 +305,37 @@ class OrderService:
         )
         res = await db.execute(stmt)
         return {int(item_id): int(count or 0) for item_id, count in res.all()}
+    @staticmethod
+    async def get_pending_applicants_count_map(
+        db: AsyncSession,
+        item_ids: list[int],
+    ) -> dict[int, int]:
+        """Batch count PENDING applicants for multiple posts.
+        Single aggregated GROUP BY query, zero N+1 overhead.
+        Returns dict mapping post_id -> pending applicant count.
+        """
+        unique_ids = [int(iid) for iid in dict.fromkeys(item_ids) if iid is not None]
+        if not unique_ids:
+            return {}
+        pending_stmt = (
+            select(
+                Order.item_id,
+                func.count(Order.order_id).label("pending_cnt"),
+            )
+            .where(
+                Order.item_type == ItemType.POST,
+                Order.item_id.in_(unique_ids),
+                Order.status == OrderStatus.PENDING,
+                Order.is_deleted == False,
+            )
+            .group_by(Order.item_id)
+        )
+        pending_res = await db.execute(pending_stmt)
+        pending_map: dict[int, int] = {int(iid): 0 for iid in unique_ids}
+        for item_or_id, cnt in pending_res.all():
+            pending_map[int(item_or_id)] = int(cnt or 0)
+        return pending_map
+
 
     @staticmethod
     async def create_order(
@@ -322,6 +362,8 @@ class OrderService:
             if post.publisher_id == initiator_id:
                 raise BusinessHTTPException(code=settings.REQ_ERROR_CODE, msg="不能接自己的帖子")
 
+            if post.status == PostStatus.SUSPENDED:
+                raise BusinessHTTPException(code=settings.REQ_ERROR_CODE, msg="楼主已暂停招募新人")
             if post.status != PostStatus.OPEN:
                 raise BusinessHTTPException(code=settings.REQ_ERROR_CODE, msg="当前帖子状态不允许接单")
 
@@ -354,7 +396,7 @@ class OrderService:
             max_accepters = getattr(post, "max_accepters", 1)
 
             # 使用统一的接单数计算方法（DRY 原则）
-            curr = await OrderService.get_current_accepters_count(db, ItemType.POST.name, item_id)
+            curr = await OrderService.get_current_accepters_count(db, ItemType.POST.name, item_id, _post_direction=post.direction)
             if curr >= max_accepters:
                 raise BusinessHTTPException(code=settings.REQ_ERROR_CODE, msg="接单已满")
 
@@ -394,8 +436,10 @@ class OrderService:
                 raise BusinessHTTPException(code=settings.REQ_ERROR_CODE, msg="不能购买自己的商品")
 
             # 商品必须可用（未售出且未被显式锁定）
-            if goods.is_sold:
+            if goods.status == GoodsStatus.SOLD:
                 raise BusinessHTTPException(code=settings.REQ_ERROR_CODE, msg="商品已售出")
+            if goods.status != GoodsStatus.ON_SALE:
+                raise BusinessHTTPException(code=settings.REQ_ERROR_CODE, msg="商品当前不可购买")
 
             locked = False
             try:
@@ -421,6 +465,7 @@ class OrderService:
             td = dict(td)
             td["locked"] = True
             goods.template_data = td
+            goods.status = GoodsStatus.OFF_SHELF
 
             db.add(order)
             await db.flush()
@@ -809,24 +854,9 @@ class OrderService:
             raise BusinessHTTPException(code=settings.INSUFFICIENT_AUTHORITY_CODE, msg="只有发帖人可以同意接单")
 
         if order.trigger_type == OrderTriggerType.COLLECTIVE:
-            accepted_cnt = await OrderService.get_current_accepters_count(db, ItemType.POST.name, order.item_id)
-            if accepted_cnt >= getattr(post, "max_accepters", 1):
-                pending_stmt = (
-                    select(Order)
-                    .where(
-                        Order.item_type == ItemType.POST,
-                        Order.item_id == order.item_id,
-                        Order.is_deleted == False,
-                        Order.status == OrderStatus.PENDING,
-                    )
-                    .with_for_update()
-                )
-                pending_res = await db.execute(pending_stmt)
-                for pending_order in pending_res.scalars().all():
-                    pending_order.status = OrderStatus.ONGOING
-                post.status = PostStatus.IN_PROGRESS
-            else:
-                post.status = PostStatus.OPEN
+            # SELL direction: single-order approve only, no bulk cascade
+            # After individual approval, check if post is fully occupied
+            post.status = PostStatus.OPEN
         else:
             pending_stmt = (
                 select(Order)
@@ -847,6 +877,16 @@ class OrderService:
         order.status = OrderStatus.ONGOING
         order.accepted_time = get_now_naive()
         await db.flush()
+
+        # For SELL (COLLECTIVE): check if post is now fully occupied after individual approval
+        if order.trigger_type == OrderTriggerType.COLLECTIVE:
+            accepted_after = await OrderService.get_current_accepters_count(
+                db, ItemType.POST.name, order.item_id, _post_direction=post.direction
+            )
+            max_slots = getattr(post, "max_accepters", 1)
+            if accepted_after >= max_slots:
+                post.status = PostStatus.IN_PROGRESS
+
         await db.refresh(order)
         await db.commit()
         return order
@@ -883,6 +923,65 @@ class OrderService:
         return order
 
     @staticmethod
+    async def start_collective_fulfillment(db: AsyncSession, post_id: int, operator_id: int) -> int:
+        """SELL direction: publisher batch-starts fulfillment.
+        Atomically washes out remaining PENDING applicants.
+
+        Returns the count of PENDING orders rejected during pool cleaning.
+        """
+        post_stmt = (
+            select(Post)
+            .where(Post.post_id == post_id, Post.is_deleted == False)
+            .with_for_update()
+        )
+        post_res = await db.execute(post_stmt)
+        post = post_res.scalars().first()
+        if not post:
+            raise ResourceHTTPException(code=settings.DATA_GET_FAILED_CODE, msg="帖子不存在")
+        if post.publisher_id != operator_id:
+            raise BusinessHTTPException(code=settings.INSUFFICIENT_AUTHORITY_CODE, msg="只有发帖人可以启动履约")
+        if post.status not in {PostStatus.OPEN, PostStatus.IN_PROGRESS, PostStatus.SUSPENDED}:
+            raise BusinessHTTPException(code=settings.REQ_ERROR_CODE, msg="当前帖子状态不允许启动履约")
+        if post.direction != Direction.SELL:
+            raise BusinessHTTPException(code=settings.REQ_ERROR_CODE, msg="仅支持 SELL 方向帖子启动批量履约")
+
+        # 前置校验：必须有已录用的接单人，否则无法启动履约
+        curr_accepters = await OrderService.get_current_accepters_count(
+            db, ItemType.POST.name, post_id, _post_direction=post.direction
+        )
+        if curr_accepters == 0:
+            raise BusinessHTTPException(code=settings.REQ_ERROR_CODE, msg="当前没有已录用的接单人，无法启动履约")
+
+        # Atomicity: wrap post status change + raw SQL wash in single try/except
+        try:
+            post.status = PostStatus.IN_PROGRESS
+            reject_stmt = text(
+                """
+                UPDATE `order`
+                SET status = :rejected_status
+                WHERE item_type = :item_type
+                  AND item_id = :post_id
+                  AND is_deleted = :is_deleted_false
+                  AND status = :pending_status
+                """
+            ).bindparams(
+                rejected_status=OrderStatus.REJECTED.value,
+                item_type=ItemType.POST.value,
+                post_id=post_id,
+                is_deleted_false=False,
+                pending_status=OrderStatus.PENDING.value,
+            )
+            reject_res = await db.execute(reject_stmt)
+            washed_count = reject_res.rowcount
+        except Exception:
+            await db.rollback()
+            raise
+
+        await db.flush()
+        await db.commit()
+        return washed_count
+
+    @staticmethod
     async def complete_order(db: AsyncSession, order_id: int, operator_id: int) -> Order:
         """兼容旧入口：等同于买家确认验收。"""
 
@@ -890,18 +989,29 @@ class OrderService:
 
     @staticmethod
     async def cancel_order(db: AsyncSession, order_id: int, operator_id: int, redis_client=None) -> Order:
-        # 检查全局每日10次取消限制
-        if redis_client is not None:
-            cancel_key = f"user:global_cancel:count:{operator_id}"
-            cancel_count = await redis_client.get(cancel_key)
-            if cancel_count is not None and int(cancel_count) >= settings.GLOBAL_CANCEL_DAILY_LIMIT:
-                raise BusinessHTTPException(code=settings.REQ_ERROR_CODE, msg="您今日取消申请过于频繁，请明天再试")
-        
+        """取消订单，10分钟分水岭规则：<=10分钟为闪电退单（每日10次上限），>10分钟无限制放行。"""
         order = await OrderService._get_order_for_update(db, order_id)
         if order.status not in {OrderStatus.PENDING, OrderStatus.ONGOING, OrderStatus.CONFIRMED}:
             raise BusinessHTTPException(code=settings.REQ_ERROR_CODE, msg="该状态不允许取消订单")
         if operator_id not in {order.buyer_id, order.seller_id}:
             raise BusinessHTTPException(code=settings.INSUFFICIENT_AUTHORITY_CODE, msg="只有订单相关方可以取消订单")
+
+        # 10分钟分水岭：闪电退单限频检查
+        now = get_now_naive()
+        if order.create_time is not None:
+            duration_seconds = (now - order.create_time).total_seconds()
+        else:
+            duration_seconds = 999999
+
+        if redis_client is not None and duration_seconds <= settings.LIGHTNING_CANCEL_LIMIT_SECONDS:
+            today_str = now.strftime("%Y%m%d")
+            lightning_key = f"order:cancel:limit:{operator_id}:{today_str}"
+            current_count = await redis_client.get(lightning_key)
+            if current_count is not None and int(current_count) >= settings.LIGHTNING_CANCEL_DAILY_LIMIT:
+                raise BusinessHTTPException(
+                    code=settings.REQ_ERROR_CODE,
+                    msg=f"每日{settings.LIGHTNING_CANCEL_LIMIT_SECONDS // 60}分钟内闪电退单次数已达{settings.LIGHTNING_CANCEL_DAILY_LIMIT}次上限，请稍后再试或与对端私信沟通"
+                )
 
         order.status = OrderStatus.CANCELED
         if order.item_type == ItemType.POST:
@@ -927,25 +1037,18 @@ class OrderService:
                 locked.pop("locked", None)
                 goods.template_data = locked
 
-        if order.item_type == ItemType.POST and operator_id == order.initiator_id and redis_client is not None:
-            await OrderService._record_post_cancel(redis_client, operator_id, order.item_id)
-
-        # 成功取消后增加全局计数
-        if redis_client is not None:
-            cancel_key = f"user:global_cancel:count:{operator_id}"
-            await redis_client.incr(cancel_key)
-            # 首次增加时设置过期时间为今天午夜
-            ttl = await redis_client.ttl(cancel_key)
-            if ttl == -1:  # 新建的 key，还没有设置过期时间
-                from app.core.datetime_utils import get_now_naive
-                now = get_now_naive()
-                midnight = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
-                seconds_until_midnight = int((midnight - now).total_seconds())
-                await redis_client.expire(cancel_key, seconds_until_midnight)
+        # 闪电退单：累加Redis日期维度计数器并设置24h过期
+        if redis_client is not None and duration_seconds <= settings.LIGHTNING_CANCEL_LIMIT_SECONDS:
+            today_str = now.strftime("%Y%m%d")
+            lightning_key = f"order:cancel:limit:{operator_id}:{today_str}"
+            await redis_client.incr(lightning_key)
+            await redis_client.expire(lightning_key, 86400)
 
         await db.flush()
         await db.refresh(order)
         await db.commit()
+        return order
+
         return order
 
     @staticmethod
@@ -1067,6 +1170,7 @@ class OrderService:
                         td = dict(td)
                         td.pop("locked", None)
                         goods.template_data = td
+                    goods.status = GoodsStatus.ON_SALE
 
         await db.flush()
         await db.refresh(order)

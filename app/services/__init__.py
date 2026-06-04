@@ -13,6 +13,7 @@ from app.services.social_service import SocialService
 from app.services.metrics_service import MetricsService
 from app.services.reputation_service import ReputationService
 from app.services.goods_service import GoodsService
+from app.services.wechat_notification_service import WeChatNotificationService
 try:
     from app.services.sms_service import SMSService
 except ImportError:
@@ -33,4 +34,5 @@ __all__ = [
     "MetricsService",
     "ReputationService",
     "GoodsService",
+    "WeChatNotificationService",
 ]
