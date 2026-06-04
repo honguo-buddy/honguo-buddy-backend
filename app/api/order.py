@@ -2,14 +2,14 @@
 
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api import get_current_user
-from app.core import BusinessHTTPException, settings
+from app.core import BusinessHTTPException, get_now_naive, settings
 from app.db import get_db, get_redis
-from app.models import AttachmentTargetType, Goods, ItemType, Post
+from app.models import AttachmentTargetType, Goods, ItemType, Order, OrderStatus, Post
 from app.schemas import (
     OrderItemList,
     OrderList,
@@ -20,7 +20,7 @@ from app.schemas import (
     ResponseModel,
     UserRead,
 )
-from app.services import AttachmentService, OrderReviewService, OrderService
+from app.services import AttachmentService, OrderReviewService, OrderService, WeChatNotificationService
 
 router = APIRouter()
 
@@ -78,8 +78,7 @@ async def list_my_orders(
     ]
     if post_order_ids:
         post_ids = list({pid for _, pid in post_order_ids})
-        from sqlalchemy import select as sa_select
-        bulletin_stmt = sa_select(Post.post_id, Post.template_data).where(
+        bulletin_stmt = select(Post.post_id, Post.template_data).where(
             Post.post_id.in_(post_ids), Post.is_deleted == False
         )
         bulletin_res = await db.execute(bulletin_stmt)
@@ -117,8 +116,7 @@ async def list_orders_by_item(
     ]
     if post_order_ids:
         post_ids = list({pid for _, pid in post_order_ids})
-        from sqlalchemy import select as sa_select
-        bulletin_stmt = sa_select(Post.post_id, Post.template_data).where(
+        bulletin_stmt = select(Post.post_id, Post.template_data).where(
             Post.post_id.in_(post_ids), Post.is_deleted == False
         )
         bulletin_res = await db.execute(bulletin_stmt)
@@ -148,8 +146,7 @@ async def get_order_detail(
     raw = OrderService._serialize_order(order)
     # 从 Post.template_data 提取公告反哺到订单详情
     if str(order.item_type.value if hasattr(order.item_type, "value") else order.item_type).upper() == "POST":
-        from sqlalchemy import select as sa_select
-        bulletin_stmt = sa_select(Post.template_data).where(Post.post_id == order.item_id, Post.is_deleted == False)
+        bulletin_stmt = select(Post.template_data).where(Post.post_id == order.item_id, Post.is_deleted == False)
         bulletin_res = await db.execute(bulletin_stmt)
         td = bulletin_res.scalar_one_or_none()
         raw["bulletin"] = (td or {}).get("bulletin", "") if isinstance(td, dict) else ""
@@ -159,20 +156,48 @@ async def get_order_detail(
 @router.post("/{order_id}/approve", response_model=ResponseModel[OrderRead])
 async def approve_order(
     order_id: int,
+    background_tasks: BackgroundTasks,
     current_user: UserRead = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    redis_client = Depends(get_redis),
 ):
+    """同意录用申请，异步通知买家。"""
     order = await OrderService.approve_order(db, order_id, current_user.user_id)
+
+    # 钩子 B：异步通知买家已被录用
+    if order.item_type == ItemType.POST:
+        post_res = await db.execute(select(Post).where(Post.post_id == order.item_id, Post.is_deleted == False))
+        post = post_res.scalar_one_or_none()
+        if post:
+            background_tasks.add_task(
+                WeChatNotificationService.notify_approved,
+                db, redis_client, order, post.title or "",
+            )
+
     return ResponseModel(code=settings.SUCCESS_CODE, message=_order_to_read(order))
 
 
 @router.post("/{order_id}/reject", response_model=ResponseModel[OrderRead])
 async def reject_order(
     order_id: int,
+    background_tasks: BackgroundTasks,
     current_user: UserRead = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    redis_client = Depends(get_redis),
 ):
+    """拒绝申请，异步通知买家。"""
     order = await OrderService.reject_order(db, order_id, current_user.user_id)
+
+    # 钩子 C：异步通知买家已被拒绝
+    if order.item_type == ItemType.POST:
+        post_res = await db.execute(select(Post).where(Post.post_id == order.item_id, Post.is_deleted == False))
+        post = post_res.scalar_one_or_none()
+        if post:
+            background_tasks.add_task(
+                WeChatNotificationService.notify_rejected,
+                db, redis_client, order, post.title or "",
+            )
+
     return ResponseModel(code=settings.SUCCESS_CODE, message=_order_to_read(order))
 
 
@@ -182,12 +207,33 @@ async def reject_order(
 @router.post("/posts/{post_id}/start", response_model=ResponseModel[dict])
 async def start_post_fulfillment(
     post_id: int,
+    background_tasks: BackgroundTasks,
     current_user: UserRead = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
+    redis_client = Depends(get_redis),
 ):
     """SELL direction: publisher batch-starts fulfillment, auto-rejects remaining PENDING applicants."""
     try:
         washed_count = await OrderService.start_collective_fulfillment(db, post_id, current_user.user_id)
+
+        # 钩子 F：批量加载 openid 后扇出通知所有 ONGOING 买家
+        post_res = await db.execute(select(Post).where(Post.post_id == post_id, Post.is_deleted == False))
+        post = post_res.scalar_one_or_none()
+        if post:
+            ongoing_stmt = select(Order.buyer_id).where(
+                Order.item_type == ItemType.POST,
+                Order.item_id == post_id,
+                Order.is_deleted == False,
+                Order.status == OrderStatus.ONGOING,
+            )
+            ongoing_res = await db.execute(ongoing_stmt)
+            buyer_ids = [row[0] for row in ongoing_res.all()]
+            if buyer_ids:
+                background_tasks.add_task(
+                    WeChatNotificationService.notify_batch_start_collective,
+                    db, redis_client, buyer_ids, post.title or "",
+                )
+
         return ResponseModel(
             code=settings.SUCCESS_CODE,
             message={"washed_rejected_count": washed_count},
@@ -274,11 +320,32 @@ async def list_order_reviews(
 @router.post("/{order_id}/submit-delivery", response_model=ResponseModel[OrderRead])
 async def submit_delivery(
     order_id: int,
+    background_tasks: BackgroundTasks,
     current_user: UserRead = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
     redis_client = Depends(get_redis),
 ):
+    """提交已交付，异步通知买家验收。"""
     order = await OrderService.submit_delivery(db, order_id, current_user.user_id, redis_client=redis_client)
+
+    # 钩子 D：异步通知买家服务已送达
+    if order.item_type == ItemType.POST:
+        post_res = await db.execute(select(Post).where(Post.post_id == order.item_id, Post.is_deleted == False))
+        post = post_res.scalar_one_or_none()
+        if post:
+            background_tasks.add_task(
+                WeChatNotificationService.notify_delivery,
+                db, redis_client, order, post.title or "",
+            )
+    elif order.item_type == ItemType.GOODS:
+        goods_res = await db.execute(select(Goods.title).where(Goods.goods_id == order.item_id, Goods.is_deleted == False))
+        goods_title = goods_res.scalar_one_or_none()
+        if goods_title:
+            background_tasks.add_task(
+                WeChatNotificationService.notify_goods_delivered,
+                db, redis_client, order, goods_title,
+            )
+
     return ResponseModel(code=settings.SUCCESS_CODE, message=_order_to_read(order))
 
 
@@ -310,12 +377,12 @@ async def complete_order(
 @router.post("/{order_id}/cancel", response_model=ResponseModel[OrderRead])
 async def cancel_order(
     order_id: int,
+    background_tasks: BackgroundTasks,
     current_user: UserRead = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
     redis_client = Depends(get_redis),
 ):
     """取消订单：settings.LIGHTNING_CANCEL_LIMIT_SECONDS//60分钟内为闪电退单，超时无限制放行。"""
-    from app.core.datetime_utils import get_now_naive
 
     limit_minutes = settings.LIGHTNING_CANCEL_LIMIT_SECONDS // 60
     limit_count = settings.LIGHTNING_CANCEL_DAILY_LIMIT
@@ -346,5 +413,25 @@ async def cancel_order(
         else:
             result["rest_cancel_times"] = limit_count
             result["cancel_message"] = "无闪电退单限制，可直接取消"
+
+    # 钩子 E：异步通知被动取消的对端
+    if order.item_type == ItemType.POST:
+        target_user_id = order.seller_id if current_user.user_id == order.buyer_id else order.buyer_id
+        post_res = await db.execute(select(Post).where(Post.post_id == order.item_id, Post.is_deleted == False))
+        post = post_res.scalar_one_or_none()
+        if post:
+            background_tasks.add_task(
+                WeChatNotificationService.notify_cancelled,
+                db, redis_client, order, post.title or "", target_user_id,
+            )
+    elif order.item_type == ItemType.GOODS:
+        target_user_id = order.seller_id if current_user.user_id == order.buyer_id else order.buyer_id
+        goods_res = await db.execute(select(Goods.title).where(Goods.goods_id == order.item_id, Goods.is_deleted == False))
+        goods_title = goods_res.scalar_one_or_none()
+        if goods_title:
+            background_tasks.add_task(
+                WeChatNotificationService.notify_goods_cancelled,
+                db, redis_client, order, goods_title, target_user_id,
+            )
 
     return ResponseModel(code=settings.SUCCESS_CODE, message=OrderRead.model_validate(result))

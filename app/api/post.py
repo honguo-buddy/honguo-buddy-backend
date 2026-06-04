@@ -12,13 +12,13 @@
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from app.api import get_current_user, get_current_user_optional
-from app.core import AuthHTTPException, BusinessHTTPException, ResourceHTTPException, settings
+from app.core import AuthHTTPException, BusinessHTTPException, ResourceHTTPException, get_now_naive, settings
 from app.db import get_db, get_redis, redis
 from app.schemas import (
     FavoriteRequest,
@@ -39,7 +39,7 @@ from app.schemas import (
     ResponseModel,
     UserRead,
 )
-from app.services import MetricsService, PostService, OrderService, SocialService
+from app.services import MetricsService, PostService, OrderService, SocialService, WeChatNotificationService
 from app.models import Comment, Post, PostStatus, TargetType, User
 
 logger = logging.getLogger(__name__)
@@ -577,6 +577,7 @@ async def get_post_detail(
 @router.post("/{post_id}/accept", response_model=ResponseModel)
 async def accept_post(
     post_id: int,
+    background_tasks: BackgroundTasks,
     current_user: UserRead = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
     redis_client = Depends(get_redis),
@@ -613,6 +614,14 @@ async def accept_post(
             accept_msg = "接单申请递交成功，等待发帖人审批"
         else:
             accept_msg = "已成功加入沟通池，火速去和帖主私信聊聊吧"
+
+        # 钩子 A：异步通知发帖人收到新申请
+        post_title = post.title or ""
+        applicant_name = current_user.user_name or "匿名用户"
+        background_tasks.add_task(
+            WeChatNotificationService.notify_new_application,
+            db, redis_client, order, post_title, applicant_name,
+        )
 
         return ResponseModel(
             code=settings.SUCCESS_CODE,

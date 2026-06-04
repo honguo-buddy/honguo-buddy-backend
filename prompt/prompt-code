@@ -601,3 +601,27 @@ OrderService.approve_order 和 reject_order 需要校验 post.publisher_id。
 【问题】Post 模型中 max_accepters 被定义为 @property（从 template_data 安全读取），并非 SQLAlchemy Column。在集成测试中直接通过 Post(..., max_accepters=10) 构造对象时，SQLAlchemy 底层 setattr 因该属性无 setter 而抛出 AttributeError: property 'max_accepters' of 'Post' object has no setter。
 
 【解决】所有涉及 Post 对象构造的代码（含测试 fixture），必须通过 template_data={"max_accepters": N} 间接写入最大接单数。读取时则始终通过 post.max_accepters 属性安全访问。铁律：遇到 ORM 模型的 @property 装饰字段，必须在构造时追溯其底层存储路径，严禁想当然直接赋值。
+
+四十六、 三方异步通知服务必须强制执行独立解耦，严禁堵塞核心业务事务 (Decoupled Notification Service via BackgroundTasks)
+
+【问题】微信订阅消息、短信、邮件等所有依赖外部网络抖动的第三方通知若直接嵌入核心路由或Service逻辑中，会因三方API超时/熔断导致主接口响应延迟飙升，甚至污染订单状态事务的原子性。
+
+【解决】1) 全量封装独立的 WeChatNotificationService，统一管理 access_token 的 Redis 自愈缓存（TTL 6600s）、参数字数强制清洗（phrase<=5字、thing<=20字截断）；2) 上游核心API路由仅通过 FastAPI 的 BackgroundTasks.add_task() 单行托管投递，确保主事务 commit 后接口 0 延迟返回；3) 所有微信模板 ID、网关 URL 统一收敛至 config.py，禁止散落硬编码。铁律：任何第三方通知绝不越过 BackgroundTasks 直接在主线程同步发送。
+
+四十七、 高并发声誉计算严禁物理表级实时聚合，必须采用 Redis-ZSET 滚动窗口裁剪 (Redis ZSET Rolling Window for Credit Score)
+
+【问题】信用分计算若在每次读/写时直接对 MySQL 执行 COUNT/SUM 聚合，高并发大厅场景下会引发严重的行锁竞争与慢查询堆积。
+
+【解决】1) 为每个用户建立 user:credit:rolling:{uid} ZSET，以 Unix 时间戳为 Score、delta:event:ref_id 为 Member；2) 每次事件通过 ZREMRANGEBYSCORE 裁剪30天前过期记录，在内存中秒级累加算分；3) 最终分值 = min(100, max(0, 60 + total_delta))；4) 分值同步回写 user:profile:cache:{uid} Hash 字典的 credit_score 字段，供大厅 0 DB I/O 秒开读取。CreditService 作为独立服务封装全部读写逻辑。
+
+四十八、 微信订阅消息 phrase 短语凭证清洗必须死锁 5 字符物理极限 (Phrase Sanitization Hard 5-char Limit)
+
+【问题】_sanitize_phrase 原实现使用 value[:4] + "..." 拼接后实际长度为 7 字符，超过微信 phrase 参数硬性 5 字限制，直接触发 47003 参数非法错误导致消息发送全线退单。
+
+【解决】强制修改为 value[:3] + ".."，确保截断后总长度绝对等于且不超过 5 个字符。thing 类型同步复核：value[:17] + "..."，总长度 = 20。
+
+四十九、 严禁在异步高频循环内部重复生灭 HTTP 客户端，必须强制复用长连接池 (HTTP Client Connection Pool Reuse)
+
+【问题】微信通知服务的 _get_access_token 与 send_subscribe_message 内部分别使用 async with httpx.AsyncClient() 创建短连接，每次调用即生即灭。高并发批量通知场景下操作系统 TCP 端口被 TIME_WAIT 填满，引发套接字耗尽假死。
+
+【解决】1) 在模块级别定义 _httpx_client: Optional[httpx.AsyncClient] 全局连接池句柄；2) 通过 _get_httpx_client() 懒初始化并全局复用；3) 所有 HTTP 调用统一走此长连接池。铁律：任何需要复用 HTTP 的服务模块，必须在模块级维护单例连接池，严禁在方法体内反复构造销毁 AsyncClient。
