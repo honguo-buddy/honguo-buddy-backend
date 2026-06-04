@@ -2,12 +2,14 @@
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import select
 
 from app.api import get_current_user, get_current_user_optional
-from app.core import settings, ResourceHTTPException, AuthHTTPException
+from app.core import BusinessHTTPException, settings, ResourceHTTPException, AuthHTTPException
 from app.db import get_db, get_redis
+from app.models import Goods, ItemType
 from app.schemas import (
     ResponseModel,
     GoodsCreate,
@@ -17,7 +19,7 @@ from app.schemas import (
     GoodsListResponse,
     UserRead,
 )
-from app.services import GoodsService, MetricsService, SocialService
+from app.services import GoodsService, MetricsService, OrderService, SocialService, WeChatNotificationService
 
 logger = logging.getLogger(__name__)
 
@@ -170,6 +172,69 @@ async def get_goods_detail(
 
     return ResponseModel(code=settings.SUCCESS_CODE, message=GoodsDetailRead.model_validate(goods_dict))
 
+
+@router.post("/{goods_id}/buy", response_model=ResponseModel[dict])
+async def buy_goods(
+    goods_id: int,
+    background_tasks: BackgroundTasks,
+    current_user: UserRead = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    redis_client = Depends(get_redis),
+):
+    """快捷下单：锁定商品并创建 ONGOING 订单，异步通知卖家。"""
+    order = await OrderService.create_order(
+        db,
+        item_type="GOODS",
+        item_id=goods_id,
+        initiator_id=current_user.user_id,
+        redis_client=redis_client,
+    )
+
+    # 获取商品名称用于通知
+    g_stmt = select(Goods.name, Goods.publisher_id).where(Goods.goods_id == goods_id)
+    g_res = await db.execute(g_stmt)
+    g_row = g_res.first()
+    goods_name = g_row.name if g_row else ""
+    goods_publisher = g_row.publisher_id if g_row else 0
+    if goods_publisher and (goods_publisher != current_user.user_id):
+        background_tasks.add_task(
+            WeChatNotificationService.notify_goods_purchased,
+            db, redis_client, order, goods_name or "", current_user.user_name or "匿名用户",
+        )
+
+    return ResponseModel(code=settings.SUCCESS_CODE, message={
+        "order_id": order.order_id,
+        "goods_id": goods_id,
+        "status": order.status.value,
+    })
+
+
+@router.post("/{goods_id}/delist", response_model=ResponseModel[dict])
+async def delist_goods(
+    goods_id: int,
+    current_user: UserRead = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """卖家下架商品：ON_SALE → OFF_SHELF。"""
+    goods = await GoodsService.delist_goods(db, goods_id, current_user.user_id)
+    return ResponseModel(code=settings.SUCCESS_CODE, message={
+        "goods_id": goods_id,
+        "status": goods.status.value,
+    })
+
+
+@router.post("/{goods_id}/relist", response_model=ResponseModel[dict])
+async def relist_goods(
+    goods_id: int,
+    current_user: UserRead = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """卖家重新上架商品：OFF_SHELF → ON_SALE。"""
+    goods = await GoodsService.relist_goods(db, goods_id, current_user.user_id)
+    return ResponseModel(code=settings.SUCCESS_CODE, message={
+        "goods_id": goods_id,
+        "status": goods.status.value,
+    })
 
 @router.patch("/{goods_id}", response_model=ResponseModel[GoodsRead])
 async def update_goods(

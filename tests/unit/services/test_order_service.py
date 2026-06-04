@@ -8,7 +8,7 @@ import pytest
 
 from app.core import settings
 from app.core.exception_handler import BusinessHTTPException, ResourceHTTPException
-from app.models import Direction, Goods, ItemType, Order, OrderStatus, OrderTriggerType, Post, PostStatus, User
+from app.models import Direction, Goods, GoodsStatus, ItemType, Order, OrderStatus, OrderTriggerType, Post, PostStatus, User
 from app.services.order_service import OrderService
 from tests.unit.fake_sqlalchemy import AsyncContextManager, FakeResult
 
@@ -44,7 +44,7 @@ def build_goods(**overrides):
     payload = {
         "goods_id": 4001,
         "publisher_id": 5001,
-        "is_sold": False,
+        "status": GoodsStatus.ON_SALE,
         "template_data": {},
     }
     payload.update(overrides)
@@ -94,7 +94,7 @@ async def test_helper_functions_cover_multiple_branches():
     assert order_dict["status"] == "PENDING"
     assert order_dict["accepted_time"] is None
     assert post.status == PostStatus.CLOSED
-    assert goods.is_sold is True
+    assert goods.status == GoodsStatus.SOLD
     assert goods.template_data == {}
 
     with pytest.raises(BusinessHTTPException):
@@ -195,7 +195,7 @@ async def test_create_order_goods_branches():
         await OrderService.create_order(db, "GOODS", 4001, 1001)
     assert "不能购买自己的商品" in own_err.value.detail["msg"]
 
-    db = build_db(execute_side_effect=[FakeResult(items=[build_goods(is_sold=True)])])
+    db = build_db(execute_side_effect=[FakeResult(items=[build_goods(status=GoodsStatus.SOLD)])])
     with pytest.raises(BusinessHTTPException) as sold_err:
         await OrderService.create_order(db, "GOODS", 4001, 1002)
     assert "商品已售出" in sold_err.value.detail["msg"]
@@ -878,7 +878,7 @@ async def test_force_complete_and_accept_delivery_goods_branch(monkeypatch):
 
     completed = await OrderService.accept_delivery(FakeDB(goods_order), goods_order.order_id, goods_order.buyer_id)
     assert completed.status == OrderStatus.COMPLETED
-    assert goods.is_sold is True
+    assert goods.status == GoodsStatus.SOLD
     assert goods.template_data == {}
 
     pending_order = build_order(status=OrderStatus.PENDING)
@@ -973,7 +973,7 @@ async def test_submit_delivery_and_auto_confirm_single_order_paths(monkeypatch):
     monkeypatch.setattr(OrderService, "_get_order_for_update", AsyncMock(return_value=goods_order))
     assert await OrderService.auto_confirm_overdue_order_by_id(goods_db, goods_order.order_id) is True
     assert goods_order.status == OrderStatus.COMPLETED
-    assert goods.is_sold is True
+    assert goods.status == GoodsStatus.SOLD
     assert goods.template_data == {}
 
 
@@ -1021,7 +1021,7 @@ async def test_update_status_history_and_completion_hooks(monkeypatch):
     monkeypatch.setattr(OrderService, "_add_credit", AsyncMock(return_value=None))
     completed = await OrderService.update_status(FakeDB(completed_order, extra_results=[FakeResult(items=[goods_two])]), completed_order.order_id, "COMPLETED", operator_id=7001)
     assert completed.status == OrderStatus.COMPLETED
-    assert goods_two.is_sold is True
+    assert goods_two.status == GoodsStatus.SOLD
     assert completed.meta_data["history"]
 
 

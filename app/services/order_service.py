@@ -12,7 +12,7 @@ from sqlalchemy.orm import aliased, selectinload
 
 from app.core import BusinessHTTPException, ResourceHTTPException, get_now, get_now_naive, parse_datetime_to_beijing_naive, settings
 from app.core.delay_queue import ORDER_AUTO_CONFIRM_QUEUE_KEY, enqueue_delayed_task
-from app.models import CreditLog, Direction, Goods, ItemType, Order, OrderStatus, OrderTriggerType, Post, PostStatus, User
+from app.models import CreditLog, Direction, Goods, GoodsStatus, ItemType, Order, OrderStatus, OrderTriggerType, Post, PostStatus, User
 
 logger = logging.getLogger(__name__)
 
@@ -134,7 +134,7 @@ class OrderService:
         if post is not None:
             post.status = PostStatus.CLOSED
         if goods is not None:
-            goods.is_sold = True
+            goods.status = GoodsStatus.SOLD
             td = goods.template_data or {}
             if isinstance(td, dict) and td.get("locked"):
                 td = dict(td)
@@ -436,8 +436,10 @@ class OrderService:
                 raise BusinessHTTPException(code=settings.REQ_ERROR_CODE, msg="不能购买自己的商品")
 
             # 商品必须可用（未售出且未被显式锁定）
-            if goods.is_sold:
+            if goods.status == GoodsStatus.SOLD:
                 raise BusinessHTTPException(code=settings.REQ_ERROR_CODE, msg="商品已售出")
+            if goods.status != GoodsStatus.ON_SALE:
+                raise BusinessHTTPException(code=settings.REQ_ERROR_CODE, msg="商品当前不可购买")
 
             locked = False
             try:
@@ -463,6 +465,7 @@ class OrderService:
             td = dict(td)
             td["locked"] = True
             goods.template_data = td
+            goods.status = GoodsStatus.OFF_SHELF
 
             db.add(order)
             await db.flush()
@@ -1167,6 +1170,7 @@ class OrderService:
                         td = dict(td)
                         td.pop("locked", None)
                         goods.template_data = td
+                    goods.status = GoodsStatus.ON_SALE
 
         await db.flush()
         await db.refresh(order)

@@ -355,7 +355,10 @@ async def accept_delivery(
     current_user: UserRead = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    """买家确认验收完成订单。GOODS 订单完成后自动将商品标记为已售出。"""
     order = await OrderService.accept_delivery(db, order_id, current_user.user_id)
+
+
     return ResponseModel(code=settings.SUCCESS_CODE, message=_order_to_read(order))
 
 
@@ -371,6 +374,8 @@ async def complete_order(
         order = await OrderService.force_complete_order_by_admin(db, order_id, current_user.user_id)
     else:
         order = await OrderService.accept_delivery(db, order_id, current_user.user_id)
+
+
     return ResponseModel(code=settings.SUCCESS_CODE, message=_order_to_read(order))
 
 

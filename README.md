@@ -2936,6 +2936,109 @@ LIMIT :size
 - code: 102 - 非发布者无权删除。
 - code: 103 - 商品不存在。
 
+#### 4.9.7 快捷下单购买商品 (POST: /goods/{goods_id}/buy)
+
+用途：买家一键下单购买商品。商品立即从「上架中」变更为「已下架」，同步创建 ONGOING 订单，并异步推送微信通知至卖家。
+
+请求头：Authorization: Bearer <token>（必须登录）
+
+请求示例：
+
+```
+POST /goods/5001/buy
+```
+
+（无需请求体）
+
+成功响应：
+
+```json
+{
+    "code": 0,
+    "message": {
+        "order_id": 8001,
+        "goods_id": 5001,
+        "status": "进行中"
+    }
+}
+```
+
+常见错误：
+
+- code: 99  - 不能购买自己发布的商品 / 商品当前不可购买 / 商品已售出 / 商品已被锁定
+- code: 103 - 商品不存在或已删除
+- code: 105 - Token 无效
+
+---
+
+#### 4.9.8 卖家下架商品 (POST: /goods/{goods_id}/delist)
+
+用途：卖家主动下架商品（ON_SALE → OFF_SHELF），下架后大厅不再展示。仅商品发布者可操作。
+
+请求头：Authorization: Bearer <token>（必须登录）
+
+请求示例：
+
+```
+POST /goods/5001/delist
+```
+
+（无需请求体）
+
+成功响应：
+
+```json
+{
+    "code": 0,
+    "message": {
+        "goods_id": 5001,
+        "status": "已下架"
+    }
+}
+```
+
+常见错误：
+
+- code: 99  - 仅上架中商品可下架
+- code: 102 - 仅商品发布者可操作
+- code: 103 - 商品不存在或已删除
+- code: 105 - Token 无效
+
+---
+
+#### 4.9.9 卖家重新上架商品 (POST: /goods/{goods_id}/relist)
+
+用途：卖家将已下架商品重新上架（OFF_SHELF → ON_SALE），恢复大厅曝光。仅商品发布者可操作。
+
+请求头：Authorization: Bearer <token>（必须登录）
+
+请求示例：
+
+```
+POST /goods/5001/relist
+```
+
+（无需请求体）
+
+成功响应：
+
+```json
+{
+    "code": 0,
+    "message": {
+        "goods_id": 5001,
+        "status": "上架中"
+    }
+}
+```
+
+常见错误：
+
+- code: 99  - 仅已下架商品可重新上架
+- code: 102 - 仅商品发布者可操作
+- code: 103 - 商品不存在或已删除
+- code: 105 - Token 无效
+
 ---
 
 文件位置：评论接口位于 `app/api/comment.py`、`app/services/comment_service.py` 与 `app/schemas/comment.py`；聊天接口位于 `app/api/chat.py`、`app/services/chat_service.py` 与 `app/schemas/chat.py`；商品接口位于 `app/api/goods.py`、`app/services/goods_service.py` 与 `app/schemas/goods.py`。文档和实现保持一致。
