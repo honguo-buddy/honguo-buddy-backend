@@ -1049,8 +1049,6 @@ class OrderService:
         await db.commit()
         return order
 
-        return order
-
     @staticmethod
     async def update_status(db: AsyncSession, order_id: int, new_status: str, operator_id: int) -> Order:
         """状态机引擎：校验并执行状态迁移。
@@ -1144,7 +1142,7 @@ class OrderService:
                 await OrderService._add_credit(db, order.seller_id, settings.ORDER_COMPLETE_CREDIT, f"订单完成，order_id={order.order_id}")
             except Exception as e:
                 # 积分失败不应该阻断主流程，记录日志供人工/异步补偿
-                logger.error(f"Credit sync failed for order {order.order_id} seller {order.seller_id}: {e}")
+                logger.error(f"Credit sync failed for order {order.order_id} seller {order.seller_id}: {e}", exc_info=True)
 
             # 2) 统一收尾状态
             post = None

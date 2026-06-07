@@ -118,15 +118,15 @@ class CommentService:
         if current_target_type == "POST":
             try:
                 await MetricsService.incr_post_comment(app_redis, new_comment.target_id, delta=1)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("Swallowed exception in comment_service: %s", e, exc_info=True)
                 
         elif current_target_type == "GOODS":
             try:
                 # 精准轰击商品专属的评论自增引擎，彻底打通集市计数闭环！
                 await MetricsService.incr_goods_comment(app_redis, new_comment.target_id, delta=1)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("Swallowed exception in comment_service: %s", e, exc_info=True)
         
         return new_comment
 
@@ -174,8 +174,8 @@ class CommentService:
         if getattr(comment.target_type, 'value', comment.target_type) == "POST":
             try:
                 await MetricsService.incr_post_comment(app_redis, comment.target_id, delta=-1)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("Swallowed exception in comment_service: %s", e, exc_info=True)
         
         # 如果有子回复，需要清洗它们的内容以保持树状结构完整
         # 但不删除子回复记录本身

@@ -4,7 +4,7 @@ from typing import Optional, List, Tuple, Any
 
 from sqlalchemy import select, func, update, and_
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
+from sqlalchemy.orm import noload, selectinload
 from app.core import AuthHTTPException, BusinessHTTPException, ResourceHTTPException, settings
 from app.models.goods import Goods, GoodsStatus, GoodsCondition
 from app.models.attachment import Attachment
@@ -66,8 +66,8 @@ class GoodsService:
         stmt = (
             select(Goods)
             .where(Goods.goods_id == goods_id, Goods.is_deleted == False)
-            # 只 selectinload 真实存在的物理关系链，不碰未定义的 avatar
-            .options(selectinload(Goods.user), selectinload(Goods.attachments))
+            # 只 selectinload 必需的关系链，noload comments 防止联动加载评论
+            .options(selectinload(Goods.user), selectinload(Goods.attachments), noload(Goods.comments))
         )
         res = await db.execute(stmt)
         goods = res.scalar_one_or_none()
@@ -101,7 +101,7 @@ class GoodsService:
         total = int(count_res.scalar_one() or 0)
 
         stmt = (
-            stmt.options(selectinload(Goods.user), selectinload(Goods.attachments))
+            stmt.options(selectinload(Goods.user), selectinload(Goods.attachments), noload(Goods.comments))
             .order_by(Goods.create_time.desc())
             .offset((page - 1) * page_size)
             .limit(page_size)
@@ -125,7 +125,7 @@ class GoodsService:
         total = int(count_res.scalar_one() or 0)
 
         stmt = (
-            stmt.options(selectinload(Goods.user), selectinload(Goods.attachments))
+            stmt.options(selectinload(Goods.user), selectinload(Goods.attachments), noload(Goods.comments))
             .order_by(Goods.create_time.desc())
             .offset((page - 1) * page_size)
             .limit(page_size)

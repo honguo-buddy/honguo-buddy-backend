@@ -88,7 +88,6 @@ class TestGoodsDetailRead:
         )
         assert obj.goods_id == 1
         assert obj.description is None
-        assert obj.comments == []
 
 
 class TestGoodsListResponse:

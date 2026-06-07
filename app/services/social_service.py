@@ -1,3 +1,4 @@
+import logging
 import time
 
 from fastapi import BackgroundTasks
@@ -8,6 +9,8 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+
+logger = logging.getLogger(__name__)
 from app.services.order_service import OrderService
 from app.services.metrics_service import MetricsService
 from app.core import BusinessHTTPException, ResourceHTTPException, settings
@@ -254,8 +257,8 @@ class SocialService:
                     await MetricsService.incr_post_favorite(redis, target_id, delta=-1)
                 else:
                     await MetricsService.incr_goods_favorite(redis, target_id, delta=-1)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("Swallowed exception in social_service: %s", e, exc_info=True)
             return {
                 "target_type": normalized_target.value,
                 "target_id": target_id,
@@ -284,8 +287,8 @@ class SocialService:
                 await MetricsService.incr_post_favorite(redis, target_id, delta=1)
             else:
                 await MetricsService.incr_goods_favorite(redis, target_id, delta=1)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("Swallowed exception in social_service: %s", e, exc_info=True)
 
         return {
             "target_type": normalized_target.value,

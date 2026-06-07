@@ -15,7 +15,6 @@ from typing import Optional
 from fastapi import APIRouter, BackgroundTasks, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
-from sqlalchemy.orm import selectinload
 
 from app.api import get_current_user, get_current_user_optional
 from app.core import AuthHTTPException, BusinessHTTPException, ResourceHTTPException, get_now_naive, settings
@@ -40,7 +39,7 @@ from app.schemas import (
     UserRead,
 )
 from app.services import MetricsService, PostService, OrderService, SocialService, WeChatNotificationService
-from app.models import Comment, Post, PostStatus, TargetType, User
+from app.models import Post, PostStatus, User
 
 logger = logging.getLogger(__name__)
 
@@ -129,7 +128,7 @@ async def publish_post(
             message=_build_post_read(post, current_accepters),
         )
     except Exception as e:
-        logger.error(f"发布帖子失败 user_id={current_user.user_id}: {e}")
+        logger.error(f"发布帖子失败 user_id={current_user.user_id}: {e}", exc_info=True)
         raise BusinessHTTPException(
             code=settings.REQ_ERROR_CODE,
             msg="发布帖子失败，请稍后重试",
@@ -212,7 +211,7 @@ async def list_posts(
             ),
         )
     except Exception as e:
-        logger.error(f"获取任务列表失败: {e}")
+        logger.error(f"获取任务列表失败: {e}", exc_info=True)
         raise BusinessHTTPException(
             code=settings.DATA_GET_FAILED_CODE,
             msg="获取任务列表失败",
@@ -479,12 +478,10 @@ async def get_post_detail(
     post_id: int,
     db: AsyncSession = Depends(get_db),
     current_user: Optional[UserRead] = Depends(get_current_user_optional),
-    comments_limit: int = Query(5, ge=0, le=100, description="返回的评论条数，0 表示不返回（建议使用独立分页接口）"),
     redis_client = Depends(get_redis),
 ):
     """
-    获取任务详情（仅返回前 N 条评论以避免内存压力）。
-    建议：更大数据量场景下使用独立的评论分页接口或在前端逐页加载。
+    获取任务详情。评论列表请使用独立接口 GET /comments/{target_type}/{target_id} 分页拉取。
     """
     try:
         post = await PostService.get_post_detail(db, post_id)
@@ -499,35 +496,6 @@ async def get_post_detail(
         )
         applicant_count = (await OrderService.get_pending_applicants_count_map(db, [post_id])).get(post_id, 0)
         attachment_urls = [att.url for att in (post.attachments or []) if not att.is_deleted]
-
-        # 构建评论列表（仅查询前 N 条热评，按时间倒序）
-        comments = []
-        if comments_limit > 0:
-            comments_stmt = (
-                select(Comment)
-                .where(
-                    Comment.target_type == TargetType.POST,
-                    Comment.target_id == post_id,
-                    Comment.is_deleted == False,
-                )
-                .options(selectinload(Comment.user).selectinload(User.avatar_attachment))
-                .order_by(Comment.create_time.desc())
-                .limit(comments_limit)
-            )
-            res = await db.execute(comments_stmt)
-            comment_rows = res.scalars().all()
-            for comment in comment_rows:
-                user = comment.user
-                avatar = None
-                if user and getattr(user, "avatar_attachment", None):
-                    avatar = user.avatar_attachment.url
-                comments.append({
-                    "id": comment.comment_id,
-                    "username": user.user_name if user else "匿名",
-                    "avatar": avatar,
-                    "content": comment.content,
-                    "time": comment.create_time.isoformat() if comment.create_time else "",
-                })
 
         # 发布者脱敏处理（使用 UserRead）
         publisher_public = UserRead.model_validate(post.user) if post.user else None
@@ -549,7 +517,6 @@ async def get_post_detail(
             create_time=post.create_time.isoformat() if post.create_time else "",
             status=post.status.value if post.status else None,
             attachment_urls=attachment_urls,
-            comments=comments,
         )
 
         if current_user:
@@ -570,7 +537,7 @@ async def get_post_detail(
             message=hydrated_detail,
         )
     except Exception as e:
-        logger.error(f"获取任务详情失败 post_id={post_id}: {e}")
+        logger.error(f"获取任务详情失败 post_id={post_id}: {e}", exc_info=True)
         raise
 
 
@@ -637,7 +604,7 @@ async def accept_post(
             },
         )
     except Exception as e:
-        logger.error(f"接单失败 post_id={post_id} user_id={current_user.user_id}: {e}")
+        logger.error(f"接单失败 post_id={post_id} user_id={current_user.user_id}: {e}", exc_info=True)
         raise
 
 
@@ -660,7 +627,7 @@ async def suspend_post(
     except BusinessHTTPException:
         raise
     except Exception as e:
-        logger.error(f"暂停招募失败 post_id={post_id}: {e}")
+        logger.error(f"暂停招募失败 post_id={post_id}: {e}", exc_info=True)
         raise
 
 
@@ -683,5 +650,5 @@ async def resume_post(
     except BusinessHTTPException:
         raise
     except Exception as e:
-        logger.error(f"恢复招募失败 post_id={post_id}: {e}")
+        logger.error(f"恢复招募失败 post_id={post_id}: {e}", exc_info=True)
         raise

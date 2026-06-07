@@ -94,9 +94,13 @@ class PostList(BaseModel):
 
 
 class PostDetailRead(PostRead):
-    """任务详情响应模型（扩展了 PostRead）。"""
-    
-    comments: List[Dict[str, Any]] = Field(default_factory=list, description="评论列表")
+    """任务详情响应模型（扩展了 PostRead）。
+
+    注意：评论列表已从详情接口拆出，请使用独立评论游标分页接口
+    GET /comments/{target_type}/{target_id} 拉取。
+    """
+
+    pass
 
 
 class PostBatchAcceptRequest(BaseModel):

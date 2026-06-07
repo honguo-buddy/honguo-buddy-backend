@@ -115,7 +115,7 @@ class PostService:
                     creator_id=publisher_id,
                 )
             except Exception as e:
-                logger.warning(f"绑定附件 {attachment_ids} 到帖子 {post.post_id} 失败: {e}")
+                logger.warning(f"绑定附件 {attachment_ids} 到帖子 {post.post_id} 失败: {e}", exc_info=True)
         
         await db.commit()
         
@@ -190,7 +190,7 @@ class PostService:
                     creator_id=operator_id,
                 )
             except Exception as e:
-                logger.warning(f"绑定附件 {payload.attachment_ids} 到帖子 {post.post_id} 失败: {e}")
+                logger.warning(f"绑定附件 {payload.attachment_ids} 到帖子 {post.post_id} 失败: {e}", exc_info=True)
 
         await db.commit()
         
@@ -201,8 +201,8 @@ class PostService:
         except Exception:
             try:
                 await db.refresh(post)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("Swallowed exception in post_service: %s", e, exc_info=True)
                 
         return post
 
@@ -438,13 +438,12 @@ class PostService:
 
     @staticmethod
     async def get_post_detail(db: AsyncSession, post_id: int) -> Post:
-        """获取帖子详情，包含发布者、附件、评论、订单关联。"""
+        """获取帖子详情，包含发布者、附件、订单关联。"""
         stmt = (
             select(Post)
             .options(
                 selectinload(Post.user),
                 selectinload(Post.attachments),
-                selectinload(Post.comments),
                 selectinload(Post.orders),
             )
             .where(

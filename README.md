@@ -1536,16 +1536,15 @@ DATA_GET_FAILED: 301
 
 #### 4.5.5 帖子详情 (GET: /posts/{post_id})
 
-用途: 获取帖子详情，包含前 N 条评论，并返回模板/分类 ID。
+用途: 获取帖子详情（主资产元数据 + 发布者简影 + 实时指标灌水）。评论列表已拆分为独立接口 `GET /comments/POST/{post_id}`，前端请并行分流调用。
 
 请求示例:
 
-```json
-{
-    "post_id": 1001,
-    "comments_limit": 5
-}
 ```
+GET /posts/1001
+```
+
+（无需请求体；不再接受 `comments_limit` 参数）
 
 成功响应:
 
@@ -1580,23 +1579,14 @@ DATA_GET_FAILED: 301
         "favorite_count": 32,
         "comment_count": 14,
         "create_time": "2025-09-01T12:00:00",
-        "attachment_urls": ["/static/avatar/avatar_1001_1680000000.png"],
-        "comments": [
-            {
-                "id": 2001,
-                "username": "评论者",
-                "avatar": "/static/avatar/avatar_2002.png",
-                "content": "我想要这本书",
-                "time": "2025-09-02T08:00:00"
-            }
-        ]
+        "attachment_urls": ["/static/avatar/avatar_1001_1680000000.png"]
     }
 }
 ```
 
 说明：
 - 已登录用户访问帖子详情时会自动将浏览记录异步写入 Redis 历史足迹（`user:history:{user_id}`），供 4.2.11 历史浏览足迹接口使用。未登录用户不会记录。
-- 返回的 `comments` 仅包含最近若干条热评，按创建时间倒序排列，由 `comments_limit` 控制条数（默认 5 条）。
+- **重要变更**：`comments` 字段已从此接口移除。评论列表请使用独立评论游标分页接口 `GET /comments/POST/{post_id}` 并行拉取，以获得更优的加载性能和分页体验。
 
 常见错误:
 
@@ -2849,7 +2839,7 @@ LIMIT :size
 
 #### 4.9.4 商品详情 (GET: /goods/{goods_id})
 
-用途：获取单个商品完整详情，自动触发浏览计数自增（Redis），并注入实时计数器到卡片。
+用途：获取单个商品完整详情（主资产元数据 + 发布者简影 + 附件 URL + 实时指标灌水），自动触发浏览计数自增（Redis）。评论列表请使用独立接口 `GET /comments/GOODS/{goods_id}` 并行拉取。
 
 请求头：无（公开接口，已登录用户将自动记录浏览历史脚印至 Redis 集群 `user:history:{user_id}` ZSET）
 
@@ -2869,7 +2859,6 @@ LIMIT :size
         "create_time": "2026-05-30T12:00:00",
         "attachment_urls": ["/static/attachments/img-10.jpg"],
         "publisher": {"user_id": 1001, "user_name": "张三", "avatar": "/static/avatar/av-1.jpg"},
-        "comments": [],
         "view_count": 129,
         "favorite_count": 3,
         "comment_count": 0

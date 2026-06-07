@@ -73,9 +73,6 @@ class GoodsDetailRead(GoodsBase):
     attachment_urls: List[str] = []
     publisher: Optional[GoodsPublisherSchema] = None
     
-    # 干掉 List[dict]，换成显式的类型安全的强类型契约数组！
-    comments: List[GoodsCommentSchema] = []
-    
     model_config = ConfigDict(from_attributes=True)
 
     # 详情页指标回填

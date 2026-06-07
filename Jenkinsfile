@@ -24,10 +24,10 @@ pipeline {
         TEST_DATABASE_BOOTSTRAP_DB = "${params.TEST_DATABASE_BOOTSTRAP_DB ?: 'testdb_0'}"
 
         // --- 2. 固定配置 ---
-        EMAIL_FROM  = 'tianshu@wyqsama.cn'
+        EMAIL_FROM  = 'bang@honguo.store'
         SMTP_SERVER = 'smtpdm.aliyun.com'
         SMTP_PORT   = '465'
-        SMTP_USER   = 'tianshu@wyqsama.cn'
+        SMTP_USER   = 'bang@honguo.store'
         REDIS_PORT  = '6379'
         DEBUG       = 'true'
         DEBUG_SKIP_PASSWORD_CHECK = 'false'

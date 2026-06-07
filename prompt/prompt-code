@@ -652,3 +652,15 @@ await db.commit()
 
 # ✅ 正确：委托 Service 层
 order = await OrderService.create_order(db, item_type="GOODS", item_id=goods_id, initiator_id=current_user.user_id)
+
+五十三、 高频大厅详情页严禁内嵌无边界衍生资产列表，必须执行多接口流式解耦 (Detail Page Must Not Embed Unbounded Sub-Asset Lists)
+
+【问题】主帖详情接口 get_post_detail 内嵌了 comments（评论列表）字段，通过 selectinload(Post.comments) 预加载 + SELECT 查询，当帖子下有大量评论时会导致 N+1 慢查询、多表联查死锁，将接口 TTFB 拖慢至秒级。
+
+【解决】1) 从 PostDetailRead Schema 中彻底移除 comments 字段；2) 从 PostService.get_post_detail 中移除 selectinload(Post.comments) 预加载；3) 从路由层卸载整个评论查询块和 comments_limit 参数；4) 前端评论树展现必须走独立的评论游标分页接口 GET /comments/{target_type}/{target_id}。铁律：主资产详情页只负责反哺主资产元数据和发布者简影，任何体积不可控、数量无边界延伸的衍生资产列表必须拆分为独立子系统路由异步平铺流式加载。
+
+五十四、 读链路生命周期内部严禁夹带同步阻塞式数据库 UPDATE 行锁写盘 (No Synchronous DB Writes in Read Path)
+
+【问题】早期浏览计数实现在 GET 详情链路上同步执行 MySQL UPDATE goods_metrics SET view_count = view_count + 1 语句，高并发撞击下行锁排队导致连接池饥饿卡死。
+
+【解决】1) 浏览计数全部切换为 Redis 纯内存 INCR/HINCRBY 命令（incr_post_view / incr_goods_view 等）；2) MetricsService 的 hydrate 系列方法采用 Read-Through 双端合流模式：Redis hit 直接回灌，cache miss 才查 MySQL 并 HSET 回填；3) MySQL 物理持久化通过后台定时批处理 _flush_metrics_job 低频批量执行。铁律：任何 GET 读链路不得同步执行带行级排他锁的数据库物理写盘更新，高频写指标必须全面切换为 Redis 内存盾牌拦截。

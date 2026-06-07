@@ -48,7 +48,8 @@ def _build_goods_dict(goods) -> dict:
 def _build_goods_urls(goods) -> list[str]:
     try:
         return [att.url for att in (goods.attachments or []) if not getattr(att, "is_deleted", False)]
-    except Exception:
+    except Exception as e:
+        logger.warning("Failed to build goods attachment urls: %s", e, exc_info=True)
         return []
 
 
@@ -161,8 +162,8 @@ async def get_goods_detail(
                 target_type="GOODS",
                 target_id=goods_id,
             )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("Failed to record goods history footprint goods_id=%d: %s", goods_id, e, exc_info=True)
 
     goods_detail = GoodsDetailRead.model_validate(goods)
     goods_detail.attachment_urls = _build_goods_urls(goods)
