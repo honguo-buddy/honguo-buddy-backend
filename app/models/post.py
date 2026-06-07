@@ -66,19 +66,16 @@ class Post(Base):
         "Order",
         primaryjoin="and_(foreign(Order.item_id) == Post.post_id, Order.item_type == 'POST')",
         viewonly=True,
-        lazy="selectin",
     )
     comments = relationship(
         "Comment",
         primaryjoin="and_(foreign(Comment.target_id) == Post.post_id, Comment.target_type == 'POST')",
         viewonly=True,
-        lazy="selectin",
     )
 
     attachments = relationship(
         "Attachment",
         primaryjoin="and_(foreign(Attachment.target_id) == Post.post_id, Attachment.target_type == 'POST')",
-        lazy="selectin",
         overlaps="attachments",
         cascade="all, delete-orphan", # 当帖子删除时，自动清理附件记录
     )

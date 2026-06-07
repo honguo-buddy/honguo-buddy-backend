@@ -88,12 +88,10 @@ class Order(Base):
         "Comment",
         primaryjoin="and_(foreign(Comment.target_id) == Order.order_id, Comment.target_type == 'ORDER')",
         viewonly=True,
-        lazy="selectin",
     )
     reviews = relationship(
         "OrderReview",
         back_populates="order",
-        lazy="selectin",
     )
 
     __table_args__ = (

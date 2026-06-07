@@ -673,3 +673,20 @@ order = await OrderService.create_order(db, item_type="GOODS", item_id=goods_id,
 【解决】1) 模型层保持"冷酷"——所有 relationship() 不得携带 lazy="selectin" 或 lazy="eager" 等全局预加载属性，恢复默认懒加载（lazy="select"）；2) 服务层"按需加载"——在具体的 Service 查询方法中，根据该接口实际需要访问的关系链，通过 .options(selectinload(Post.user)) 或 .options(joinedload(Post.user)) 动态显式附加预加载；3) 加载范围严格收束——仅加载 Schema 序列化所需的直接关系（如 user、attachments），禁止连带加载无关关系链；4) 高流量鉴权依赖（get_current_user / get_current_user_optional）从 Redis 缓存命中时直接返回 SimpleNamespace，绕开 ORM，若 cache miss 回退 MySQL 也必须保持无预加载。
 
 【铁律】模型定义文件（app/models/*.py）中所有 relationship() 禁止使用 lazy="selectin" 或 lazy="eager"；服务层查询语句中若需要访问关联对象属性（如 post.user.user_name、goods.publisher.avatar_id），必须在该查询的 .options() 中显式声明 selectinload 或 joinedload，否则在异步上下文中将触发 MissingGreenlet 崩溃。
+
+五十六、 移除懒加载后必须全量排查所有模型文件并修复服务层级联查询 (Post-Lazy-Removal Full Audit: All Models + Service Chain Fix)
+
+【问题】仅移除 User 模型的 lazy="selectin" 但遗漏 Post、Order、Goods、UserFollow 等模型仍保留全局预加载属性时，单次 GET /posts/{id} 依然触发 20+ 条级联 SQL 爆炸（Post.orders → Order.reviews/comments → 全链拉取），hydrate_avatar 的 SQL 执行时间被数据库连接池排队卡至 4500ms，事件循环被异步 ORM 的 sync 装配逻辑卡死 3.84 秒。
+
+【解决】1) 使用 rg/Select-String 全量扫描 app/models/*.py 中所有 relationship() 的 lazy 参数，确保零遗漏；2) 移除 lazy="selectin" 后，逐一检查每个服务层查询方法中通过 .options() 显式声明所需 selectinload/joinedload 是否完整覆盖 Schema 序列化路径；3) 清理冗余预加载：如 get_post_detail 在详情 Schema（PostDetailRead）已不包含 orders 字段后，仍带着 selectinload(Post.orders) 造成无谓的全量订单拉取，必须同步移除；4) noload() 在 lazy="select" 默认模式下不再必要，但保留也不产生副作用，可按需清理。
+
+【铁律】每次模型关系定义变更后，必须运行 rg "lazy=" 确认全仓模型文件无残留；服务层查询的 .options() 必须与对应 Schema 字段保持 1:1 精确对齐，不缺（MissingGreenlet 崩溃）不溢（浪费级联查询）。
+
+
+五十七、 管理员免密邮箱验证码登入实现规范 (Admin Email OTP Login Implementation Pattern)
+
+【问题】管理端 Web 后台需要独立的免微信扫码的邮箱验证码登入通道，且必须满足：1) 模糊错误提示防管理员邮箱枚举；2) 验证码一次性核销防重放；3) 签发高权限 JWT Token；4) 邮件投递不阻塞主事件循环。
+
+【解决】1) Schema 层：AdminCodeSendRequest（email: EmailStr）、AdminLoginRequest（email: EmailStr + code: 6位数字正则约束）；2) Service 层：send_admin_login_code 校验 is_admin 后通过 BackgroundTasks.add_task 异步投递邮件，Redis 原子写入 code（TTL 300s）+ lock（TTL 60s）；verify_admin_login_code 先校验证码正确性再 delete 核销（阻断重放），二次验证 is_admin 状态后签发含 {"sub", "is_admin", "user_type"} 载荷的 JWT Token；3) 路由层：POST /auth/admin/send-code 和 POST /auth/admin/login 均为免 Token 鉴权开放端点，异常时统一抛出 AuthHTTPException/BusinessHTTPException 而非原生 HTTPException。
+
+【铁律】发送验证码时若邮箱不存在或非管理员，必须返回统一模糊错误（如 code=102 "认证失败，非系统授权管理员"），坚决阻断黑客探测真实管理员邮箱；验证码核销必须在 Token 签发前先 delete Redis key，防止单码多登重放攻击。

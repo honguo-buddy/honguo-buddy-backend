@@ -9,6 +9,8 @@ Schemas 模块 - 统一导出所有 Pydantic 请求/响应模型
 """
 
 from app.schemas.auth import (
+    AdminCodeSendRequest,
+    AdminLoginRequest,
     WxLoginRequest,
     EmailSendVerifyCodeRequest,
     EmailVerifyCodeRequest,
@@ -125,6 +127,8 @@ from app.schemas.goods import (
 
 __all__ = [
     # auth
+    "AdminCodeSendRequest",
+    "AdminLoginRequest",
     "WxLoginRequest",
     "EmailSendVerifyCodeRequest",
     "EmailVerifyCodeRequest",

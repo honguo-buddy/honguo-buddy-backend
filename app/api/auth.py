@@ -3,7 +3,7 @@ import logging
 from types import SimpleNamespace
 from typing import Optional, Union
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, Request
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
 from sqlalchemy import and_, select
@@ -11,6 +11,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core import settings, AuthHTTPException, BusinessHTTPException
 from app.db import get_db, redis, User
 from app.schemas import (
+    AdminCodeSendRequest,
+    AdminLoginRequest,
     EmailSendVerifyCodeRequest,
     EmailVerifyCodeRequest,
     WxLoginRequest,
@@ -315,3 +317,44 @@ async def logout(current_user: UserSchema = Depends(get_current_user)):
             msg="登出失败，请稍后重试",
             status_code=500,
         )
+
+@router.post("/admin/send-code", response_model=ResponseModel[Union[dict, AuthErrorResponse]])
+async def send_admin_login_code(
+    payload: AdminCodeSendRequest,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+):
+    """管理端发送邮箱验证码（免Token鉴权开放端点）。
+
+    安全设计：若邮箱不存在或非管理员，统一返回模糊错误提示，阻断管理员邮箱枚举攻击。
+    """
+    try:
+        message = await AuthService.send_admin_login_code(
+            db=db,
+            redis_client=redis,
+            email=str(payload.email),
+            background_tasks=background_tasks,
+        )
+        return ResponseModel(code=settings.SUCCESS_CODE, message=message)
+    except Exception as e:
+        logger.warning(f"管理员验证码发送失败 email={payload.email}: {e}")
+        raise
+
+
+@router.post("/admin/login", response_model=ResponseModel[Union[dict, AuthErrorResponse]])
+async def admin_login(
+    payload: AdminLoginRequest,
+    db: AsyncSession = Depends(get_db),
+):
+    """管理端邮箱验证码登入（免Token鉴权开放端点）。
+
+    校验通过后签发高权限 JWT Token，返回结构对齐 wxLogin 规范。
+    """
+    message = await AuthService.verify_admin_login_code(
+        db=db,
+        redis_client=redis,
+        email=str(payload.email),
+        code=payload.code,
+    )
+    logger.info(f"管理员登录成功 user_id={message['userId']}")
+    return ResponseModel(code=settings.SUCCESS_CODE, message=message)

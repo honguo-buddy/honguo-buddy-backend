@@ -380,3 +380,144 @@ class AuthService:
         await redis.delete(f"email_verify_code:{email}")
         await redis.delete(f"email_verify_rate:{email}")
         return {"detail": "邮箱绑定成功", "email": email}
+
+    @staticmethod
+    async def send_admin_login_code(
+        db: AsyncSession,
+        redis_client,
+        email: str,
+        background_tasks,
+    ) -> dict[str, str]:
+        """向管理员邮箱发送6位数字登录验证码。
+
+        安全策略：
+        - 仅对 is_admin=True 且未删除的活跃用户发送
+        - Redis 限频锁 60 秒，防止暴力刷码
+        - 验证码 5 分钟有效期
+        - 通过 BackgroundTasks 异步投递邮件，不阻塞主线程
+        """
+        # 校验管理员身份
+        user_result = await db.execute(
+            select(User).where(
+                and_(
+                    User.email == email,
+                    User.is_deleted == False,
+                    User.is_active == True,
+                )
+            )
+        )
+        user = user_result.scalar_one_or_none()
+        if not user or not user.is_admin:
+            raise AuthHTTPException(
+                code=settings.INSUFFICIENT_AUTHORITY_CODE,
+                msg="认证失败，非系统授权管理员",
+                status_code=403,
+            )
+
+        # 限频锁检查
+        lock_key = f"admin:login:lock:{email}"
+        if await redis_client.get(lock_key):
+            raise BusinessHTTPException(
+                code=settings.REQ_ERROR_CODE,
+                msg="验证码请求过于频繁，请60秒后再试",
+                status_code=429,
+            )
+
+        # 生成6位数字验证码
+        code = "".join(str(random.randint(0, 9)) for _ in range(6))
+        code_key = f"admin:login:code:{email}"
+
+        # 原子性写入 Redis：验证码 + 限频锁
+        await redis_client.set(code_key, code, ex=300)  # 5分钟
+        await redis_client.set(lock_key, "1", ex=60)    # 60秒限频
+
+        # 异步投递邮件
+        subject = "管理端登录验证码"
+        body = (
+            "<html><body style='font-family:Arial,sans-serif;'>"
+            "<p>您好，管理员：</p>"
+            "<p>您的管理端登录验证码为：</p>"
+            f"<h2 style='color:#007bff;letter-spacing:5px;'>{code}</h2>"
+            "<p>该验证码有效期为5分钟，请勿泄露给他人。</p>"
+            "</body></html>"
+        )
+        background_tasks.add_task(send_email, email, subject, body)
+
+        local, domain = email.split("@", 1)
+        return {
+            "detail": "验证码已发送到管理员邮箱，请在5分钟内完成登录",
+            "email_masked": f"{local[:1]}***@{domain}",
+        }
+
+    @staticmethod
+    async def verify_admin_login_code(
+        db: AsyncSession,
+        redis_client,
+        email: str,
+        code: str,
+    ) -> dict[str, Any]:
+        """校验管理员邮箱验证码并签发高权限 JWT Token。
+
+        安全策略：
+        - 验证码一次性核销，防止重放攻击
+        - 签发前二次验证管理员身份，防止权限瞬时变更
+        - 返回结构完全对齐 wxLogin 规范
+        """
+        code_key = f"admin:login:code:{email}"
+
+        # 提取验证码
+        stored_code = await redis_client.get(code_key)
+        if not stored_code:
+            raise BusinessHTTPException(
+                code=settings.UPDATEPROFILE_FAILED_CODE,
+                msg="验证码错误或已过期",
+                status_code=400,
+            )
+
+        if str(stored_code) != str(code):
+            raise BusinessHTTPException(
+                code=settings.UPDATEPROFILE_FAILED_CODE,
+                msg="验证码输入错误",
+                status_code=400,
+            )
+
+        # 核销验证码，阻断重放攻击
+        await redis_client.delete(code_key)
+        await redis_client.delete(f"admin:login:lock:{email}")
+
+        # 二次提取用户实体，重新验证 is_admin 状态
+        user_result = await db.execute(
+            select(User).where(
+                and_(
+                    User.email == email,
+                    User.is_deleted == False,
+                    User.is_active == True,
+                )
+            )
+        )
+        user = user_result.scalar_one_or_none()
+        if not user or not user.is_admin:
+            raise AuthHTTPException(
+                code=settings.INSUFFICIENT_AUTHORITY_CODE,
+                msg="认证失败，非系统授权管理员",
+                status_code=403,
+            )
+
+        # 签发管理端高权限 JWT Token
+        token = create_access_token(
+            {
+                "sub": str(user.user_id),
+                "is_admin": True,
+                "user_type": user.user_type.value if user.user_type else UserType.USER.value,
+                "user_name": user.user_name,
+            }
+        )
+        await AuthService._persist_user_token(user.user_id, token)
+
+        return {
+            "token": token,
+            "userId": user.user_id,
+            "user_name": user.user_name,
+            "is_admin": True,
+            "isNewUser": False,
+        }

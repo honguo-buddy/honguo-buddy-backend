@@ -17,14 +17,12 @@ class UserFollow(Base):
         "User",
         foreign_keys=[follower_id],
         back_populates="followings",
-        lazy="selectin",
         overlaps="followings,followers",
     )
     following = relationship(
         "User",
         foreign_keys=[following_id],
         back_populates="followers",
-        lazy="selectin",
         overlaps="followings,followers",
     )
 

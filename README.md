@@ -336,6 +336,78 @@ DATA_GET_FAILED: 301
 - code: 105 - Token 失效。
 - code: 301 - Redis 操作失败导致登出失败。
 
+
+#### 4.1.6 管理端发送邮箱验证码 (POST: /auth/admin/send-code)
+
+用途: 向管理员邮箱发送6位数字登录验证码（免Token鉴权开放端点）。仅对数据库中存在且 `is_admin=True` 的活跃用户发送；若邮箱不存在或非管理员，返回统一模糊错误提示以阻断管理员邮箱枚举攻击。
+
+请求头: 无。
+
+请求示例:
+
+```json
+{
+    "email": "admin@bjtu.edu.cn"
+}
+```
+
+成功响应:
+
+```json
+{
+    "code": 0,
+    "message": {
+        "detail": "验证码已发送到管理员邮箱，请在5分钟内完成登录",
+        "email_masked": "a***@bjtu.edu.cn"
+    }
+}
+```
+
+常见错误:
+
+- code: 102 - 认证失败，非系统授权管理员（模糊提示，不泄露邮箱存在性）。
+- code: 99  - 验证码请求过于频繁，请60秒后再试。
+
+---
+
+#### 4.1.7 管理端邮箱验证码登入 (POST: /auth/admin/login)
+
+用途: 通过邮箱+6位数字验证码完成管理端免密登入（免Token鉴权开放端点）。验证码一次性核销防重放攻击，校验通过后签发含 `is_admin=True` 载荷的高权限 JWT Token，返回结构对齐 `/auth/wxLogin` 规范。
+
+请求头: 无。
+
+请求示例:
+
+```json
+{
+    "email": "admin@bjtu.edu.cn",
+    "code": "482915"
+}
+```
+
+成功响应:
+
+```json
+{
+    "code": 0,
+    "message": {
+        "token": "<jwt_token>",
+        "userId": 1,
+        "user_name": "管理员",
+        "is_admin": true,
+        "isNewUser": false
+    }
+}
+```
+
+常见错误:
+
+- code: 104 - 验证码错误或已过期。
+- code: 104 - 验证码输入错误。
+- code: 102 - 认证失败，非系统授权管理员（二次验证 is_admin 失败）。
+
+---
+
 ### 4.2 USER 用户模块
 
 #### 4.2.1 获取当前用户信息 (GET: /users/info)

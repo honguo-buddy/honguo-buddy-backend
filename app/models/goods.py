@@ -67,7 +67,6 @@ class Goods(Base):
         "Order",
         primaryjoin="and_(foreign(Order.item_id) == Goods.goods_id, Order.item_type == 'GOODS')",
         viewonly=True,
-        lazy="selectin",
     )
     
     # 评论多态关系对齐：锁定盖楼目标为 'GOODS'
@@ -75,14 +74,12 @@ class Goods(Base):
         "Comment",
         primaryjoin="and_(foreign(Comment.target_id) == Goods.goods_id, Comment.target_type == 'GOODS')",
         viewonly=True,
-        lazy="selectin",
     )
 
     # 级联附件红线对齐：商品软删/硬删时，其关联的多态媒体附件执行全自动全生命周期‘孤儿清理机制’
     attachments = relationship(
         "Attachment",
         primaryjoin="and_(foreign(Attachment.target_id) == Goods.goods_id, Attachment.target_type == 'GOODS')",
-        lazy="selectin",
         overlaps="attachments",
         cascade="all, delete-orphan",
     )
