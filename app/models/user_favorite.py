@@ -25,7 +25,7 @@ class UserFavorite(Base):
     target_id = Column(BigInteger, nullable=False, index=True, comment="收藏目标ID")
     create_time = Column(DateTime, default=beijing_now_for_model, nullable=False, comment="收藏时间")
 
-    user = relationship("User", back_populates="favorites", lazy="selectin")
+    user = relationship("User", back_populates="favorites")
 
     __table_args__ = (
         Index("uq_user_favorite_user_target", "user_id", "target_type", "target_id", unique=True),

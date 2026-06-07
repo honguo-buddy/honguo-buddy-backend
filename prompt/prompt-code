@@ -664,3 +664,12 @@ order = await OrderService.create_order(db, item_type="GOODS", item_id=goods_id,
 【问题】早期浏览计数实现在 GET 详情链路上同步执行 MySQL UPDATE goods_metrics SET view_count = view_count + 1 语句，高并发撞击下行锁排队导致连接池饥饿卡死。
 
 【解决】1) 浏览计数全部切换为 Redis 纯内存 INCR/HINCRBY 命令（incr_post_view / incr_goods_view 等）；2) MetricsService 的 hydrate 系列方法采用 Read-Through 双端合流模式：Redis hit 直接回灌，cache miss 才查 MySQL 并 HSET 回填；3) MySQL 物理持久化通过后台定时批处理 _flush_metrics_job 低频批量执行。铁律：任何 GET 读链路不得同步执行带行级排他锁的数据库物理写盘更新，高频写指标必须全面切换为 Redis 内存盾牌拦截。
+
+
+五十五、 模型层严禁全局 lazy="selectin"，服务层按需动态预加载（Lean Models + Eager Loading on Demand）
+
+【问题】在 User、Post、Goods、Order 等模型的关系定义上全局设置 lazy="selectin"，导致一次简单的主帖详情查询触发了 22+ 条 SQL 的 selectin 级联核爆（User → Post → Order → Review → Comment 全链条），单接口 TTFB 从 200ms 膨胀至 14 秒。详情页加载 publisher 时，13 个 User 关系全部触发批量 SELECT，然后 Post.orders、Post.comments、Order.reviews 等逐层级联，一发不可收拾。
+
+【解决】1) 模型层保持"冷酷"——所有 relationship() 不得携带 lazy="selectin" 或 lazy="eager" 等全局预加载属性，恢复默认懒加载（lazy="select"）；2) 服务层"按需加载"——在具体的 Service 查询方法中，根据该接口实际需要访问的关系链，通过 .options(selectinload(Post.user)) 或 .options(joinedload(Post.user)) 动态显式附加预加载；3) 加载范围严格收束——仅加载 Schema 序列化所需的直接关系（如 user、attachments），禁止连带加载无关关系链；4) 高流量鉴权依赖（get_current_user / get_current_user_optional）从 Redis 缓存命中时直接返回 SimpleNamespace，绕开 ORM，若 cache miss 回退 MySQL 也必须保持无预加载。
+
+【铁律】模型定义文件（app/models/*.py）中所有 relationship() 禁止使用 lazy="selectin" 或 lazy="eager"；服务层查询语句中若需要访问关联对象属性（如 post.user.user_name、goods.publisher.avatar_id），必须在该查询的 .options() 中显式声明 selectinload 或 joinedload，否则在异步上下文中将触发 MissingGreenlet 崩溃。

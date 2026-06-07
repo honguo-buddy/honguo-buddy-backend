@@ -50,13 +50,13 @@ class OrderReview(Base):
     create_time = Column(DateTime, default=beijing_now_for_model, nullable=False, index=True)
 
     # 关系映射
-    order = relationship("Order", back_populates="reviews", lazy="selectin")
-    reviewer = relationship("User", foreign_keys=[reviewer_id], lazy="selectin")
-    reviewee = relationship("User", foreign_keys=[reviewee_id], lazy="selectin")
+    order = relationship("Order", back_populates="reviews")
+    reviewer = relationship("User", foreign_keys=[reviewer_id])
+    reviewee = relationship("User", foreign_keys=[reviewee_id])
     
     # 自关联关系：方便拉取首评时，把名下的追评和回评当成套娃子列表直接 selectin 一并捞出
-    parent = relationship("OrderReview", remote_side=[review_id], back_populates="children", lazy="selectin")
-    children = relationship("OrderReview", back_populates="parent", cascade="all, delete-orphan", lazy="selectin")
+    parent = relationship("OrderReview", remote_side=[review_id], back_populates="children")
+    children = relationship("OrderReview", back_populates="parent", cascade="all, delete-orphan")
 
     __table_args__ = (
         # 索引加速：用户查自己的评价大盘，或者商品详情页拉取评价流

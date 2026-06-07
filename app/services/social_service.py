@@ -9,6 +9,7 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 logger = logging.getLogger(__name__)
 from app.services.order_service import OrderService
@@ -318,10 +319,10 @@ class SocialService:
         posts_map = {}
         goods_map = {}
         if post_ids:
-            posts_result = await db.execute(select(Post).where(Post.post_id.in_(post_ids)))
+            posts_result = await db.execute(select(Post).options(selectinload(Post.user)).where(Post.post_id.in_(post_ids)))
             posts_map = {post.post_id: post for post in posts_result.scalars().all()}
         if goods_ids:
-            goods_result = await db.execute(select(Goods).where(Goods.goods_id.in_(goods_ids)))
+            goods_result = await db.execute(select(Goods).options(selectinload(Goods.user)).where(Goods.goods_id.in_(goods_ids)))
             goods_map = {goods.goods_id: goods for goods in goods_result.scalars().all()}
 
         # =====================================================================
@@ -426,9 +427,14 @@ class SocialService:
         key = f"user:history:{user_id}"
         fingerprint = f"{normalized_target}:{target_id}"
         score = int(time.time() * 1000)  # 13位毫秒级时间戳
-
+        # 1. 正常射入最新足迹
         await redis_client.zadd(key, {fingerprint: float(score)})
-        await redis_client.zremrangebyrank(key, 0, -101)
+        # 2. 先检查当前总数，防止负数索引越界被 Redis 误判归零
+        current_card = await redis_client.zcard(key)
+        if current_card > 100:
+        # 只有大于100条时，才安全切除冷数据（从0数到倒数第101条）
+            await redis_client.zremrangebyrank(key, 0, -101)
+        # 3. 滚动刷新整张卡片的30天全局生死大限
         await redis_client.expire(key, settings.HISTORY_TTL_SECONDS)
 
     @staticmethod
@@ -458,10 +464,10 @@ class SocialService:
         posts_map = {}
         goods_map = {}
         if post_ids:
-            posts_result = await db.execute(select(Post).where(Post.post_id.in_(post_ids)))
+            posts_result = await db.execute(select(Post).options(selectinload(Post.user)).where(Post.post_id.in_(post_ids)))
             posts_map = {post.post_id: post for post in posts_result.scalars().all()}
         if goods_ids:
-            goods_result = await db.execute(select(Goods).where(Goods.goods_id.in_(goods_ids)))
+            goods_result = await db.execute(select(Goods).options(selectinload(Goods.user)).where(Goods.goods_id.in_(goods_ids)))
             goods_map = {goods.goods_id: goods for goods in goods_result.scalars().all()}
 
         # =====================================================================

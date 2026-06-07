@@ -60,8 +60,8 @@ class Post(Base):
     create_time = Column(DateTime, default=beijing_now_for_model, nullable=False, comment="创建时间")
     update_time = Column(DateTime, default=beijing_now_for_model, onupdate=beijing_now_for_model, nullable=False, comment="更新时间")
 
-    user = relationship("User", back_populates="posts", lazy="selectin")
-    category = relationship("Category", back_populates="posts", lazy="selectin")
+    user = relationship("User", back_populates="posts")
+    category = relationship("Category", back_populates="posts")
     orders = relationship(
         "Order",
         primaryjoin="and_(foreign(Order.item_id) == Post.post_id, Order.item_type == 'POST')",

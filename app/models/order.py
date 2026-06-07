@@ -81,8 +81,8 @@ class Order(Base):
     update_time = Column(DateTime, default=beijing_now_for_model, onupdate=beijing_now_for_model, nullable=False, comment="更新时间")
 
     # 关系映射
-    buyer = relationship("User", foreign_keys=[buyer_id], back_populates="orders_as_buyer", lazy="selectin")
-    seller = relationship("User", foreign_keys=[seller_id], back_populates="orders_as_seller", lazy="selectin")
+    buyer = relationship("User", foreign_keys=[buyer_id], back_populates="orders_as_buyer")
+    seller = relationship("User", foreign_keys=[seller_id], back_populates="orders_as_seller")
     
     comments = relationship(
         "Comment",
@@ -104,4 +104,6 @@ class Order(Base):
         Index("idx_order_seller_id", "seller_id"),
         # 索引 3：用于定时任务查询“待撮合”或“待确认”的单据，提高后台扫描效率
         Index("idx_order_status_trigger", "status", "trigger_type"),
+        # 索引 4：用于性能优化的复合索引（覆盖常用查询维度，且包含软删除字段以加速过滤）
+        Index("idx_performance_item_status_deleted", "item_type", "item_id", "status", "is_deleted"),
     )

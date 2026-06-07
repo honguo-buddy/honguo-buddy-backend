@@ -25,8 +25,8 @@ class Category(Base):
     create_time = Column(DateTime, default=beijing_now_for_model, nullable=False, comment="创建时间")
     update_time = Column(DateTime, default=beijing_now_for_model, onupdate=beijing_now_for_model, nullable=False, comment="更新时间")
 
-    posts = relationship("Post", back_populates="category", lazy="selectin")
-    goods = relationship("Goods", back_populates="category", lazy="selectin")
+    posts = relationship("Post", back_populates="category")
+    goods = relationship("Goods", back_populates="category")
 
     __table_args__ = (
         Index("idx_category_name", "name"),

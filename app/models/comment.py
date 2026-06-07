@@ -30,9 +30,9 @@ class Comment(Base):
     create_time = Column(DateTime, default=beijing_now_for_model, nullable=False, comment="创建时间")
     update_time = Column(DateTime, default=beijing_now_for_model, onupdate=beijing_now_for_model, nullable=False, comment="更新时间")
 
-    user = relationship("User", back_populates="comments", lazy="selectin")
-    parent = relationship("Comment", remote_side=[comment_id], back_populates="replies", lazy="selectin")
-    replies = relationship("Comment", back_populates="parent", cascade="all, delete-orphan", single_parent=True, lazy="selectin")
+    user = relationship("User", back_populates="comments")
+    parent = relationship("Comment", remote_side=[comment_id], back_populates="replies")
+    replies = relationship("Comment", back_populates="parent", cascade="all, delete-orphan", single_parent=True)
 
     __table_args__ = (
         Index("idx_comment_target_type_target_id", "target_type", "target_id"),

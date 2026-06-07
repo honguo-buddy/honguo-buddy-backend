@@ -41,6 +41,6 @@ class Attachment(Base):
     update_time = Column(DateTime, default=beijing_now_for_model, onupdate=beijing_now_for_model, nullable=False, comment="更新时间")
     is_deleted = Column(Boolean, default=False, nullable=False, comment="是否软删除")
 
-    avatar_users = relationship("User", back_populates="avatar_attachment", lazy="selectin")
+    avatar_users = relationship("User", back_populates="avatar_attachment")
 
     __table_args__ = (Index("idx_attachment_target_type_target_id", "target_type", "target_id"),)
