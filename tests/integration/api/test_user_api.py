@@ -970,3 +970,122 @@ class TestHistoriesHydration:
         assert card["favorite_count"] == 4
         assert card["comment_count"] == 2
 
+# ── 联系方式集成测试 ──────────────────────────────────────────
+
+async def test_list_my_contacts_empty(client, test_user_token, fake_redis, test_user):
+    await fake_redis.set(f"token:{test_user_token}", str(test_user.user_id))
+    await fake_redis.set(f"user_token:{test_user.user_id}", test_user_token)
+    resp = await client.get(
+        "/users/me/contacts",
+        headers={"Authorization": f"Bearer {test_user_token}"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["code"] == 0
+    assert body["message"]["list"] == []
+
+
+async def test_create_and_list_contacts(client, test_user_token, fake_redis, test_user):
+    await fake_redis.set(f"token:{test_user_token}", str(test_user.user_id))
+    await fake_redis.set(f"user_token:{test_user.user_id}", test_user_token)
+    resp = await client.post(
+        "/users/me/contacts",
+        json={"contact_type": "WECHAT", "contact_value": "wx_test", "is_public": True},
+        headers={"Authorization": f"Bearer {test_user_token}"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["code"] == 0
+    contact_id = body["message"]["contact_id"]
+    assert body["message"]["contact_type"] == "WECHAT"
+
+    # 列表验证
+    resp = await client.get(
+        "/users/me/contacts",
+        headers={"Authorization": f"Bearer {test_user_token}"},
+    )
+    body = resp.json()
+    assert len(body["message"]["list"]) >= 1
+
+    # 删除
+    resp = await client.delete(
+        f"/users/me/contacts/{contact_id}",
+        headers={"Authorization": f"Bearer {test_user_token}"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["code"] == 0
+
+
+async def test_upsert_contact_overwrite(client, test_user_token, fake_redis, test_user):
+    await fake_redis.set(f"token:{test_user_token}", str(test_user.user_id))
+    await fake_redis.set(f"user_token:{test_user.user_id}", test_user_token)
+    await client.post(
+        "/users/me/contacts",
+        json={"contact_type": "QQ", "contact_value": "111111", "is_public": False},
+        headers={"Authorization": f"Bearer {test_user_token}"},
+    )
+    resp = await client.post(
+        "/users/me/contacts",
+        json={"contact_type": "QQ", "contact_value": "222222", "is_public": True},
+        headers={"Authorization": f"Bearer {test_user_token}"},
+    )
+    body = resp.json()
+    assert body["code"] == 0
+    assert body["message"]["contact_value"] == "222222"
+    assert body["message"]["is_public"] is True
+
+
+# ── 黑名单集成测试 ──────────────────────────────────────────
+
+async def test_blacklist_self_raises(client, test_user_token, fake_redis, test_user):
+    await fake_redis.set(f"token:{test_user_token}", str(test_user.user_id))
+    await fake_redis.set(f"user_token:{test_user.user_id}", test_user_token)
+    resp = await client.post(
+        "/users/me/blacklist",
+        json={"target_id": test_user.user_id},
+        headers={"Authorization": f"Bearer {test_user_token}"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["code"] != 0
+
+
+async def test_blacklist_add_and_remove(client, test_user_token, fake_redis, test_user, db_session):
+    await fake_redis.set(f"token:{test_user_token}", str(test_user.user_id))
+    await fake_redis.set(f"user_token:{test_user.user_id}", test_user_token)
+    from app.models import SexEnum, User, UserType
+    target = User(
+        user_id=2001,
+        user_uuid=b"aaaaaaaaaaaaaaaa",
+        user_name="target_user",
+        sex=SexEnum.UNKNOWN,
+        user_type=UserType.USER,
+        is_active=True,
+        is_deleted=False,
+        credit_score=100,
+        wechat_openid="target_openid_2001",
+    )
+    db_session.add(target)
+    await db_session.flush()
+
+    resp = await client.post(
+        "/users/me/blacklist",
+        json={"target_id": 2001},
+        headers={"Authorization": f"Bearer {test_user_token}"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["code"] == 0
+
+    resp = await client.get(
+        "/users/me/blacklist",
+        headers={"Authorization": f"Bearer {test_user_token}"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["message"]["total"] >= 1
+
+    resp = await client.delete(
+        "/users/me/blacklist/2001",
+        headers={"Authorization": f"Bearer {test_user_token}"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["code"] == 0

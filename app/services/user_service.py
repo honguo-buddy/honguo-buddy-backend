@@ -36,10 +36,13 @@ class UserService:
         user_name: str | None = None,
         avatar_id: int | None = None,
         sex: str | None = None,
+        bio: str | None = None,
         db: AsyncSession | None = None,
     ) -> User:
-        """更新用户个人资料（本人修改）。"""
+        """更新用户个人资料（本人修改，含 bio 个人简介）。"""
         update_data = {}
+        if bio is not None:
+            update_data["bio"] = bio
         if user_name is not None:
             update_data["user_name"] = user_name
         if avatar_id is not None:

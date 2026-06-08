@@ -690,3 +690,13 @@ order = await OrderService.create_order(db, item_type="GOODS", item_id=goods_id,
 【解决】1) Schema 层：AdminCodeSendRequest（email: EmailStr）、AdminLoginRequest（email: EmailStr + code: 6位数字正则约束）；2) Service 层：send_admin_login_code 校验 is_admin 后通过 BackgroundTasks.add_task 异步投递邮件，Redis 原子写入 code（TTL 300s）+ lock（TTL 60s）；verify_admin_login_code 先校验证码正确性再 delete 核销（阻断重放），二次验证 is_admin 状态后签发含 {"sub", "is_admin", "user_type"} 载荷的 JWT Token；3) 路由层：POST /auth/admin/send-code 和 POST /auth/admin/login 均为免 Token 鉴权开放端点，异常时统一抛出 AuthHTTPException/BusinessHTTPException 而非原生 HTTPException。
 
 【铁律】发送验证码时若邮箱不存在或非管理员，必须返回统一模糊错误（如 code=102 "认证失败，非系统授权管理员"），坚决阻断黑客探测真实管理员邮箱；验证码核销必须在 Token 签发前先 delete Redis key，防止单码多登重放攻击。
+
+
+
+五十八、 Schema 新增字段必须全链路贯穿：Schema → Route → Service → ORM（Full-Stack Field Sync Mandate）
+
+【问题】在 UserSelfUpdateRequest Schema 中新增了 bio 字段，User 模型也添加了 bio 列，但路由层 PATCH /users/me 调用 UserService.update_user_profile() 时未传递 bio 参数，服务层 update_user_profile() 也未声明 bio 形参且未将其写入 update_data 字典。结果：客户端发送 {"bio": "我是管理员"} 后接口返回 code=0 假成功，响应体中 "bio": null，数据库也未持久化——bio 被静默丢弃。
+
+【解决】1) Schema 层新增字段后，必须向下逐层审计：路由层是否将该字段传递给 Service，Service 方法签名是否接收该字段，Service 内部是否将其写入 ORM 更新字典；2) 倡导使用 model_dump(exclude_unset=True) 动态循环 setattr 而非硬编码字段列表——后者极易在 Schema 变更时遗漏；3) 修改后必须针对该字段单独发起一次 curl/Postman 验证，确认请求值在响应体中原样返回。
+
+【铁律】每次在 Pydantic Request Schema 中新增或删除字段后，必须立即 grep 该字段名在 routes/ 和 services/ 中的所有出现位置，确认该字段已贯穿 Route→Service→ORM 的全链路，严禁出现"Schema 定义了但服务层不处理"的静默丢弃 Bug。

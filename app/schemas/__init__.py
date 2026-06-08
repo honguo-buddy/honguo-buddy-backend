@@ -53,6 +53,8 @@ from app.schemas.user import (
     UserProfileResponse,
     UserPublicResponse,
     UserSelfUpdateRequest,
+    PhoneSendCodeRequest,
+    PhoneBindRequest,
     UserRead,
     UserFollowToggleRequest,
     UserFollowToggleResponse,
@@ -115,6 +117,19 @@ from app.schemas.order_review import (
 )
 
 
+from app.schemas.user_contact import (
+    ContactCreate,
+    ContactRead,
+    ContactListResponse,
+)
+from app.schemas.user_blacklist import (
+    BlacklistCreate,
+    BlacklistItem,
+    BlacklistListResponse,
+)
+from app.schemas.feedback import (
+    FeedbackCreate,
+)
 from app.schemas.goods import (
     GoodsBase,
     GoodsCreate,

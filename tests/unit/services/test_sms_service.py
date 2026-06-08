@@ -11,18 +11,19 @@ import pytest
 from app.core.exception_handler import BusinessHTTPException
 
 
-if "alibabacloud_dypnsapi20170525.client" not in sys.modules:
-    client_module = types.ModuleType("alibabacloud_dypnsapi20170525.client")
+# ── dysmsapi SDK 替身 ──────────────────────────────────────────
+if "alibabacloud_dysmsapi20170525.client" not in sys.modules:
+    client_module = types.ModuleType("alibabacloud_dysmsapi20170525.client")
 
     class DummyClient:
         def __init__(self, *_args, **_kwargs):
             return None
 
-        def send_sms_verify_code_with_options(self, *_args, **_kwargs):
-            return {"ok": True}
+        def send_sms_with_options(self, *_args, **_kwargs):
+            return SimpleNamespace(body=SimpleNamespace(code="OK"))
 
     client_module.Client = DummyClient
-    sys.modules["alibabacloud_dypnsapi20170525.client"] = client_module
+    sys.modules["alibabacloud_dysmsapi20170525.client"] = client_module
 
 if "alibabacloud_tea_openapi" not in sys.modules:
     openapi_module = types.ModuleType("alibabacloud_tea_openapi")
@@ -34,15 +35,15 @@ if "alibabacloud_tea_openapi" not in sys.modules:
     openapi_module.models = SimpleNamespace(Config=DummyConfig)
     sys.modules["alibabacloud_tea_openapi"] = openapi_module
 
-if "alibabacloud_dypnsapi20170525" not in sys.modules:
-    dypn_module = types.ModuleType("alibabacloud_dypnsapi20170525")
+if "alibabacloud_dysmsapi20170525" not in sys.modules:
+    dysmsapi_module = types.ModuleType("alibabacloud_dysmsapi20170525")
 
     class DummySendReq:
         def __init__(self, **kwargs):
             self.kwargs = kwargs
 
-    dypn_module.models = SimpleNamespace(SendSmsVerifyCodeRequest=DummySendReq)
-    sys.modules["alibabacloud_dypnsapi20170525"] = dypn_module
+    dysmsapi_module.models = SimpleNamespace(SendSmsRequest=DummySendReq)
+    sys.modules["alibabacloud_dysmsapi20170525"] = dysmsapi_module
 
 if "alibabacloud_tea_util" not in sys.modules:
     util_module = types.ModuleType("alibabacloud_tea_util")
@@ -77,7 +78,7 @@ async def test_create_client_success(monkeypatch):
     monkeypatch.setattr("app.services.sms_service.settings.ALI_ACCESS_KEY_SECRET", "sk")
 
     with patch("app.services.sms_service.open_api_models.Config", return_value=fake_config) as config_mock:
-        with patch("app.services.sms_service.Dypnsapi20170525Client", return_value=fake_client) as client_mock:
+        with patch("app.services.sms_service.Dysmsapi20170525Client", return_value=fake_client) as client_mock:
             client = SMSService._create_client()
 
     assert client is fake_client
@@ -97,7 +98,7 @@ async def test_send_code_rate_limit_and_template_validation(monkeypatch, fake_re
     monkeypatch.setattr("app.services.sms_service.settings.SMS_TEMPLATE_CODE", "")
     monkeypatch.setattr("app.services.sms_service.settings.SMS_SIGN_NAME", "")
 
-    with patch.object(SMSService, "_create_client", return_value=SimpleNamespace(send_sms_verify_code_with_options=MagicMock())):
+    with patch.object(SMSService, "_create_client", return_value=SimpleNamespace(send_sms_with_options=MagicMock())):
         with pytest.raises(BusinessHTTPException) as config_err:
             await SMSService.send_code("13800138000")
     assert "短信模板或签名未配置" in config_err.value.detail["msg"]
@@ -109,15 +110,30 @@ async def test_send_code_provider_failure_and_success(monkeypatch, fake_redis):
     monkeypatch.setattr("app.services.sms_service.settings.SMS_SIGN_NAME", "SIGN")
     monkeypatch.setattr(SMSService, "_generate_code", lambda length=6: "123456")
 
-    fail_client = SimpleNamespace(send_sms_verify_code_with_options=MagicMock(side_effect=RuntimeError("provider error")))
+    # 模拟 SDK 抛出异常
+    fail_client = SimpleNamespace(send_sms_with_options=MagicMock(side_effect=RuntimeError("provider error")))
     with patch.object(SMSService, "_create_client", return_value=fail_client):
         with pytest.raises(BusinessHTTPException) as send_err:
             await SMSService.send_code("13800138001")
     assert "短信发送失败" in send_err.value.detail["msg"]
     assert await fake_redis.get("sms:code:13800138001") is None
 
+    # 模拟阿里云返回业务失败（code != "OK"）
     await fake_redis.delete("sms:rate:13800138001")
-    ok_client = SimpleNamespace(send_sms_verify_code_with_options=MagicMock(return_value={"ok": True}))
+    fail_body = SimpleNamespace(code="isv.BUSINESS_LIMIT_CONTROL", message="触发业务限流")
+    fail_resp = SimpleNamespace(body=fail_body)
+    bad_client = SimpleNamespace(send_sms_with_options=MagicMock(return_value=fail_resp))
+    with patch.object(SMSService, "_create_client", return_value=bad_client):
+        with pytest.raises(BusinessHTTPException) as biz_err:
+            await SMSService.send_code("13800138001")
+    assert "触发业务限流" in biz_err.value.detail["msg"]
+    assert await fake_redis.get("sms:code:13800138001") is None
+
+    # 模拟发送成功
+    await fake_redis.delete("sms:rate:13800138001")
+    ok_body = SimpleNamespace(code="OK", message="OK")
+    ok_resp = SimpleNamespace(body=ok_body)
+    ok_client = SimpleNamespace(send_sms_with_options=MagicMock(return_value=ok_resp))
     with patch.object(SMSService, "_create_client", return_value=ok_client):
         result = await SMSService.send_code("13800138001")
 

@@ -15,12 +15,13 @@ from app.schemas import (
     AdminLoginRequest,
     EmailSendVerifyCodeRequest,
     EmailVerifyCodeRequest,
+    FeedbackCreate,
     WxLoginRequest,
     AuthErrorResponse,
     ResponseModel,
     user as UserSchema,
 )
-from app.services import AuthService
+from app.services import AuthService, FeedbackService
 
 logger = logging.getLogger(__name__)
 
@@ -358,3 +359,24 @@ async def admin_login(
     )
     logger.info(f"管理员登录成功 user_id={message['userId']}")
     return ResponseModel(code=settings.SUCCESS_CODE, message=message)
+
+@router.post("/feedback", response_model=ResponseModel)
+async def submit_feedback(
+    payload: FeedbackCreate,
+    current_user: Optional[UserSchema] = Depends(get_current_user_optional),
+    db: AsyncSession = Depends(get_db),
+):
+    """提交意见反馈（支持匿名）。
+
+    已登录用户自动关联 user_id，未登录用户以匿名方式提交。
+    feedback_type 可选值：BUG / FEATURE / OTHER。
+    """
+    user_id = current_user.user_id if current_user else None
+    await FeedbackService.create_feedback(
+        db=db,
+        content=payload.content,
+        feedback_type=payload.feedback_type,
+        contact_info=payload.contact_info,
+        user_id=user_id,
+    )
+    return ResponseModel(code=settings.SUCCESS_CODE, message={"detail": "感谢您的反馈，我们会尽快处理"})

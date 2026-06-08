@@ -32,9 +32,9 @@ pipeline {
         DEBUG       = 'true'
         DEBUG_SKIP_PASSWORD_CHECK = 'false'
         WX_APP_ID   = 'wx78bd4e0726460743'
-        ALI_ACCESS_KEY_ID = 'LTAI5t91CbPcGqHbygsqXXhd'
-        SMS_TEMPLATE_CODE = '100001'
-        SMS_SIGN_NAME     = '速通互联验证码'
+        ALI_ACCESS_KEY_ID = 'LTAI5t6TB4F6msHD8qnNzCGp'
+        SMS_TEMPLATE_CODE = 'SMS_329030094'
+        SMS_SIGN_NAME     = '青岛深度思维创意'
 
         // --- 3. 基础指令定义 ---
         GERRIT_BASE_CMD = "ssh -p 29418 jenkins@gerrit.lilingkun.com gerrit review ${env.GERRIT_PATCHSET_REVISION ?: ''}"

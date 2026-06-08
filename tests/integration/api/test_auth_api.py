@@ -301,3 +301,40 @@ class TestEmailVerification:
         await db_session.refresh(test_user)
         assert test_user.email == campus_email
         assert test_user.is_verified is True
+
+# ── 意见反馈集成测试 ──────────────────────────────────────────
+
+async def test_submit_feedback_anonymous(client):
+    resp = await client.post(
+        "/auth/feedback",
+        json={"content": "这是一个匿名测试反馈，至少要有十个字才行", "feedback_type": "BUG"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["code"] == 0
+    assert "感谢" in body["message"]["detail"]
+
+
+async def test_submit_feedback_authenticated(client, test_user_token):
+    resp = await client.post(
+        "/auth/feedback",
+        json={
+            "content": "已登录用户提交的测试反馈，至少十个字",
+            "feedback_type": "FEATURE",
+            "contact_info": "13800138000",
+        },
+        headers={"Authorization": f"Bearer {test_user_token}"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["code"] == 0
+
+
+async def test_submit_feedback_too_short(client):
+    resp = await client.post(
+        "/auth/feedback",
+        json={"content": "太短"},
+    )
+    assert resp.status_code == 200  # FastAPI validation errors are still 200 via exception handlers
+    body = resp.json()
+    assert body["code"] != 0

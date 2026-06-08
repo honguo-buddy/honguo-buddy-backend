@@ -11,15 +11,23 @@ from fastapi import APIRouter, BackgroundTasks, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api import get_current_user, get_current_user_optional
-from app.core import settings, AuthHTTPException
+from app.core import settings, AuthHTTPException, BusinessHTTPException, ResourceHTTPException
 from app.db import get_db, get_redis, redis
 from app.schemas import (
     AuthErrorResponse,
+    BlacklistCreate,
+    BlacklistItem,
+    BlacklistListResponse,
+    ContactCreate,
+    ContactRead,
+    ContactListResponse,
     FavoriteListResponse,
     HistoryDeletePayload,
     FavoriteRequest,
     FavoriteResponse,
     HistoryListResponse,
+    PhoneSendCodeRequest,
+    PhoneBindRequest,
     ResponseModel,
     UserFollowListResponse,
     UserFollowToggleRequest,
@@ -29,7 +37,7 @@ from app.schemas import (
     UserPublicResponse,
     UserSelfUpdateRequest,
 )
-from app.services import AttachmentService, MetricsService, ReputationService, SocialService, UserService
+from app.services import AttachmentService, BlacklistService, ContactService, MetricsService, ReputationService, SMSService, SocialService, UserService
 from app.models import User as UserModel
 
 router = APIRouter()
@@ -92,8 +100,8 @@ async def update_me(
     仅允许修改以下字段：
     - user_name: 用户名
     - avatar_id: 用户头像附件ID
+    - bio: 个人简介
     - sex: 性别
-    
     以下字段无法修改：
     - user_id、user_uuid（固定标识）
     - email、phonenumber（需专门认证接口）
@@ -104,6 +112,7 @@ async def update_me(
         user_name=update_req.user_name,
         avatar_id=update_req.avatar_id,
         sex=update_req.sex,
+        bio=update_req.bio,
         db=db,
     )
     # Invalidate all Read-Through profile caches after mutation
@@ -452,4 +461,118 @@ async def delete_user_admin(
         message={"message": f"用户 {user_id} 已被禁用/删除"},
     )
 
+# ── 手机号绑定 ──────────────────────────────────────────────
 
+@router.post("/me/phone/send-code", response_model=ResponseModel)
+async def send_phone_bind_code(
+    payload: PhoneSendCodeRequest,
+    current_user: UserSchema = Depends(get_current_user),
+):
+    """发送手机号绑定验证码。
+
+    调用阿里云 SMS 服务向指定手机号发送6位数字验证码，内置60秒防刷节流。
+    验证码有效期5分钟，最多尝试3次。
+    """
+    if SMSService is None:
+        raise BusinessHTTPException(code=settings.DATA_GET_FAILED_CODE, msg="短信服务未初始化")
+    result = await SMSService.send_code(payload.phone)
+    return ResponseModel(code=settings.SUCCESS_CODE, message=result)
+
+
+@router.post("/me/phone/bind", response_model=ResponseModel)
+async def bind_phone(
+    payload: PhoneBindRequest,
+    current_user: UserSchema = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """校验验证码并绑定手机号到当前用户。
+
+    先调用 SMSService.verify_code 核销验证码，验证通过后将 phone 写入
+    current_user.phonenumber 并 commit 落库。
+    """
+    if SMSService is None:
+        raise BusinessHTTPException(code=settings.DATA_GET_FAILED_CODE, msg="短信服务未初始化")
+    await SMSService.verify_code(payload.phone, payload.code)
+
+    # 写入 phonenumber
+    user_obj = await db.get(UserModel, current_user.user_id)
+    if not user_obj:
+        raise ResourceHTTPException(code=settings.USER_GET_FAILED_CODE, msg="用户不存在")
+    user_obj.phonenumber = payload.phone
+    await db.commit()
+
+    return ResponseModel(code=settings.SUCCESS_CODE, message={"detail": "手机号绑定成功", "phone": payload.phone})
+
+# ── 联系方式管理 ──────────────────────────────────────────────
+
+@router.get("/me/contacts", response_model=ResponseModel[ContactListResponse])
+async def list_my_contacts(
+    current_user: UserSchema = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """拉取当前用户配置的所有联系方式。"""
+    contacts = await ContactService.list_contacts(db, current_user.user_id)
+    return ResponseModel(
+        code=settings.SUCCESS_CODE,
+        message=ContactListResponse(list=[ContactRead.model_validate(c) for c in contacts]),
+    )
+
+
+@router.post("/me/contacts", response_model=ResponseModel[ContactRead])
+async def upsert_my_contact(
+    payload: ContactCreate,
+    current_user: UserSchema = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """新增或覆盖某种联系方式。同一类型（PHONE/WECHAT/QQ）只能有一条记录。"""
+    contact = await ContactService.upsert_contact(
+        db, current_user.user_id, payload.contact_type, payload.contact_value, payload.is_public
+    )
+    return ResponseModel(code=settings.SUCCESS_CODE, message=ContactRead.model_validate(contact))
+
+
+@router.delete("/me/contacts/{contact_id}", response_model=ResponseModel)
+async def delete_my_contact(
+    contact_id: int,
+    current_user: UserSchema = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """定点删除某个联系方式渠道。"""
+    await ContactService.delete_contact(db, current_user.user_id, contact_id)
+    return ResponseModel(code=settings.SUCCESS_CODE, message={"detail": "联系方式已删除"})
+
+
+# ── 黑名单管理 ──────────────────────────────────────────────
+
+@router.post("/me/blacklist", response_model=ResponseModel)
+async def add_blacklist(
+    payload: BlacklistCreate,
+    current_user: UserSchema = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """拉黑目标用户。"""
+    entry = await BlacklistService.add_to_blacklist(db, current_user.user_id, payload.target_id)
+    return ResponseModel(code=settings.SUCCESS_CODE, message={"detail": "已拉黑", "target_id": payload.target_id})
+
+
+@router.delete("/me/blacklist/{target_id}", response_model=ResponseModel)
+async def remove_blacklist(
+    target_id: int,
+    current_user: UserSchema = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """解除拉黑。"""
+    await BlacklistService.remove_from_blacklist(db, current_user.user_id, target_id)
+    return ResponseModel(code=settings.SUCCESS_CODE, message={"detail": "已解除拉黑", "target_id": target_id})
+
+
+@router.get("/me/blacklist", response_model=ResponseModel[BlacklistListResponse])
+async def list_my_blacklist(
+    page: int = 1,
+    page_size: int = 20,
+    current_user: UserSchema = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """分页拉取当前用户的黑名单列表。"""
+    result = await BlacklistService.list_blacklist(db, current_user.user_id, page, page_size)
+    return ResponseModel(code=settings.SUCCESS_CODE, message=BlacklistListResponse(**result))

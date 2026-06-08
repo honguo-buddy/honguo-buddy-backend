@@ -408,6 +408,40 @@ DATA_GET_FAILED: 301
 
 ---
 
+
+#### 4.1.8 提交意见反馈 (POST: /auth/feedback)
+
+用途: 收集用户对系统的反馈建议（支持匿名提交）。登录用户自动关联 user_id，未登录以匿名方式落库。content 最少10字，feedback_type 可选 BUG / FEATURE / OTHER。
+
+请求头: Authorization: Bearer <token>（可选，未登录也可提交）。
+
+请求示例:
+
+```json
+{
+    "content": "搜索功能在输入中文时偶尔出现乱码，建议排查编码问题",
+    "feedback_type": "BUG",
+    "contact_info": "wechat: user123"
+}
+```
+
+成功响应:
+
+```json
+{
+    "code": 0,
+    "message": {
+        "detail": "感谢您的反馈，我们会尽快处理"
+    }
+}
+```
+
+常见错误:
+
+- code: 99  - content 少于10字或请求体格式不合法。
+
+---
+
 ### 4.2 USER 用户模块
 
 #### 4.2.1 获取当前用户信息 (GET: /users/info)
@@ -494,7 +528,7 @@ DATA_GET_FAILED: 301
 
 说明：
 - 请求体字段均为可选，用户可只提交部分字段进行局部更新。
-- `user_name`、`avatar_id`、`sex` 都是可选字段。
+- `user_name`、`avatar_id`、`bio`、`sex` 都是可选字段。
 
 请求头: Authorization: Bearer <token>。
 
@@ -504,9 +538,9 @@ DATA_GET_FAILED: 301
 {
     "user_name": "新昵称",
     "avatar_id": 123,
+    "bio": "我的个人简介",
     "sex": "女"
 }
-```
 
 成功响应:
 
@@ -519,6 +553,7 @@ DATA_GET_FAILED: 301
         "user_name": "新昵称",
         "avatar": "/static/avatar/avatar_1001_1680000000.png",
         "avatar_id": 123,
+        "bio": "我的个人简介",
         "sex": "女",
         "email": "test@example.com",
         "phonenumber": "13800000000",
@@ -531,7 +566,6 @@ DATA_GET_FAILED: 301
         "last_login_time": 1700000000,
         "wechat_unionid": null
     }
-}
 ```
 
 常见错误:
@@ -1110,6 +1144,279 @@ DATA_GET_FAILED: 301
 常见错误:
 
 - code: 103 - 用户不存在。
+
+
+#### 4.2.17 发送手机号绑定验证码 (POST: /users/me/phone/send-code)
+
+用途: 向指定手机号发送6位数字短信验证码，用于后续绑定手机号。内置60秒防刷节流，验证码5分钟有效。
+
+请求头: Authorization: Bearer <token>（必须登录）。
+
+请求示例:
+
+```json
+{
+    "phone": "13800138000"
+}
+```
+
+成功响应:
+
+```json
+{
+    "code": 0,
+    "message": {
+        "detail": "验证码已发送"
+    }
+}
+```
+
+常见错误:
+
+- code: 99  - 手机号格式不合法或发送过于频繁。
+- code: 106 - 短信服务未配置或发送失败。
+
+---
+
+#### 4.2.18 校验验证码并绑定手机号 (POST: /users/me/phone/bind)
+
+用途: 校验短信验证码，通过后将手机号写入当前用户的 phonenumber 字段。
+
+请求头: Authorization: Bearer <token>（必须登录）。
+
+请求示例:
+
+```json
+{
+    "phone": "13800138000",
+    "code": "482915"
+}
+```
+
+成功响应:
+
+```json
+{
+    "code": 0,
+    "message": {
+        "detail": "手机号绑定成功",
+        "phone": "13800138000"
+    }
+}
+```
+
+常见错误:
+
+- code: 106 - 验证码错误、过期或尝试次数过多。
+- code: 103 - 用户不存在。
+
+---
+
+#### 4.2.19 获取我的联系方式列表 (GET: /users/me/contacts)
+
+用途: 拉取当前用户配置的所有联系方式（手机号/微信/QQ）。
+
+请求头: Authorization: Bearer <token>（必须登录）。
+
+请求示例:
+
+```
+GET /users/me/contacts
+```
+
+（无需请求体）
+
+成功响应:
+
+```json
+{
+    "code": 0,
+    "message": {
+        "list": [
+            {
+                "contact_id": 1,
+                "user_id": 4,
+                "contact_type": "WECHAT",
+                "contact_value": "wxid_abc123",
+                "is_public": true
+            }
+        ]
+    }
+}
+```
+
+---
+
+#### 4.2.20 新增或覆盖联系方式 (POST: /users/me/contacts)
+
+用途: 追加或覆盖某种联系方式。同一类型（PHONE/WECHAT/QQ）只能有一条记录，重复提交自动覆盖旧值。
+
+请求头: Authorization: Bearer <token>（必须登录）。
+
+请求示例:
+
+```json
+{
+    "contact_type": "WECHAT",
+    "contact_value": "wxid_abc123",
+    "is_public": true
+}
+```
+
+成功响应:
+
+```json
+{
+    "code": 0,
+    "message": {
+        "contact_id": 1,
+        "user_id": 4,
+        "contact_type": "WECHAT",
+        "contact_value": "wxid_abc123",
+        "is_public": true
+    }
+}
+```
+
+常见错误:
+
+- code: 99  - contact_type 或 contact_value 为空。
+
+---
+
+#### 4.2.21 删除联系方式 (DELETE: /users/me/contacts/{contact_id})
+
+用途: 定点删除某个联系方式渠道。仅允许删除本人条目。
+
+请求头: Authorization: Bearer <token>（必须登录）。
+
+请求示例:
+
+```
+DELETE /users/me/contacts/1
+```
+
+（无需请求体）
+
+成功响应:
+
+```json
+{
+    "code": 0,
+    "message": {
+        "detail": "联系方式已删除"
+    }
+}
+```
+
+常见错误:
+
+- code: 106 - 联系方式不存在或无权操作。
+
+---
+
+#### 4.2.22 拉黑用户 (POST: /users/me/blacklist)
+
+用途: 将目标用户加入黑名单。不能拉黑自己，重复拉黑返回错误。
+
+请求头: Authorization: Bearer <token>（必须登录）。
+
+请求示例:
+
+```json
+{
+    "target_id": 5
+}
+```
+
+成功响应:
+
+```json
+{
+    "code": 0,
+    "message": {
+        "detail": "已拉黑",
+        "target_id": 5
+    }
+}
+```
+
+常见错误:
+
+- code: 99  - 不能拉黑自己或已在黑名单中。
+- code: 103 - 目标用户不存在。
+
+---
+
+#### 4.2.23 解除拉黑 (DELETE: /users/me/blacklist/{target_id})
+
+用途: 将指定用户移出黑名单。
+
+请求头: Authorization: Bearer <token>（必须登录）。
+
+请求示例:
+
+```
+DELETE /users/me/blacklist/5
+```
+
+（无需请求体）
+
+成功响应:
+
+```json
+{
+    "code": 0,
+    "message": {
+        "detail": "已解除拉黑",
+        "target_id": 5
+    }
+}
+```
+
+常见错误:
+
+- code: 106 - 该用户不在黑名单中。
+
+---
+
+#### 4.2.24 获取黑名单列表 (GET: /users/me/blacklist)
+
+用途: 分页拉取当前用户的黑名单列表，内含被拉黑用户的 user_name 与头像。
+
+请求头: Authorization: Bearer <token>（必须登录）。
+
+请求示例:
+
+```
+GET /users/me/blacklist?page=1&page_size=20
+```
+
+（无需请求体）
+
+成功响应:
+
+```json
+{
+    "code": 0,
+    "message": {
+        "total": 1,
+        "page": 1,
+        "page_size": 20,
+        "list": [
+            {
+                "blacklist_id": 1,
+                "target_id": 5,
+                "target_name": "李四",
+                "target_avatar": "/static/avatar/user_5.png",
+                "create_time": "2026-06-08T12:00:00"
+            }
+        ]
+    }
+}
+```
+
+---
 
 ### 4.3 附件上传模块
 

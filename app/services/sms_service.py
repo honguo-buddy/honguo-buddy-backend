@@ -2,15 +2,16 @@ import os
 import json
 import random
 from typing import Optional
-from alibabacloud_dypnsapi20170525.client import Client as Dypnsapi20170525Client
+from alibabacloud_dysmsapi20170525.client import Client as Dysmsapi20170525Client
 from alibabacloud_tea_openapi import models as open_api_models
-from alibabacloud_dypnsapi20170525 import models as dypnsapi_20170525_models
+from alibabacloud_dysmsapi20170525 import models as dysmsapi_models
 from alibabacloud_tea_util import models as util_models
 from app.db import redis
 from app.core import BusinessHTTPException, get_now, settings
 
 class SMSService:
     """短信验证码服务适配器。负责生成、发送、校验验证码与防刷控制。
+
     Redis Keys:
       - sms:code:{phone} -> {"code": str, "timestamp": float, "attempts": int}
       - sms:rate:{phone} -> 1 (TTL=RATE_LIMIT_SECONDS)
@@ -22,8 +23,8 @@ class SMSService:
     VERIFIED_WINDOW_SECONDS = getattr(settings, "SMS_VERIFIED_WINDOW_SECONDS", 900)  # 验证通过后的注册窗口，默认15分钟
 
     @staticmethod
-    def _create_client() -> Dypnsapi20170525Client:
-        """创建阿里云短信客户端，使用正确的凭证初始化方式避免云端 SDK 版本不兼容"""
+    def _create_client() -> Dysmsapi20170525Client:
+        """创建阿里云短信客户端。"""
         ak = settings.ALI_ACCESS_KEY_ID
         sk = settings.ALI_ACCESS_KEY_SECRET
         if not ak or not sk:
@@ -31,17 +32,16 @@ class SMSService:
                 code=settings.DATA_GET_FAILED_CODE,
                 msg="短信服务未配置，缺少 AK/SK"
             )
-        # 显式传递凭证，避免 'CredentialModel' 对象属性缺失的问题
         config = open_api_models.Config(
             access_key_id=ak,
             access_key_secret=sk,
-            region_id='cn-hangzhou'  # 阿里云短信服务默认区域
+            endpoint="dysmsapi.aliyuncs.com",
         )
-        return Dypnsapi20170525Client(config)
+        return Dysmsapi20170525Client(config)
 
     @staticmethod
     def _generate_code(length: int = 6) -> str:
-        return ''.join(str(random.randint(0, 9)) for _ in range(length))
+        return "".join(str(random.randint(0, 9)) for _ in range(length))
 
     @classmethod
     async def send_code(cls, phone: str) -> dict:
@@ -56,7 +56,6 @@ class SMSService:
 
         code = cls._generate_code(6)
         data = {"code": code, "timestamp": get_now().timestamp(), "attempts": 0}
-        # 使用 json 序列化替代不安全的 Python 字符串表示
         await redis.set(f"sms:code:{phone}", json.dumps(data), ex=cls.CODE_TTL_SECONDS)
 
         # 发送短信
@@ -68,17 +67,25 @@ class SMSService:
                 code=settings.DATA_GET_FAILED_CODE,
                 msg="短信模板或签名未配置"
             )
-        req = dypnsapi_20170525_models.SendSmsVerifyCodeRequest(
-            template_param=f'{{"code":"{code}","min":"5"}}',
-            template_code=template_code,
+        req = dysmsapi_models.SendSmsRequest(
+            phone_numbers=phone,
             sign_name=sign_name,
-            phone_number=phone,
+            template_code=template_code,
+            template_param=json.dumps({"code": code}),
         )
         runtime = util_models.RuntimeOptions()
         try:
-            _ = client.send_sms_verify_code_with_options(req, runtime)
+            response = client.send_sms_with_options(req, runtime)
+            if response.body.code != "OK":
+                await redis.delete(f"sms:code:{phone}")
+                err_msg = getattr(response.body, "message", "") or "未知错误"
+                raise BusinessHTTPException(
+                    code=settings.DATA_GET_FAILED_CODE,
+                    msg=f"短信发送失败：{err_msg}"
+                )
+        except BusinessHTTPException:
+            raise
         except Exception as e:
-            # 发送失败，清理验证码
             await redis.delete(f"sms:code:{phone}")
             raise BusinessHTTPException(
                 code=settings.DATA_GET_FAILED_CODE,
@@ -94,9 +101,7 @@ class SMSService:
                 code=settings.DATA_GET_FAILED_CODE,
                 msg="验证码错误或已过期"
             )
-        # 简单解析（存储为 str 的 dict），避免引入额外依赖
         try:
-            # 形如 {"code": "123456", "timestamp": 173322..., "attempts": 0}
             data = json.loads(raw)
             if not isinstance(data, dict):
                 raise ValueError("sms code data is not a dict")

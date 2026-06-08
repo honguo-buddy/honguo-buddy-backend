@@ -40,6 +40,7 @@ class User(Base):
         comment="用户类型",
     )
     credit_score = Column(Integer, default=0, nullable=False, comment="信用分")
+    bio = Column(String(255), nullable=True, comment="个人简介")
     is_verified = Column(Boolean, default=False, nullable=False, comment="是否完成认证")
     is_active = Column(Boolean, default=True, nullable=False, comment="是否可用")
     is_admin = Column(Boolean, default=False, nullable=False, comment="是否超级管理员")
@@ -67,6 +68,9 @@ class User(Base):
     followings = relationship("UserFollow", foreign_keys="UserFollow.follower_id", back_populates="follower")
     followers = relationship("UserFollow", foreign_keys="UserFollow.following_id", back_populates="following")
     favorites = relationship("UserFavorite", back_populates="user")
+    contacts = relationship("UserContact", back_populates="user")
+    blacklist_entries = relationship("UserBlacklist", foreign_keys="UserBlacklist.user_id", back_populates="user")
+    feedbacks = relationship("Feedback", back_populates="user")
 
 
 def parse_user_type(value: str) -> UserType:

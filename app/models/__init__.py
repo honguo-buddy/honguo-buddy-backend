@@ -9,8 +9,11 @@ from app.models.orderreview import OrderReview, ReviewType
 from app.models.post import Direction, Post, PostMetrics, PostStatus, UrgencyLevel
 from app.models.user import SexEnum, User, UserReputation, UserType, parse_user_type
 from app.models.user_access_log import UserAccessLog
-from app.models.user_follow import UserFollow
+from app.models.user_blacklist import UserBlacklist
+from app.models.user_contact import UserContact
 from app.models.user_favorite import FavoriteTargetType, UserFavorite
+from app.models.user_follow import UserFollow
+from app.models.feedback import Feedback
 
 __all__ = [
     "Attachment",
@@ -35,9 +38,17 @@ __all__ = [
     "Post",
     "PostStatus",
     "UrgencyLevel",
+    "PostMetrics",
     "SexEnum",
     "User",
+    "UserReputation",
     "UserType",
     "parse_user_type",
     "UserAccessLog",
+    "UserBlacklist",
+    "UserContact",
+    "UserFavorite",
+    "FavoriteTargetType",
+    "UserFollow",
+    "Feedback",
 ]
