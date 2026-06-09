@@ -700,3 +700,23 @@ order = await OrderService.create_order(db, item_type="GOODS", item_id=goods_id,
 【解决】1) Schema 层新增字段后，必须向下逐层审计：路由层是否将该字段传递给 Service，Service 方法签名是否接收该字段，Service 内部是否将其写入 ORM 更新字典；2) 倡导使用 model_dump(exclude_unset=True) 动态循环 setattr 而非硬编码字段列表——后者极易在 Schema 变更时遗漏；3) 修改后必须针对该字段单独发起一次 curl/Postman 验证，确认请求值在响应体中原样返回。
 
 【铁律】每次在 Pydantic Request Schema 中新增或删除字段后，必须立即 grep 该字段名在 routes/ 和 services/ 中的所有出现位置，确认该字段已贯穿 Route→Service→ORM 的全链路，严禁出现"Schema 定义了但服务层不处理"的静默丢弃 Bug。
+
+
+
+五十九、 发帖方向与分类方向强一致性校验：从路由层到服务层双重卡位 (Direction Consistency Enforcement: Route + Service Dual Guard)
+
+【问题】客户端创建帖子时传 category_id 指向 SELL 分类但 direction=BUY，接口成功落库未报错。排查发现两个隐患：(1) 服务层使用 select(Category).where() + scalar_one_or_none() 可能因 ORM 会话缓存返回过期数据；(2) 路由层包裹了 try/except Exception 做了二次包装，导致服务层抛出的 BusinessHTTPException 被吞并改写为通用"发布失败"提示，丧失了具体拦截语义。
+
+【解决】1) 服务层方向对账使用 await db.get(Category, category_id) 替代 select/where 查询——db.get 直接从数据库主键命中，不经过 identity map 缓存，确保拿到的是最新物理值；2) 比对前统一转字符串字面量：cat_dir_str = category_obj.direction.value if hasattr(...) else str(...)，与 post_dir_str 做纯字符串 != 比较，彻底斩断 Enum 与 String 类型错配可能性；3) 路由层不再用裸 except Exception 包裹 create_post 调用并改写异常——若服务层已抛出规范的 BusinessHTTPException（如"方向不一致"），应直接向上透传给全局异常处理器渲染，仅在真正的非预期异常时才兜底。
+
+【铁律】跨模型字段一致性校验（如 Post.direction vs Category.direction）必须：(a) 使用 await db.get() 而非 select/where 避免会话缓存污染；(b) 比较前统一转换为纯字符串字面量；(c) 校验失败抛出 BusinessHTTPException(code=301) 并由路由层无损透传，禁止路由层以宽泛的 try/except Exception 二次包装后吞没具体错误语义。
+
+
+
+六十、 Redis 缓存重建时严禁对可能为 int/datetime/None 的字段盲调类型方法 (Cache Rebuild Type Safety: Never Blindly Call Type-Specific Methods)
+
+【问题】在 GET /me 和 PATCH /me 两个路由中，用 `get_user_with_avatar_url` 返回的 dict 重建 Redis 缓存时，对 `last_login_time` 字段盲调 `.isoformat()`。但该字段在 ORM DateTime 列返回、JSON 序列化反序列化、或不同 API 调用链中可能以 `datetime`、`int`(Unix timestamp)、`None` 三种形态出现——对 int 调 `.isoformat()` 直接 AttributeError，且外层 `try/except Exception` 静默吞错，导致缓存永远写不进去，每次请求都回源 DB。
+
+【解决】对 `last_login_time` 的序列化采用防御写法：`value.isoformat() if hasattr(value, "isoformat") else value`——仅在值为 datetime 对象时才调 isoformat，int/None 原样通过。JSON 序列化时配合 `json.dumps(..., default=str)` 兜底，确保最终写入 Redis 的字符串自洽。
+
+【铁律】凡是来自 `_build_user_payload` 等工具函数返回的 dict，其值类型不可假设。对任何需要 `.isoformat()` / `.value` / `.hex()` 等类型专属方法的字段，必须先 `hasattr(obj, method_name)` 做鸭子类型守卫，不可盲调。缓存写入 block 的 except 日志必须打印异常详情 `exc_info=True`，禁止裸吞。

@@ -175,7 +175,7 @@ class UserService:
 
         payload = {
             "user_id": user.user_id,
-            "user_uuid": user.user_uuid,
+            "user_uuid": user.user_uuid.hex() if isinstance(user.user_uuid, bytes) else str(user.user_uuid) if user.user_uuid else "",
             "user_name": user.user_name,
             "avatar": avatar_url,
             "sex": user.sex.value if hasattr(user.sex, "value") else user.sex,
@@ -194,6 +194,7 @@ class UserService:
                     "last_login_ip": user.last_login_ip,
                     "last_login_time": user.last_login_time,
                     "wechat_unionid": user.wechat_unionid,
+                    "bio": user.bio,
                 }
             )
 

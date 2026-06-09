@@ -127,13 +127,14 @@ async def publish_post(
             code=settings.SUCCESS_CODE,
             message=_build_post_read(post, current_accepters),
         )
+    except BusinessHTTPException:
+        raise
     except Exception as e:
         logger.error(f"发布帖子失败 user_id={current_user.user_id}: {e}", exc_info=True)
         raise BusinessHTTPException(
             code=settings.REQ_ERROR_CODE,
             msg="发布帖子失败，请稍后重试",
         )
-
 
 @router.get("/", response_model=ResponseModel[PostList])
 async def list_posts(
@@ -146,6 +147,8 @@ async def list_posts(
     create_time_start: Optional[str] = Query(None, description="创建时间起始（ISO 格式：YYYY-MM-DD HH:MM:SS）"),
     create_time_end: Optional[str] = Query(None, description="创建时间结束（ISO 格式：YYYY-MM-DD HH:MM:SS）"),
     status: Optional[str] = Query(None, description="状态（OPEN, IN_PROGRESS, CLOSED, CANCELLED）"),
+    template_segment_1: Optional[str] = Query(None, description="模板数据文本片段1，模糊匹配 template_data 全文"),
+    template_segment_2: Optional[str] = Query(None, description="模板数据文本片段2，模糊匹配 template_data 全文"),
     page: int = Query(1, ge=1, description="页码"),
     page_size: int = Query(20, ge=1, le=100, description="每页数量"),
     db: AsyncSession = Depends(get_db),
@@ -171,7 +174,8 @@ async def list_posts(
             create_time_start=create_time_start,
             create_time_end=create_time_end,
             status=status,
-            template_filters=None,  # 暂时为 None，后续可扩展
+            template_segment_1=template_segment_1,
+            template_segment_2=template_segment_2,
             page=page,
             page_size=page_size,
         )

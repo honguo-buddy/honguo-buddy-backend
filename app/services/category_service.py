@@ -15,7 +15,7 @@ class CategoryService:
     """模板分类服务层。"""
 
     @staticmethod
-    async def list_categories(db: AsyncSession, item_type: str | None = None) -> List[Category]:
+    async def list_categories(db: AsyncSession, item_type: str | None = None, direction: str | None = None) -> List[Category]:
         stmt = select(Category).where(Category.is_deleted == False)
         if item_type:
             # 接受 POST/GOODS 字符串，统一为大写进行比较
@@ -25,6 +25,11 @@ class CategoryService:
             else:
                 # 非法类型返回空列表
                 return []
+        if direction:
+            dir_val = str(direction).upper()
+            if dir_val in {"SELL", "BUY"}:
+                stmt = stmt.where(Category.direction == dir_val)
+
         stmt = stmt.order_by(Category.create_time.desc())
         res = await db.execute(stmt)
         return list(res.scalars().all())
@@ -51,11 +56,24 @@ class CategoryService:
         # 创建分类时，必须将当前请求的 payload.item_type 顺手喂进唯一性校验中
         await CategoryService._ensure_name_unique(db, name=payload.name, item_type=payload.item_type)
 
+        # 交易方向强制卡位逻辑
+        direction = None
+        if getattr(payload, "direction", None) is not None:
+            direction = payload.direction.value if hasattr(payload.direction, "value") else str(payload.direction).upper()
+        if direction is None:
+            direction = "SELL"
+        # GOODS 刚性约束：仅允许 SELL
+        if str(payload.item_type).upper() == "GOODS":
+            if direction == "BUY":
+                raise BusinessHTTPException(code=settings.DATA_GET_FAILED_CODE, msg="二手商品分类仅支持 SELL 方向")
+            direction = "SELL"
+
         category = Category(
             name=payload.name,
             icon=payload.icon,
             config_json=payload.config_json,
             item_type=ItemType[payload.item_type] if getattr(payload, "item_type", None) else ItemType.POST,
+            direction=direction,
         )
         db.add(category)
         await db.flush()

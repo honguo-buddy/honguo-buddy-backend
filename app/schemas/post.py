@@ -30,6 +30,18 @@ class PostCreate(BaseModel):
             raise ValueError("template_filters 必须是对象")
         return v
 
+    @field_validator("direction")
+    @classmethod
+    def validate_direction(cls, v: str) -> str:
+        """规范化并校验交易方向：必须为 SELL 或 BUY（大小写不敏感）。"""
+        if not v or not str(v).strip():
+            return "SELL"
+        text = str(v).strip().upper()
+        if text not in {"SELL", "BUY"}:
+            raise ValueError("direction 必须为 SELL 或 BUY")
+        return text
+
+
     model_config = {"from_attributes": True}
 
 

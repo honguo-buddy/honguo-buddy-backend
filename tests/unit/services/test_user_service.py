@@ -41,6 +41,7 @@ def build_user(**overrides):
         "last_login_ip": None,
         "last_login_time": None,
         "wechat_unionid": None,
+        "bio": None,
     }
     payload.update(overrides)
     return SimpleNamespace(**payload)

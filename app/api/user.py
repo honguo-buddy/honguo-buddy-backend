@@ -65,19 +65,22 @@ async def get_me(
 
     try:
         profile_dict = {
-            "user_id": user_data.user_id,
-            "user_uuid": user_data.user_uuid.hex() if hasattr(user_data, 'user_uuid') and user_data.user_uuid else "",
-            "user_name": user_data.user_name,
-            "is_admin": user_data.is_admin,
-            "is_verified": user_data.is_verified,
-            "email": user_data.email,
-            "phonenumber": user_data.phonenumber,
-            "last_login_ip": user_data.last_login_ip,
-            "last_login_time": user_data.last_login_time.isoformat() if user_data.last_login_time else None,
-            "user_type": getattr(user_data.user_type, 'value', str(user_data.user_type)) if user_data.user_type else None,
-            "avatar": getattr(user_data, 'avatar', None),
-            "sex": getattr(user_data, 'sex', {}).value if hasattr(getattr(user_data, 'sex', None), 'value') else str(getattr(user_data, 'sex', '')),
-            "credit_score": getattr(user_data, 'credit_score', 0),
+            "user_id": user_data["user_id"],
+            "user_uuid": user_data["user_uuid"] if isinstance(user_data.get("user_uuid"), str) else "",
+            "user_name": user_data.get("user_name"),
+            "is_admin": user_data.get("is_admin", False),
+            "is_verified": user_data.get("is_verified", False),
+            "email": user_data.get("email"),
+            "phonenumber": user_data.get("phonenumber"),
+            "last_login_ip": user_data.get("last_login_ip"),
+            "last_login_time": user_data["last_login_time"].isoformat() if hasattr(user_data.get("last_login_time"), "isoformat") else user_data.get("last_login_time"),
+            "user_type": user_data.get("user_type"),
+            "avatar": user_data.get("avatar"),
+            "sex": user_data.get("sex"),
+            "bio": user_data.get("bio"),
+            "credit_score": user_data.get("credit_score", 0),
+            "is_active": user_data.get("is_active", True),
+            "wechat_unionid": user_data.get("wechat_unionid"),
         }
         await redis.setex(cache_key, settings.USER_PROFILE_CACHE_TTL, _json.dumps(profile_dict, ensure_ascii=False, default=str))
     except Exception as e:
@@ -115,14 +118,14 @@ async def update_me(
         bio=update_req.bio,
         db=db,
     )
-    # Invalidate all Read-Through profile caches after mutation
+    # 清除旧缓存，并用最新数据强制重建
     try:
         uid = current_user.user_id
         await redis.delete(f"user:profile:cache:{uid}")
         await redis.delete(f"user:profile:me:{uid}")
         await redis.delete(f"user:profile:public:{uid}")
     except Exception as e:
-        logger.warning("Swallowed exception in user: %s", e, exc_info=True)
+        logger.warning("缓存删除失败: %s", e, exc_info=True)
 
     # Fetch fresh profile with avatar URL
     avatar_url = await AttachmentService.get_attachment_url_by_id(
@@ -130,6 +133,31 @@ async def update_me(
     ) if update_req.avatar_id else None
     # Re-fetch user from DB to get latest state
     user_data = await UserService.get_user_with_avatar_url(current_user.user_id, db)
+
+    # 强制重建 Redis 缓存，确保后续 GET 命中最新数据
+    try:
+        profile_dict = {
+            "user_id": user_data["user_id"],
+            "user_uuid": user_data["user_uuid"] if isinstance(user_data.get("user_uuid"), str) else "",
+            "user_name": user_data.get("user_name"),
+            "is_admin": user_data.get("is_admin", False),
+            "is_verified": user_data.get("is_verified", False),
+            "email": user_data.get("email"),
+            "phonenumber": user_data.get("phonenumber"),
+            "last_login_ip": user_data.get("last_login_ip"),
+            "last_login_time": user_data["last_login_time"].isoformat() if hasattr(user_data.get("last_login_time"), "isoformat") else user_data.get("last_login_time"),
+            "user_type": user_data.get("user_type"),
+            "avatar": user_data.get("avatar"),
+            "sex": user_data.get("sex"),
+            "bio": user_data.get("bio"),
+            "credit_score": user_data.get("credit_score", 0),
+            "is_active": user_data.get("is_active", True),
+            "wechat_unionid": user_data.get("wechat_unionid"),
+        }
+        await redis.setex(f"user:profile:me:{uid}", settings.USER_PROFILE_CACHE_TTL, _json.dumps(profile_dict, ensure_ascii=False, default=str))
+    except Exception as e:
+        logger.warning("缓存重建失败: %s", e, exc_info=True)
+
     return ResponseModel(
         code=settings.SUCCESS_CODE,
         message=UserProfileResponse.model_validate(user_data),

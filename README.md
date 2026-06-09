@@ -500,6 +500,7 @@ DATA_GET_FAILED: 301
         "avatar": "/static/avatar/avatar_1001_1680000000.png",
         "avatar_id": 123,
         "sex": "男",
+        "bio": "个人简介",
         "email": "test@example.com",
         "phonenumber": "13800000000",
         "user_type": "user",
@@ -685,6 +686,8 @@ DATA_GET_FAILED: 301
 
 ```json
 {
+    "template_segment_1": "取件地址",
+    "template_segment_2": "南门",
     "page": 1,
     "page_size": 20
 }
@@ -732,6 +735,8 @@ DATA_GET_FAILED: 301
 
 ```json
 {
+    "template_segment_1": "取件地址",
+    "template_segment_2": "南门",
     "page": 1,
     "page_size": 20
 }
@@ -812,6 +817,8 @@ DATA_GET_FAILED: 301
 
 ```json
 {
+    "template_segment_1": "取件地址",
+    "template_segment_2": "南门",
     "page": 1,
     "page_size": 20
 }
@@ -870,6 +877,8 @@ DATA_GET_FAILED: 301
 
 ```json
 {
+    "template_segment_1": "取件地址",
+    "template_segment_2": "南门",
     "page": 1,
     "page_size": 20
 }
@@ -1477,6 +1486,7 @@ GET /users/me/blacklist?page=1&page_size=20
 {
     "name": "二手电子",
     "item_type": "GOODS",
+    "direction": "SELL",
     "icon": "/static/category/electronics.png",
     "config_json": {
         "fields": [
@@ -1491,6 +1501,7 @@ GET /users/me/blacklist?page=1&page_size=20
 
 - `icon` 可选，可不传。
 - `item_type` 必填或有默认（`POST`），可选值：`POST` 或 `GOODS`。
+- `direction` 可选，默认 `SELL`。`item_type=GOODS` 时强制 `SELL`，传 `BUY` 会报错。`item_type=POST` 时可选择 `SELL` 或 `BUY`。
 - `config_json` 必填，且不能为空对象。
 
 成功响应:
@@ -1503,6 +1514,7 @@ GET /users/me/blacklist?page=1&page_size=20
         "name": "二手电子",
         "icon": "/static/category/electronics.png",
         "item_type": "GOODS",
+        "direction": "SELL",
         "config_json": {"fields": [{"key": "brand", "label": "品牌", "type": "string", "required": true}, {"key": "condition", "label": "成色", "type": "select", "required": true}]},
         "create_time": "2025-09-01T12:00:00",
         "update_time": "2025-09-01T12:00:00"
@@ -1521,6 +1533,7 @@ GET /users/me/blacklist?page=1&page_size=20
 查询参数：
 
 - `type`（可选）：按业务类型过滤，取值 `POST` 或 `GOODS`，示例：`GET /categories?type=POST`。
+- `direction`（可选）：按交易方向过滤，取值 `SELL` 或 `BUY`，示例：`GET /categories?direction=BUY`。
 
 用途：获取模板分类列表，供前端展示分类选择。
 
@@ -1543,6 +1556,7 @@ GET /users/me/blacklist?page=1&page_size=20
             "name": "代跑服务",
             "icon": "/static/category/run.png",
             "item_type": "POST",
+            "direction": "BUY",
             "config_json": {"fields": []},
             "create_time": "2025-09-01T12:00:00",
             "update_time": "2025-09-01T12:00:00"
@@ -1723,7 +1737,7 @@ GET /users/me/blacklist?page=1&page_size=20
 
 #### 4.5.2 获取帖子列表 (GET: /posts)
 
-用途: 获取帖子列表，支持关键词、模板/分类ID、状态、价格、时间等筛选。返回的每个卡片均携带 Redis 实时灌水计数器（iew_count、avorite_count、comment_count）。
+用途: 获取帖子列表，支持关键词、模板/分类ID、状态、价格、时间等筛选，新增 `template_segment_1`/`template_segment_2` 对 `template_data` JSON 全文模糊匹配。返回的每个卡片均携带 Redis 实时灌水计数器（iew_count、avorite_count、comment_count）。
 
 请求示例:
 
@@ -1732,6 +1746,8 @@ GET /users/me/blacklist?page=1&page_size=20
     "keyword": "外卖",
     "category_id": 9201,
     "status": "OPEN",
+    "template_segment_1": "取件地址",
+    "template_segment_2": "南门",
     "page": 1,
     "page_size": 20
 }
@@ -3150,6 +3166,8 @@ LIMIT :size
     "keyword": "MacBook",
     "category_id": 1,
     "status": "上架中",
+    "template_segment_1": "取件地址",
+    "template_segment_2": "南门",
     "page": 1,
     "page_size": 20
 }
@@ -3205,6 +3223,8 @@ LIMIT :size
 
 ```json
 {
+    "template_segment_1": "取件地址",
+    "template_segment_2": "南门",
     "page": 1,
     "page_size": 20
 }

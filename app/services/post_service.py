@@ -14,7 +14,7 @@
 import logging
 from typing import List, Optional, Tuple
 
-from sqlalchemy import and_, select, func, or_
+from sqlalchemy import and_, cast, func, or_, select, String
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import noload, selectinload
 
@@ -73,11 +73,8 @@ class PostService:
         template_data = post_create.template_filters.copy() if post_create.template_filters else {}
         template_data["max_accepters"] = post_create.max_accepters
         
-        # 验证并转换 direction 和 urgency
-        try:
-            direction = Direction(post_create.direction)
-        except ValueError:
-            direction = Direction.SELL
+        # 转换 direction（Schema 层已做 uppercase 归一化，此处安全直传）
+        direction = Direction(post_create.direction)
         
         try:
             urgency = UrgencyLevel(post_create.urgency)
@@ -87,6 +84,18 @@ class PostService:
         category_id = post_create.category_id
         if category_id is None:
             category_id = await PostService._resolve_default_category_id(db)
+
+        # 方向对账：db.get 直接主键命中，回避 select/where 缓存污染
+        if category_id is not None:
+            category_obj = await db.get(Category, category_id)
+            if category_obj is None:
+                raise BusinessHTTPException(code=settings.DATA_GET_FAILED_CODE, msg="所选分类不存在")
+            # 统一转字符串字面量比对，粉碎 Enum/str 类型错配
+            cat_dir_str = category_obj.direction.value if hasattr(category_obj.direction, "value") else str(category_obj.direction)
+            post_dir_str = direction.value if hasattr(direction, "value") else str(direction)
+            if cat_dir_str != post_dir_str:
+                raise BusinessHTTPException(code=settings.DATA_GET_FAILED_CODE, msg="帖子发布方向与所述分类的配置方向不一致")
+
         
         # 创建 Post 对象
         post = Post(
@@ -345,6 +354,8 @@ class PostService:
         create_time_end: Optional[str] = None,
         status: Optional[str] = None,
         template_filters: Optional[dict] = None,
+        template_segment_1: Optional[str] = None,
+        template_segment_2: Optional[str] = None,
         page: int = 1,
         page_size: int = 20,
     ) -> Tuple[List[Post], int]:
@@ -408,6 +419,12 @@ class PostService:
                         conditions.append(Post.template_data[key].astext.ilike(f"%{value}%"))
                     else:
                         conditions.append(Post.template_data[key] == value)
+        
+        # template_data 全文字段安全模糊匹配（通过 cast + param binding 防注入）
+        if template_segment_1:
+            conditions.append(cast(Post.template_data, String).like(f"%{template_segment_1}%"))
+        if template_segment_2:
+            conditions.append(cast(Post.template_data, String).like(f"%{template_segment_2}%"))
         
         cnt_stmt = select(func.count()).select_from(Post).where(and_(*conditions))
         cnt_res = await db.execute(cnt_stmt)

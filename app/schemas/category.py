@@ -1,3 +1,4 @@
+import enum
 """Category（模板分类）相关请求与响应模型。"""
 
 from datetime import datetime
@@ -6,12 +7,19 @@ from typing import Any, Dict, Optional
 from pydantic import BaseModel, Field, field_validator
 
 
+class CategoryDirection(str, enum.Enum):
+    """交易方向枚举。"""
+    SELL = "SELL"
+    BUY = "BUY"
+
+
 class CategoryCreate(BaseModel):
     """创建模板分类请求。"""
 
     name: str = Field(..., min_length=1, max_length=100, description="分类名称")
     icon: Optional[str] = Field(default=None, max_length=255, description="分类图标（可选）")
     item_type: str = Field(default="POST", description="业务类型：POST/GOODS")
+    direction: Optional[CategoryDirection] = Field(default=None, description="交易方向：SELL/BUY（POST可选，GOODS强制SELL）")
     # 给 config_json 赋予默认 factory，前端不传时自动默认为空字典，不卡接口
     config_json: Optional[Dict[str, Any]] = Field(default_factory=dict, description="模板配置 JSON")
 
@@ -84,6 +92,7 @@ class CategoryRead(BaseModel):
     name: str
     icon: Optional[str] = None
     item_type: str
+    direction: str
     config_json: Dict[str, Any]
     create_time: datetime
     update_time: datetime

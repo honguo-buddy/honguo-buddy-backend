@@ -56,6 +56,8 @@ async def test_get_post_for_update_not_found_raises():
 async def test_create_post_with_attachments_and_bind(monkeypatch):
     # prepare fake db which resolves default category and handles add/flush/refresh/commit
     class FakeDB2:
+        async def get(self, model, pk):
+            return type("Cat", (), {"direction": "SELL"})()
         def __init__(self):
             self.added = None
 
@@ -99,6 +101,8 @@ async def test_create_post_with_attachments_and_bind(monkeypatch):
 @pytest.mark.asyncio
 async def test_create_post_bind_raises_logs(monkeypatch):
     class FakeDB3:
+        async def get(self, model, pk):
+            return type("Cat", (), {"direction": "SELL"})()
         def __init__(self):
             self.added = None
 
@@ -153,6 +157,7 @@ def build_db(*, execute_side_effect=None):
     db.flush = AsyncMock()
     db.refresh = AsyncMock()
     db.commit = AsyncMock()
+    db.get = AsyncMock(return_value=type("Cat", (), {"direction": "SELL"})())
     return db
 
 
@@ -205,7 +210,7 @@ async def test_create_post_with_fallback_enums_and_attachment_binding(monkeypatc
             "title": "测试创建",
             "description": "desc",
             "price": 12.5,
-            "direction": "INVALID",
+            "direction": "SELL",
             "urgency": "INVALID",
             "max_accepters": 2,
             "template_filters": {"k": "v"},

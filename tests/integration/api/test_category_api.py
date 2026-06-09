@@ -108,6 +108,7 @@ class TestCategoryAdminCrud:
                 "icon": None,
                 "item_type": ItemType.POST.value,
                 "config_json": {"fields": [{"key": "deadline", "label": "截止时间"}]},
+                "direction": "SELL",
                 "create_time": get_now_naive(),
                 "update_time": get_now_naive(),
             },
