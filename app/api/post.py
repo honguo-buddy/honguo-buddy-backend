@@ -14,7 +14,7 @@ from typing import Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.api import get_current_user, get_current_user_optional
 from app.core import AuthHTTPException, BusinessHTTPException, ResourceHTTPException, get_now_naive, settings
@@ -39,7 +39,7 @@ from app.schemas import (
     UserRead,
 )
 from app.services import MetricsService, PostService, OrderService, SocialService, WeChatNotificationService
-from app.models import Post, PostStatus, User
+from app.models import Order, Post, PostStatus, User
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +63,7 @@ def _build_post_read(post, current_accepters: int) -> PostRead:
         publisher_id=post.publisher_id,
         current_accepters=current_accepters,
         create_time=post.create_time.isoformat() if post.create_time else "",
+        expire_time=post.expire_time.isoformat() if getattr(post, "expire_time", None) else None,
         attachment_urls=attachment_urls,
     )
 
@@ -88,6 +89,7 @@ def _build_post_dict(post, current_accepters: int, applicant_count: int = 0) -> 
         "current_accepters": current_accepters,
         "applicant_count": applicant_count,
         "create_time": post.create_time.isoformat() if post.create_time else "",
+        "expire_time": post.expire_time.isoformat() if getattr(post, "expire_time", None) else None,
         "attachment_urls": attachment_urls,
     }
 
@@ -108,6 +110,18 @@ async def publish_post(
     """
     发布悬赏帖
     """
+    # 检查用户当前开启的帖子数是否已达上限
+    cnt_result = await db.execute(
+        select(func.count()).select_from(Post).where(
+            Post.publisher_id == current_user.user_id,
+            Post.status.in_([PostStatus.OPEN, PostStatus.IN_PROGRESS]),
+            Post.is_deleted == False,
+        )
+    )
+    open_count = cnt_result.scalar() or 0
+    if open_count >= settings.MAX_OPEN_POSTS_PER_USER:
+        raise BusinessHTTPException(code=settings.DATA_GET_FAILED_CODE, msg='当前发布的活跃帖子已达上限，请先结帖后再试')
+
     try:
         # 调用服务创建帖子
         post = await PostService.create_post(
@@ -192,6 +206,9 @@ async def list_posts(
         raw_dicts = []
         post_ids = []
         for post in posts:
+            # 懒检查：若已到期但定时任务未刷新，动态覆写状态为 SUSPENDED
+            if getattr(post, "expire_time", None) is not None and getattr(post, "expire_time") <= get_now_naive() and post.status == PostStatus.OPEN:
+                post.status = PostStatus.SUSPENDED
             pid = post.post_id
             post_ids.append(pid)
             raw_dicts.append(_build_post_dict(
@@ -489,6 +506,9 @@ async def get_post_detail(
     """
     try:
         post = await PostService.get_post_detail(db, post_id)
+        # 懒检查：若已到期但定时任务未刷新，动态覆写状态为 SUSPENDED
+        if getattr(post, "expire_time", None) is not None and getattr(post, "expire_time") <= get_now_naive() and post.status == PostStatus.OPEN:
+            post.status = PostStatus.SUSPENDED
         # 帖子存在性验证通过后再自增浏览计数，防止对不存在/已删除帖子虚增指标
         await MetricsService.incr_post_view(redis_client, post_id)
         # 通过 OrderService 统一获取接单数
@@ -519,6 +539,7 @@ async def get_post_detail(
             current_accepters=current_accepters,
             applicant_count=applicant_count,
             create_time=post.create_time.isoformat() if post.create_time else "",
+            expire_time=post.expire_time.isoformat() if getattr(post, "expire_time", None) else None,
             status=post.status.value if post.status else None,
             attachment_urls=attachment_urls,
         )
@@ -656,3 +677,32 @@ async def resume_post(
     except Exception as e:
         logger.error(f"恢复招募失败 post_id={post_id}: {e}", exc_info=True)
         raise
+
+@router.get("/{post_id}/contact", response_model=ResponseModel)
+async def get_post_contact(
+    post_id: int,
+    current_user: UserRead = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """获取帖子发布者的联系方式（需鉴权：楼主本人或已申请者）。"""
+    post_obj = await db.get(Post, post_id)
+    if not post_obj or post_obj.is_deleted:
+        raise ResourceHTTPException(code=settings.DATA_GET_FAILED_CODE, msg="帖子不存在")
+    
+    # 楼主直接放行
+    if post_obj.publisher_id == current_user.user_id:
+        return ResponseModel(code=settings.SUCCESS_CODE, message=post_obj.contact or {})
+    
+    # 检查是否存在订单记录（需先申请该帖子）
+    order_result = await db.execute(
+        select(func.count()).select_from(Order).where(
+            Order.item_type == "POST",
+            Order.item_id == post_id,
+            Order.initiator_id == current_user.user_id,
+            Order.is_deleted == False,
+        )
+    )
+    if (order_result.scalar() or 0) > 0:
+        return ResponseModel(code=settings.SUCCESS_CODE, message=post_obj.contact or {})
+    
+    raise BusinessHTTPException(code=settings.DATA_GET_FAILED_CODE, msg="您需要先申请该委托，才能查看车主的联系方式")

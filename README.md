@@ -686,8 +686,6 @@ DATA_GET_FAILED: 301
 
 ```json
 {
-    "template_segment_1": "取件地址",
-    "template_segment_2": "南门",
     "page": 1,
     "page_size": 20
 }
@@ -735,8 +733,6 @@ DATA_GET_FAILED: 301
 
 ```json
 {
-    "template_segment_1": "取件地址",
-    "template_segment_2": "南门",
     "page": 1,
     "page_size": 20
 }
@@ -817,8 +813,6 @@ DATA_GET_FAILED: 301
 
 ```json
 {
-    "template_segment_1": "取件地址",
-    "template_segment_2": "南门",
     "page": 1,
     "page_size": 20
 }
@@ -877,8 +871,6 @@ DATA_GET_FAILED: 301
 
 ```json
 {
-    "template_segment_1": "取件地址",
-    "template_segment_2": "南门",
     "page": 1,
     "page_size": 20
 }
@@ -1673,6 +1665,8 @@ GET /users/me/blacklist?page=1&page_size=20
 - `title` 为必填字段。
 - `description`、`price`、`category_id`、`template_filters`、`attachment_ids` 均为可选字段。
 - `direction` 默认为 `SELL`，`urgency` 默认为 `NORMAL`，`max_accepters` 默认为 `1`。
+- `expire_time` 可选，截止时间。支持格式: `"HH:MM"` / `"HH:MM:SS"` (默认今天)、`"YYYY-MM-DD HH:MM:SS"`、`"YYYY-MM-DD"`、`"YYYY/MM/DD HH:MM:SS"` 等。不能早于或等于当前时间。
+- 每位用户同时最多开启 `MAX_OPEN_POSTS_PER_USER` (默认 3) 个活跃帖子，超限返回 code=99 错误。
 
 请求头: Authorization: Bearer <token>。
 
@@ -1688,7 +1682,8 @@ GET /users/me/blacklist?page=1&page_size=20
     "max_accepters": 1,
     "category_id": 3,
     "template_filters": {"pickup_address": "教学楼A楼"},
-    "attachment_ids": [123]
+    "attachment_ids": [123],
+    "expire_time": "2026-06-10T18:00:00"
 }
 ```
 
@@ -1723,7 +1718,9 @@ GET /users/me/blacklist?page=1&page_size=20
         },
         "publisher_id": 1001,
         "current_accepters": 0,
+        "applicant_count": 0,
         "create_time": "2025-09-01T12:00:00",
+        "expire_time": "2026-06-10T18:00:00",
         "attachment_urls": []
     }
 }
@@ -1732,7 +1729,8 @@ GET /users/me/blacklist?page=1&page_size=20
 常见错误:
 
 - code: 105 - Token 失效或缺失。
-- code: 99 - 请求体校验失败。
+- code: 99  - 请求体校验失败 / 活跃帖子数已达上限。
+- code: 99  - 截止时间不能早于或等于当前时间。
 - code: 301 - 发布帖子失败。
 
 #### 4.5.2 获取帖子列表 (GET: /posts)
@@ -1746,8 +1744,8 @@ GET /users/me/blacklist?page=1&page_size=20
     "keyword": "外卖",
     "category_id": 9201,
     "status": "OPEN",
-    "template_segment_1": "取件地址",
-    "template_segment_2": "南门",
+    "template_segment_1": "\"收件地址\": \"嘉园宿舍楼\"",
+    "template_segment_2": "\"取件地址\": \"北港外面\"",
     "page": 1,
     "page_size": 20
 }
@@ -1974,6 +1972,7 @@ GET /posts/1001
         "favorite_count": 32,
         "comment_count": 14,
         "create_time": "2025-09-01T12:00:00",
+        "expire_time": "2026-06-10T18:00:00",
         "attachment_urls": ["/static/avatar/avatar_1001_1680000000.png"]
     }
 }
@@ -2138,6 +2137,7 @@ GET /posts/1001
 - SELL 方向帖子为征集制（广撒网进池子），申请后直接加入沟通池；ccepted 为 alse，message 提示"已成功加入沟通池，火速去和帖主私信聊聊吧"。
 - SELL 方向的 current_accepters 永远返回 0（PENDING 不计入占坑），前端应使用 pplicant_count（大厅列表/详情）展示排队人数。
 - 若帖子处于 SUSPENDED（暂停招募）状态，后端会返回 99 并提示“楼主已暂停招募新人”。
+- 若帖子已过截止时间（expire_time <= 当前时间），即使状态仍为 OPEN，后端也会返回 99 并提示“该帖子已到期截止，无法发起新的申请”。
 - `/accept` 响应新增 `applicant_count` 字段，实时返回当前排队申请总人数供前端即时刷新。
 
 成功响应（BUY 方向）:
@@ -2270,6 +2270,38 @@ GET /posts/1001
 
 - code: 102 - 非发帖人无权修改公告。
 - code: 103 - 帖子不存在。
+
+#### 4.5.10.1 获取帖子联系方式 (GET: /posts/{post_id}/contact)
+
+用途: 鉴权获取帖子发布者的联系方式（phone / wx / qq）。仅帖子发布者本人或已申请该帖子的用户可查看。
+
+请求头: Authorization: Bearer <token>。
+
+请求示例:
+
+```
+GET /posts/1001/contact
+```
+
+成功响应:
+
+```json
+{
+    "code": 0,
+    "message": {
+        "phone": "13800138000",
+        "wx": "wxid_test",
+        "qq": "12345678"
+    }
+}
+```
+
+常见错误:
+
+- code: 103 - 帖子不存在或已删除。
+- code: 301 - 您需要先申请该委托，才能查看车主的联系方式。
+
+---
 
 #### 4.5.11 暂停/恢复招募 (POST: /posts/{post_id}/suspend 与 POST: /posts/{post_id}/resume)
 
@@ -2739,7 +2771,8 @@ JSON
     "target_id": 1001,
     "parent_id": null,          
     "content": "这是一个评论内容",
-    "attachment_ids": [123]
+    "attachment_ids": [123],
+    "expire_time": "2026-06-10T18:00:00"
 }
 ```
 
@@ -3125,6 +3158,7 @@ LIMIT :size
 - `condition`: 必填，成色等级：`"全新"` / `"准新/99新"` / `"常用/无明显瑕疵"` / `"陈旧/明显瑕疵"`
 - `template_data`: 可选，由分类驱动的扩展字段
 - `attachment_ids`: 可选，已上传的附件 ID 列表
+- `expire_time`: 可选，截止时间 (同帖子格式，不能早于或等于当前时间)
 
 成功响应：
 
@@ -3139,6 +3173,7 @@ LIMIT :size
         "condition": "准新/99新",
         "status": "上架中",
         "create_time": "2026-05-30T12:00:00",
+        "expire_time": "2026-06-15T18:00:00",
         "attachment_urls": ["/static/attachments/img-10.jpg"],
         "publisher": {"user_id": 1001, "user_name": "张三", "avatar": "/static/avatar/av-1.jpg"},
         "view_count": 0,
@@ -3150,7 +3185,7 @@ LIMIT :size
 
 常见错误：
 
-- code: 99 - 请求参数校验失败（如缺少 category_id 或 name）。
+- code: 99 - 请求参数校验失败（如缺少 category_id 或 name）/ 截止时间不能早于或等于当前时间。
 - code: 105 - Token 无效。
 
 #### 4.9.2 商品大厅列表 (GET: /goods)
@@ -3256,6 +3291,7 @@ LIMIT :size
         "condition": "准新/99新",
         "status": "上架中",
         "create_time": "2026-05-30T12:00:00",
+        "expire_time": "2026-06-15T18:00:00",
         "attachment_urls": ["/static/attachments/img-10.jpg"],
         "publisher": {"user_id": 1001, "user_name": "张三", "avatar": "/static/avatar/av-1.jpg"},
         "view_count": 129,
@@ -3324,6 +3360,38 @@ LIMIT :size
 - code: 102 - 非发布者无权删除。
 - code: 103 - 商品不存在。
 
+#### 4.9.6.1 获取商品联系方式 (GET: /goods/{goods_id}/contact)
+
+用途: 鉴权获取商品发布者的联系方式（phone / wx / qq）。仅卖家本人或已发起购买该商品的用户可查看。
+
+请求头: Authorization: Bearer <token>。
+
+请求示例:
+
+```
+GET /goods/5001/contact
+```
+
+成功响应:
+
+```json
+{
+    "code": 0,
+    "message": {
+        "phone": "13800138000",
+        "wx": "wxid_test",
+        "qq": "12345678"
+    }
+}
+```
+
+常见错误:
+
+- code: 103 - 商品不存在或已删除。
+- code: 301 - 您需要先申请该商品，才能查看车主的联系方式。
+
+---
+
 #### 4.9.7 快捷下单购买商品 (POST: /goods/{goods_id}/buy)
 
 用途：买家一键下单购买商品。商品立即从「上架中」变更为「已下架」，同步创建 ONGOING 订单，并异步推送微信通知至卖家。
@@ -3353,7 +3421,7 @@ POST /goods/5001/buy
 
 常见错误：
 
-- code: 99  - 不能购买自己发布的商品 / 商品当前不可购买 / 商品已售出 / 商品已被锁定
+- code: 99  - 不能购买自己发布的商品 / 商品当前不可购买 / 商品已到期下架 / 商品已售出 / 商品已被锁定
 - code: 103 - 商品不存在或已删除
 - code: 105 - Token 无效
 

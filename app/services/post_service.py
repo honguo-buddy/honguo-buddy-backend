@@ -18,7 +18,7 @@ from sqlalchemy import and_, cast, func, or_, select, String
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import noload, selectinload
 
-from app.core import BusinessHTTPException, ResourceHTTPException, parse_datetime_to_beijing_naive, settings
+from app.core import BusinessHTTPException, ResourceHTTPException, get_now_naive, parse_datetime_to_beijing_naive, settings
 # 🚀 核心追补导入：将 Attachment 和 User 模型一并引入
 from app.models import (
     Category, Direction, Post, PostStatus, UrgencyLevel, 
@@ -109,6 +109,24 @@ class PostService:
             category_id=category_id,
             status=PostStatus.OPEN,
         )
+        # 组装联系方式 JSON
+        contact_parts = {}
+        if post_create.phone: contact_parts["phone"] = post_create.phone
+        if post_create.wx: contact_parts["wx"] = post_create.wx
+        if post_create.qq: contact_parts["qq"] = post_create.qq
+        if contact_parts:
+            post.contact = contact_parts
+        # 截止时间处理
+        if post_create.expire_time:
+            try:
+                parsed_expire = parse_datetime_to_beijing_naive(post_create.expire_time)
+                if parsed_expire <= get_now_naive():
+                    raise BusinessHTTPException(code=settings.REQ_ERROR_CODE, msg="截止时间不能早于或等于当前时间")
+                post.expire_time = parsed_expire
+            except BusinessHTTPException:
+                raise
+            except Exception as e:
+                logger.warning(f"截止时间解析失败 expire_time={post_create.expire_time!r}: {e}")
         db.add(post)
         await db.flush()
         await db.refresh(post)

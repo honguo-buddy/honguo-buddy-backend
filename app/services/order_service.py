@@ -17,6 +17,20 @@ from app.models import CreditLog, Direction, Goods, GoodsStatus, ItemType, Order
 logger = logging.getLogger(__name__)
 
 
+
+def apply_expire_lazy_override(item, open_status, expired_status):
+    """懒检查：若 item 状态为 open_status 但 expire_time 已过期，动态覆写为 expired_status。
+    
+    用于 GET 列表/详情接口在定时任务未执行时提前让前端感知到期。
+    返回 (是否修改, 修改后的状态值)。
+    """
+    if getattr(item, "expire_time", None) is not None and getattr(item, "expire_time") <= get_now_naive():
+        if hasattr(item, "status") and getattr(item, "status") == open_status:
+            setattr(item, "status", expired_status)
+            return True, expired_status
+    return False, getattr(item, "status", None)
+
+
 class OrderService:
 
     @staticmethod
@@ -366,6 +380,8 @@ class OrderService:
                 raise BusinessHTTPException(code=settings.REQ_ERROR_CODE, msg="楼主已暂停招募新人")
             if post.status != PostStatus.OPEN:
                 raise BusinessHTTPException(code=settings.REQ_ERROR_CODE, msg="当前帖子状态不允许接单")
+            if getattr(post, "expire_time", None) is not None and getattr(post, "expire_time") <= get_now_naive():
+                raise BusinessHTTPException(code=settings.REQ_ERROR_CODE, msg="该帖子已到期截止，无法发起新的申请")
 
             if redis_client is not None:
                 await OrderService._raise_post_accept_rate_limit(redis_client, initiator_id, item_id)
@@ -440,6 +456,8 @@ class OrderService:
                 raise BusinessHTTPException(code=settings.REQ_ERROR_CODE, msg="商品已售出")
             if goods.status != GoodsStatus.ON_SALE:
                 raise BusinessHTTPException(code=settings.REQ_ERROR_CODE, msg="商品当前不可购买")
+            if getattr(goods, "expire_time", None) is not None and getattr(goods, "expire_time") <= get_now_naive():
+                raise BusinessHTTPException(code=settings.REQ_ERROR_CODE, msg="该商品已到期下架，无法购买")
 
             locked = False
             try:

@@ -64,6 +64,7 @@ class Settings(BaseSettings):
     REVIEW_DOUBLE_BLIND_DAYS: int = 1    # 评价双盲期（天）
     HISTORY_TTL_SECONDS: int = 30 * 86400 # 历史记录过期时间（秒），默认30天
     HISTORY_MAX_SIZE: int = 100 # 历史记录最大条数
+    MAX_OPEN_POSTS_PER_USER: int = 3  # 用户同时开启的帖子/商品上限
     GLOBAL_CANCEL_DAILY_LIMIT: int = 10 # 全局取消申请每日限制次数（已弃用，保留兼容）
     LIGHTNING_CANCEL_LIMIT_SECONDS: int = 600  # 闪电退单分水岭阈值（秒），订单创建后此时限内取消视为闪电退单
     LIGHTNING_CANCEL_DAILY_LIMIT: int = 10  # 闪电退单每人每日上限次数

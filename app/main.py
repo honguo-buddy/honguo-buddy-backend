@@ -43,12 +43,44 @@ async def _flush_metrics_job():
         await MetricsService.flush_metrics_to_db(db, redis)
 
 
+async def _auto_suspend_expired_items_job():
+    """每60秒巡检：将到期OPEN帖子/商品自动挂起。"""
+    from sqlalchemy import update
+    from app.models.post import Post, PostStatus
+    from app.models.goods import Goods, GoodsStatus
+    from app.core.datetime_utils import get_now_naive
+    async with AsyncSessionLocal() as db:
+        now = get_now_naive()
+        # 帖子到期挂起
+        await db.execute(
+            update(Post)
+            .where(Post.status == PostStatus.OPEN, Post.expire_time.isnot(None), Post.expire_time <= now)
+            .values(status=PostStatus.SUSPENDED)
+        )
+        # 商品到期下架
+        await db.execute(
+            update(Goods)
+            .where(Goods.status == GoodsStatus.ON_SALE, Goods.expire_time.isnot(None), Goods.expire_time <= now)
+            .values(status=GoodsStatus.OFF_SHELF)
+        )
+        await db.commit()
+
+
 def register_scheduler_jobs(scheduler: AsyncIOScheduler) -> None:
     scheduler.add_job(
         _auto_release_expired_double_blind_reviews_job,
         "interval",
         hours=1,
         id="auto_release_expired_double_blind_reviews",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+    scheduler.add_job(
+        _auto_suspend_expired_items_job,
+        "interval",
+        seconds=60,
+        id="auto_suspend_expired_items",
         replace_existing=True,
         max_instances=1,
         coalesce=True,

@@ -56,6 +56,7 @@ class Post(Base):
         comment="紧急程度",
     )
     expire_time = Column(DateTime, nullable=True, comment="过期时间")
+    contact = Column(JSON, nullable=True, comment="联系方式JSON: {phone, wx, qq}")
     is_deleted = Column(Boolean, default=False, nullable=False, comment="是否软删除")
     create_time = Column(DateTime, default=beijing_now_for_model, nullable=False, comment="创建时间")
     update_time = Column(DateTime, default=beijing_now_for_model, onupdate=beijing_now_for_model, nullable=False, comment="更新时间")

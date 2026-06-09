@@ -46,6 +46,9 @@ class Goods(Base):
         comment="商品业务状态（上架中/已下架/已售出）",
     )
     
+    expire_time = Column(DateTime, nullable=True, comment="过期时间")
+    contact = Column(JSON, nullable=True, comment="联系方式JSON: {phone, wx, qq}")
+    
     is_deleted = Column(Boolean, default=False, nullable=False, comment="是否软删除（作为底层物理防御）")
     create_time = Column(DateTime, default=beijing_now_for_model, nullable=False, comment="创建时间")
     update_time = Column(DateTime, default=beijing_now_for_model, onupdate=beijing_now_for_model, nullable=False, comment="更新时间")

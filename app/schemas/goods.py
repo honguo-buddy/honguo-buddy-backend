@@ -16,6 +16,10 @@ class GoodsBase(BaseModel):
 
 class GoodsCreate(GoodsBase):
     attachment_ids: List[int] = Field(default_factory=list, description="attachment ID list")
+    expire_time: Optional[str] = Field(default=None, description="expire time ISO format")
+    phone: Optional[str] = Field(default=None, max_length=25, description="contact phone")
+    wx: Optional[str] = Field(default=None, max_length=255, description="contact wechat")
+    qq: Optional[str] = Field(default=None, max_length=255, description="contact qq")
 
 
 class GoodsUpdate(BaseModel):
@@ -26,6 +30,10 @@ class GoodsUpdate(BaseModel):
     status: Optional[GoodsStatus] = None
     template_data: Optional[dict] = None
     attachment_ids: Optional[List[int]] = None
+    expire_time: Optional[str] = None
+    phone: Optional[str] = None
+    wx: Optional[str] = None
+    qq: Optional[str] = None
 
 
 class GoodsPublisherSchema(BaseModel):
@@ -47,6 +55,7 @@ class GoodsRead(BaseModel):
     condition: GoodsCondition
     status: GoodsStatus
     create_time: datetime
+    expire_time: Optional[datetime] = None
     attachment_urls: List[str] = []
     publisher: Optional[GoodsPublisherSchema] = None
 
@@ -70,6 +79,7 @@ class GoodsDetailRead(GoodsBase):
     goods_id: int
     status: GoodsStatus
     create_time: datetime
+    expire_time: Optional[datetime] = None
     attachment_urls: List[str] = []
     publisher: Optional[GoodsPublisherSchema] = None
     

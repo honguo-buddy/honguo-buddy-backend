@@ -265,12 +265,22 @@ async def swagger_login(
     - 或启用 DEBUG_SKIP_PASSWORD_CHECK 直接跳过密码校验
     """
     wx_id, password = await _extract_swagger_login_credentials(request)
-    return await AuthService.swagger_login(
+    result = await AuthService.swagger_login(
         db=db,
         wx_id=wx_id,
         password=password,
         login_ip=request.client.host if request.client else None,
     )
+    # 登录后清除旧缓存，下次 GET /me 返回最新 last_login 信息
+    try:
+        uid = result.get("userId")
+        if uid:
+            await redis.delete(f"user:profile:cache:{uid}")
+            await redis.delete(f"user:profile:me:{uid}")
+            await redis.delete(f"user:profile:public:{uid}")
+    except Exception as e:
+        logger.warning("登录后缓存刷新失败 uid=%s: %s", uid, e, exc_info=True)
+    return result
 
 
 @router.post("/email/send-verify-code", response_model=ResponseModel[Union[dict, AuthErrorResponse]])
@@ -299,6 +309,14 @@ async def verify_email_code(
         email=str(payload.email),
         code=payload.code,
     )
+    # 邮箱绑定成功后清除 Redis 缓存，确保 GET /me 返回最新 email
+    try:
+        uid = current_user.user_id
+        await redis.delete(f"user:profile:cache:{uid}")
+        await redis.delete(f"user:profile:me:{uid}")
+        await redis.delete(f"user:profile:public:{uid}")
+    except Exception as e:
+        logger.warning("邮箱绑定后缓存刷新失败 uid=%d: %s", uid, e, exc_info=True)
     return ResponseModel(code=settings.SUCCESS_CODE, message=message)
 
 

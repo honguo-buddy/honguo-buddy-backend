@@ -5,7 +5,7 @@ from typing import Optional, List, Tuple, Any
 from sqlalchemy import select, func, update, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import noload, selectinload
-from app.core import AuthHTTPException, BusinessHTTPException, ResourceHTTPException, settings
+from app.core import AuthHTTPException, BusinessHTTPException, ResourceHTTPException, get_now_naive, parse_datetime_to_beijing_naive, settings
 from app.models.goods import Goods, GoodsStatus, GoodsCondition
 from app.models.attachment import Attachment
 from app.models.user import User
@@ -33,6 +33,24 @@ class GoodsService:
             template_data=obj_in.template_data or {},
             status=GoodsStatus.ON_SALE,
         )
+        # 组装联系方式 JSON
+        contact_parts = {}
+        if obj_in.phone: contact_parts["phone"] = obj_in.phone
+        if obj_in.wx: contact_parts["wx"] = obj_in.wx
+        if obj_in.qq: contact_parts["qq"] = obj_in.qq
+        if contact_parts:
+            goods.contact = contact_parts
+        # 截止时间处理
+        if obj_in.expire_time:
+            try:
+                parsed_expire = parse_datetime_to_beijing_naive(obj_in.expire_time)
+                if parsed_expire <= get_now_naive():
+                    raise BusinessHTTPException(code=settings.REQ_ERROR_CODE, msg="截止时间不能早于或等于当前时间")
+                goods.expire_time = parsed_expire
+            except BusinessHTTPException:
+                raise
+            except Exception as e:
+                logger.warning(f"截止时间解析失败 expire_time={obj_in.expire_time!r}: {e}")
         db.add(goods)
         await db.flush()
 

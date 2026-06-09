@@ -21,6 +21,10 @@ class PostCreate(BaseModel):
         description="模板相关筛选字段（JSON），根据选择的模板而定（如 pickup_address、dropoff_address 等）"
     )
     attachment_ids: Optional[List[int]] = Field(default=None, description="附件 ID 列表，上传后可用于绑定到帖子")
+    expire_time: Optional[str] = Field(default=None, description="截止时间（ISO格式，如 2026-06-10T18:00:00）")
+    phone: Optional[str] = Field(default=None, max_length=25, description="联系电话")
+    wx: Optional[str] = Field(default=None, max_length=255, description="微信号")
+    qq: Optional[str] = Field(default=None, max_length=255, description="QQ号")
 
     @field_validator("template_filters")
     @classmethod
@@ -57,6 +61,10 @@ class PostUpdate(BaseModel):
     category_id: Optional[int] = Field(default=None, description="分类ID")
     template_filters: Optional[Dict[str, Any]] = Field(default=None, description="模板相关筛选字段（JSON）")
     attachment_ids: Optional[List[int]] = Field(default=None, description="附件 ID 列表，上传后可用于绑定到帖子")
+    expire_time: Optional[str] = Field(default=None, description="截止时间（ISO格式，如 2026-06-10T18:00:00）")
+    phone: Optional[str] = Field(default=None, max_length=25, description="联系电话")
+    wx: Optional[str] = Field(default=None, max_length=255, description="微信号")
+    qq: Optional[str] = Field(default=None, max_length=255, description="QQ号")
 
     @field_validator("template_filters")
     @classmethod
@@ -91,6 +99,7 @@ class PostRead(BaseModel):
     favorite_count: int = Field(default=0, description="收藏计数（Redis 灌水）")
     comment_count: int = Field(default=0, description="评论计数（Redis 灌水）")
     create_time: str
+    expire_time: Optional[str] = Field(default=None, description="截止时间")
     attachment_urls: List[str] = Field(default_factory=list, description="附件 URL 列表")
 
     model_config = {"from_attributes": True}

@@ -74,15 +74,64 @@ def convert_to_beijing_time(dt: Optional[datetime]) -> Optional[datetime]:
 def parse_datetime_to_beijing_naive(dt_str: str) -> datetime:
     """将输入字符串解析为北京时间（无时区信息）。
 
-    解析规则：
+    支持格式（按顺序尝试）：
+    - ISO 8601：  "2026-06-10T18:00:00" 或 "2026-06-10"
+    - 空格分隔：  "2026-06-10 18:00:00" / "2026-06-10 18:00"
+    - 斜杠分隔：  "2026/06/10 18:00:00" / "2026/06/10 18:00" / "2026/6/9 18:00"
+    - 纯日期：    "2026-06-10" 或 "2026-6-9"（时间默认 00:00:00）
+    - 纯时间：    "15:37" / "15:37:00" / "4:07"（日期默认今天）
     - 输入带时区：先按原时区解析，再转换为北京时间
-    - 输入不带时区：直接按北京时间解释
     """
-    parsed_dt = datetime.fromisoformat(dt_str)
-    if parsed_dt.tzinfo is None:
-        return parsed_dt
+    dt_str = dt_str.strip()
+    today = get_today()
 
-    return parsed_dt.astimezone(BEIJING_TZ).replace(tzinfo=None)
+    # 日期时间格式（空格分隔，带秒/不带秒）
+    datetime_formats = [
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d %H:%M",
+        "%Y/%m/%d %H:%M:%S",
+        "%Y/%m/%d %H:%M",
+        "%Y-%m-%dT%H:%M:%S",
+    ]
+    for fmt in datetime_formats:
+        try:
+            parsed_dt = datetime.strptime(dt_str, fmt)
+            return parsed_dt
+        except ValueError:
+            continue
+
+    # ISO 8601 原生解析（含时区处理）
+    try:
+        parsed_dt = datetime.fromisoformat(dt_str)
+        if parsed_dt.tzinfo is None:
+            return parsed_dt
+        return parsed_dt.astimezone(BEIJING_TZ).replace(tzinfo=None)
+    except ValueError:
+        pass
+
+    # 纯日期（YYYY-MM-DD 或 YYYY-M-D）
+    try:
+        parsed_dt = datetime.strptime(dt_str, "%Y-%m-%d")
+        return parsed_dt
+    except ValueError:
+        pass
+    # 纯日期 ISO 回退（含 2026-06-10 标准格式）
+    try:
+        parsed_date = date_type.fromisoformat(dt_str)
+        return datetime.combine(parsed_date, datetime.min.time())
+    except ValueError:
+        pass
+
+    # 纯时间（HH:MM:SS / HH:MM / H:MM / H:M）
+    time_formats = ["%H:%M:%S", "%H:%M"]
+    for fmt in time_formats:
+        try:
+            parsed_time = datetime.strptime(dt_str, fmt).time()
+            return datetime.combine(today, parsed_time)
+        except ValueError:
+            continue
+
+    raise ValueError(f"无法解析时间字符串: {dt_str!r}，支持格式: ISO datetime / 日期(YYYY-MM-DD) / 时间(HH:MM 或 HH:MM:SS)")
 
 
 def utc_to_beijing(utc_dt: Optional[datetime]) -> Optional[datetime]:

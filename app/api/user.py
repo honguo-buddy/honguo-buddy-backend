@@ -40,6 +40,48 @@ from app.schemas import (
 from app.services import AttachmentService, BlacklistService, ContactService, MetricsService, ReputationService, SMSService, SocialService, UserService
 from app.models import User as UserModel
 
+
+# ---------------------------------------------------------------------------
+# 共享工具：用户 profile 缓存刷新
+# ---------------------------------------------------------------------------
+async def _refresh_user_profile_cache(uid: int, db: AsyncSession) -> None:
+    """删除旧缓存并用最新 DB 数据重建 user:profile:me:{uid}。"""
+    try:
+        await redis.delete(f"user:profile:cache:{uid}")
+        await redis.delete(f"user:profile:me:{uid}")
+        await redis.delete(f"user:profile:public:{uid}")
+    except Exception as e:
+        logger.warning("缓存删除失败 uid=%d: %s", uid, e, exc_info=True)
+
+    try:
+        user_data = await UserService.get_user_with_avatar_url(uid, db)
+        profile_dict = {
+            "user_id": user_data["user_id"],
+            "user_uuid": user_data["user_uuid"] if isinstance(user_data.get("user_uuid"), str) else "",
+            "user_name": user_data.get("user_name"),
+            "is_admin": user_data.get("is_admin", False),
+            "is_verified": user_data.get("is_verified", False),
+            "email": user_data.get("email"),
+            "phonenumber": user_data.get("phonenumber"),
+            "last_login_ip": user_data.get("last_login_ip"),
+            "last_login_time": user_data["last_login_time"].isoformat() if hasattr(user_data.get("last_login_time"), "isoformat") else user_data.get("last_login_time"),
+            "user_type": user_data.get("user_type"),
+            "avatar": user_data.get("avatar"),
+            "sex": user_data.get("sex"),
+            "bio": user_data.get("bio"),
+            "credit_score": user_data.get("credit_score", 0),
+            "is_active": user_data.get("is_active", True),
+            "wechat_unionid": user_data.get("wechat_unionid"),
+        }
+        await redis.setex(
+            f"user:profile:me:{uid}",
+            settings.USER_PROFILE_CACHE_TTL,
+            _json.dumps(profile_dict, ensure_ascii=False, default=str),
+        )
+    except Exception as e:
+        logger.warning("缓存重建失败 uid=%d: %s", uid, e, exc_info=True)
+
+
 router = APIRouter()
 
 
@@ -118,45 +160,11 @@ async def update_me(
         bio=update_req.bio,
         db=db,
     )
-    # 清除旧缓存，并用最新数据强制重建
-    try:
-        uid = current_user.user_id
-        await redis.delete(f"user:profile:cache:{uid}")
-        await redis.delete(f"user:profile:me:{uid}")
-        await redis.delete(f"user:profile:public:{uid}")
-    except Exception as e:
-        logger.warning("缓存删除失败: %s", e, exc_info=True)
+    # 清除旧缓存并用最新 DB 数据强制重建
+    await _refresh_user_profile_cache(current_user.user_id, db)
 
-    # Fetch fresh profile with avatar URL
-    avatar_url = await AttachmentService.get_attachment_url_by_id(
-        update_req.avatar_id, db
-    ) if update_req.avatar_id else None
-    # Re-fetch user from DB to get latest state
+    # Fetch fresh profile with avatar URL for response
     user_data = await UserService.get_user_with_avatar_url(current_user.user_id, db)
-
-    # 强制重建 Redis 缓存，确保后续 GET 命中最新数据
-    try:
-        profile_dict = {
-            "user_id": user_data["user_id"],
-            "user_uuid": user_data["user_uuid"] if isinstance(user_data.get("user_uuid"), str) else "",
-            "user_name": user_data.get("user_name"),
-            "is_admin": user_data.get("is_admin", False),
-            "is_verified": user_data.get("is_verified", False),
-            "email": user_data.get("email"),
-            "phonenumber": user_data.get("phonenumber"),
-            "last_login_ip": user_data.get("last_login_ip"),
-            "last_login_time": user_data["last_login_time"].isoformat() if hasattr(user_data.get("last_login_time"), "isoformat") else user_data.get("last_login_time"),
-            "user_type": user_data.get("user_type"),
-            "avatar": user_data.get("avatar"),
-            "sex": user_data.get("sex"),
-            "bio": user_data.get("bio"),
-            "credit_score": user_data.get("credit_score", 0),
-            "is_active": user_data.get("is_active", True),
-            "wechat_unionid": user_data.get("wechat_unionid"),
-        }
-        await redis.setex(f"user:profile:me:{uid}", settings.USER_PROFILE_CACHE_TTL, _json.dumps(profile_dict, ensure_ascii=False, default=str))
-    except Exception as e:
-        logger.warning("缓存重建失败: %s", e, exc_info=True)
 
     return ResponseModel(
         code=settings.SUCCESS_CODE,
@@ -173,7 +181,15 @@ async def delete_me(
     
     账号逻辑删除后无法登录，数据保留在数据库。
     """
-    await UserService.delete_user(current_user.user_id, db)
+    uid = current_user.user_id
+    await UserService.delete_user(uid, db)
+    # 清除 Redis 缓存，注销后 profile 不再可用
+    try:
+        await redis.delete(f"user:profile:cache:{uid}")
+        await redis.delete(f"user:profile:me:{uid}")
+        await redis.delete(f"user:profile:public:{uid}")
+    except Exception as e:
+        logger.warning("缓存删除失败 uid=%d: %s", uid, e, exc_info=True)
     return ResponseModel(
         code=settings.SUCCESS_CODE,
         message={"message": "账号已注销"},
@@ -444,13 +460,8 @@ async def update_user_admin(
         sex=update_req.sex,
         db=db,
     )
-    # Invalidate all Read-Through profile caches for the updated user
-    try:
-        await redis.delete(f"user:profile:cache:{user_id}")
-        await redis.delete(f"user:profile:me:{user_id}")
-        await redis.delete(f"user:profile:public:{user_id}")
-    except Exception as e:
-        logger.warning("Swallowed exception in user: %s", e, exc_info=True)
+    # 刷新 Redis 缓存，管理员更新后目标用户 GET /me 立即生效
+    await _refresh_user_profile_cache(user_id, db)
     # 管理员更新后也返回带 avatar URL 的 payload
     user_data = await UserService.get_user_with_avatar_url(user_id, db)
     return ResponseModel(
@@ -484,6 +495,13 @@ async def delete_user_admin(
         )
 
     await UserService.admin_delete_user(user_id, db)
+    # 清除 Redis 缓存
+    try:
+        await redis.delete(f"user:profile:cache:{user_id}")
+        await redis.delete(f"user:profile:me:{user_id}")
+        await redis.delete(f"user:profile:public:{user_id}")
+    except Exception as e:
+        logger.warning("缓存删除失败 uid=%d: %s", user_id, e, exc_info=True)
     return ResponseModel(
         code=settings.SUCCESS_CODE,
         message={"message": f"用户 {user_id} 已被禁用/删除"},
@@ -528,6 +546,9 @@ async def bind_phone(
         raise ResourceHTTPException(code=settings.USER_GET_FAILED_CODE, msg="用户不存在")
     user_obj.phonenumber = payload.phone
     await db.commit()
+
+    # 刷新 Redis 缓存，确保 GET /me 返回最新手机号
+    await _refresh_user_profile_cache(current_user.user_id, db)
 
     return ResponseModel(code=settings.SUCCESS_CODE, message={"detail": "手机号绑定成功", "phone": payload.phone})
 

@@ -720,3 +720,60 @@ order = await OrderService.create_order(db, item_type="GOODS", item_id=goods_id,
 【解决】对 `last_login_time` 的序列化采用防御写法：`value.isoformat() if hasattr(value, "isoformat") else value`——仅在值为 datetime 对象时才调 isoformat，int/None 原样通过。JSON 序列化时配合 `json.dumps(..., default=str)` 兜底，确保最终写入 Redis 的字符串自洽。
 
 【铁律】凡是来自 `_build_user_payload` 等工具函数返回的 dict，其值类型不可假设。对任何需要 `.isoformat()` / `.value` / `.hex()` 等类型专属方法的字段，必须先 `hasattr(obj, method_name)` 做鸭子类型守卫，不可盲调。缓存写入 block 的 except 日志必须打印异常详情 `exc_info=True`，禁止裸吞。
+
+
+SixtyOne Contact Auth Use initiator_id not buyer_id
+
+[Problem] GET /posts/{post_id}/contact checked Order.buyer_id == current_user.user_id. But the system resolves participants per direction: SELL post makes buyer_id=initiator_id, BUY post makes buyer_id=publisher_id and seller_id=initiator_id. So for BUY posts, the applicant becomes seller_id while buyer_id is the publisher, causing the contact check to always fail for BUY post applicants.
+
+[Solution] Use Order.initiator_id == current_user.user_id. The initiator_id is always the user who created the order (applied), regardless of post direction. One condition covers all scenarios.
+
+[Rule] When querying Order for multi-role authorization (buyer/seller/initiator), always cross-reference the _resolve_order_participants method to understand how SELL vs BUY direction maps roles. Never assume buyer always equals applicant.
+
+
+SixtyTwo Never leave route function body empty
+
+[Problem] GET /posts/{post_id}/contact route function had decorator and existence check but no return statement. Python implicitly returned None, which FastAPI tried to validate through ResponseModel, causing ResponseValidationError: input: None.
+
+[Solution] Every FastAPI route with response_model must explicitly return ResponseModel(...) or raise a business exception on every code path. Never let a function naturally end without a return.
+
+[Rule] After writing any route function, verify: (a) success path returns a value matching response_model, (b) all error paths raise standard exceptions, (c) no code path is left without return. Test with one curl call before committing.
+
+
+
+六十一、 联系方式鉴权查询的 Order 参与者判定：必须用 initiator_id 而非 buyer_id（Order Participant Auth: Use initiator_id to Cover Both Post Directions）
+
+【问题】GET /posts/{post_id}/contact 接口中，非楼主用户查看联系方式的权限判定用了 Order.buyer_id == current_user.user_id。但 _resolve_order_participants 的方向分流逻辑为：SELL 帖 buyer_id=initiator_id、BUY 帖 buyer_id=publisher_id 且 seller_id=initiator_id。对于 BUY 帖子，申请人成为 seller_id，buyer_id 是楼主——导致 BUY 帖申请者永远通不过 buyer_id 检查。
+
+【解决】将判权条件从 Order.buyer_id 改为 Order.initiator_id == current_user.user_id。initiator_id 恒等于发起申请的用户 ID，不受帖子 SELL/BUY 方向影响，一条条件覆盖全部场景。
+
+【铁律】涉及 Order 表的多角色判权（buyer/seller/initiator）时，必须先对照 _resolve_order_participants 的 (SELL/BUY) 方向分流逻辑，确认当前业务场景下目标用户落在哪个角色字段。严禁假设 buyer 始终是申请人——在 BUY 方向下 buyer 恰好是发帖楼主。
+
+
+六十二、 路由函数体严禁留空——隐式 None 炸穿 Pydantic ResponseModel 校验（Never Leave Route Function Body Empty）
+
+【问题】GET /posts/{post_id}/contact 路由在写完 @router 装饰器和 post 存在性校验后未补全业务逻辑就直接收束函数体。Python 隐式返回 None，FastAPI 将其塞入 ResponseModel 校验链路，触发 ResponseValidationError: Input should be a valid dictionary or object to extract fields from, input: None。
+
+【解决】任何带 response_model 的 FastAPI 路由函数，所有分支路径上必须显式 return ResponseModel(...) 或抛出规范业务异常（BusinessHTTPException / ResourceHTTPException / AuthHTTPException），严禁函数自然流尽而隐式 return None。
+
+【铁律】写完路由函数后，逐条检查：(a) 正常成功路径有 response_model 匹配的显式 return；(b) 所有异常路径抛出规范异常类；(c) 不存在无 return 的代码路径。提交前至少用 curl 对接口发一次合法请求验证 HTTP 200 且响应体可被 Pydantic 正常反序列化。
+
+
+
+SixtyThree expire_time full-stack audit: Schema exists but serializers drop it
+
+[Problem] expire_time was defined in PostCreate/GoodsCreate schemas and ORM models, service layer parsed it correctly, but all four serialization points (_build_post_read, _build_post_dict, PostDetailRead constructor, _build_goods_dict) omitted expire_time, causing it to always return null. Additionally, goods_service still had except Exception: pass silently swallowing parse errors.
+
+[Solution] 1) Added expire_time to all four serializers using getattr(obj, "expire_time", None); 2) Replaced silent pass with logger.warning in goods_service; 3) Added past-time validation in both create methods: if parsed_expire <= get_now_naive(), raise "expire_time cannot be earlier than or equal to current time".
+
+[Rule] After adding any new ORM column, grep the field name across all _build_*_dict, _build_*_read, and XxxDetailRead(...) constructors in api/ to ensure count matches schema declarations. Never use bare except Exception: pass near parse/convert logic.
+
+
+
+SixtyFour User profile Redis cache must be invalidated and rebuilt on EVERY user-modifying endpoint
+
+[Problem] After fixing PATCH /users/me cache refresh, audit revealed 5 more endpoints that modify user fields (email, phone, is_deleted, last_login) but never refresh the Redis user:profile:me cache, causing stale data.
+
+[Solution] 1) Created shared _refresh_user_profile_cache(uid, db) helper in user.py that invalidates 3 keys and rebuilds from fresh DB data; 2) Applied it to: PATCH /me, POST /me/phone/bind, PUT /{user_id} (admin); 3) Added cache invalidation (delete only) to: DELETE /me, DELETE /{user_id} (admin); 4) Fixed auth.py: POST /email/verify-code (email bind) and POST /wxLogin-equivalent swagger_login (last_login update) to invalidate cache.
+
+[Rule] Any endpoint that modifies a field present in the cached user profile dict must either call _refresh_user_profile_cache or at minimum delete the 3 Redis keys (user:profile:cache:{uid}, user:profile:me:{uid}, user:profile:public:{uid}). Audit all @router.put/patch/post/delete in api/ for user-modifying side effects.

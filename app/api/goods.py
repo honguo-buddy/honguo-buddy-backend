@@ -4,12 +4,12 @@ from typing import Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.api import get_current_user, get_current_user_optional
-from app.core import BusinessHTTPException, settings, ResourceHTTPException, AuthHTTPException
+from app.core import BusinessHTTPException, settings, ResourceHTTPException, AuthHTTPException, get_now_naive
 from app.db import get_db, get_redis
-from app.models import Goods, ItemType
+from app.models import Goods, GoodsStatus, ItemType, Order
 from app.schemas import (
     ResponseModel,
     GoodsCreate,
@@ -42,6 +42,7 @@ def _build_goods_dict(goods) -> dict:
         "publisher": UserRead.model_validate(publisher) if publisher else None,
         "publisher_id": goods.publisher_id,
         "create_time": goods.create_time.isoformat() if goods.create_time else "",
+        "expire_time": goods.expire_time.isoformat() if getattr(goods, "expire_time", None) else None,
         "attachment_urls": attachment_urls,
     }
 
@@ -60,6 +61,18 @@ async def create_goods(
     db: AsyncSession = Depends(get_db),
 ):
     """Publish a new goods item."""
+    # 同时上架上限检查
+    cnt_result = await db.execute(
+        select(func.count()).select_from(Goods).where(
+            Goods.publisher_id == current_user.user_id,
+            Goods.status == GoodsStatus.ON_SALE,
+            Goods.is_deleted == False,
+        )
+    )
+    open_count = cnt_result.scalar() or 0
+    if open_count >= settings.MAX_OPEN_POSTS_PER_USER:
+        raise BusinessHTTPException(code=settings.DATA_GET_FAILED_CODE, msg="当前发布的活跃订单已达上限，请先结帖或下架后再试")
+
     goods = await GoodsService.create_goods(db, current_user.user_id, obj_in)
     res = GoodsRead.model_validate(goods)
     res.attachment_urls = _build_goods_urls(goods)
@@ -85,6 +98,9 @@ async def list_goods(
         raw_dicts = []
         goods_ids = []
         for g in goods_items:
+            # 懒检查：若已到期但定时任务未刷新，动态覆写状态为 OFF_SHELF
+            if getattr(g, "expire_time", None) is not None and getattr(g, "expire_time") <= get_now_naive() and g.status == GoodsStatus.ON_SALE:
+                g.status = GoodsStatus.OFF_SHELF
             gid = g.goods_id
             goods_ids.append(gid)
             raw_dicts.append(_build_goods_dict(g))
@@ -118,6 +134,9 @@ async def list_my_goods(
         raw_dicts = []
         goods_ids = []
         for g in goods_items:
+            # 懒检查：若已到期但定时任务未刷新，动态覆写状态为 OFF_SHELF
+            if getattr(g, "expire_time", None) is not None and getattr(g, "expire_time") <= get_now_naive() and g.status == GoodsStatus.ON_SALE:
+                g.status = GoodsStatus.OFF_SHELF
             gid = g.goods_id
             goods_ids.append(gid)
             raw_dicts.append(_build_goods_dict(g))
@@ -140,6 +159,10 @@ async def list_my_goods(
 
 
 @router.get("/{goods_id}", response_model=ResponseModel[GoodsDetailRead])
+
+
+
+
 async def get_goods_detail(
     goods_id: int,
     db: AsyncSession = Depends(get_db),
@@ -152,6 +175,9 @@ async def get_goods_detail(
     goods = await GoodsService.get_goods_by_id(db, goods_id)
     if not goods:
         raise ResourceHTTPException(code=settings.USER_GET_FAILED_CODE, msg="Goods not found or deleted")
+    # 懒检查：若已到期但定时任务未刷新，动态覆写状态为 OFF_SHELF
+    if getattr(goods, "expire_time", None) is not None and getattr(goods, "expire_time") <= get_now_naive() and goods.status == GoodsStatus.ON_SALE:
+        goods.status = GoodsStatus.OFF_SHELF
 
     # 已登录用户异步记录商品浏览历史足迹到 Redis ZSET
     if current_user:
@@ -272,3 +298,32 @@ async def delete_goods(
 
     await GoodsService.soft_delete_goods(db, goods)
     return ResponseModel(code=settings.SUCCESS_CODE, message={"goods_id": goods_id, "deleted": True})
+@router.get("/{goods_id}/contact", response_model=ResponseModel)
+async def get_goods_contact(
+    goods_id: int,
+    current_user: UserRead = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """获取商品发布者的联系方式（需鉴权：卖家本人或已发起购买者）。"""
+    goods_obj = await db.get(Goods, goods_id)
+    if not goods_obj or goods_obj.is_deleted:
+        raise ResourceHTTPException(code=settings.DATA_GET_FAILED_CODE, msg="商品不存在")
+
+    # 卖家直接放行
+    if goods_obj.publisher_id == current_user.user_id:
+        return ResponseModel(code=settings.SUCCESS_CODE, message=goods_obj.contact or {})
+
+    # 检查是否存在订单记录
+    order_result = await db.execute(
+        select(func.count()).select_from(Order).where(
+            Order.item_type == "GOODS",
+            Order.item_id == goods_id,
+            Order.buyer_id == current_user.user_id,
+            Order.is_deleted == False,
+        )
+    )
+    if (order_result.scalar() or 0) > 0:
+        return ResponseModel(code=settings.SUCCESS_CODE, message=goods_obj.contact or {})
+
+    raise BusinessHTTPException(code=settings.DATA_GET_FAILED_CODE, msg="您需要先申请该商品，才能查看车主的联系方式")
+
