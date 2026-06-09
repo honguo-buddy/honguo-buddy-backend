@@ -38,7 +38,7 @@ from app.schemas import (
     ResponseModel,
     UserRead,
 )
-from app.services import MetricsService, PostService, OrderService, SocialService, WeChatNotificationService
+from app.services import BlacklistService, MetricsService, PostService, OrderService, SocialService, WeChatNotificationService
 from app.models import Order, Post, PostStatus, User
 
 logger = logging.getLogger(__name__)
@@ -165,6 +165,7 @@ async def list_posts(
     template_segment_2: Optional[str] = Query(None, description="模板数据文本片段2，模糊匹配 template_data 全文"),
     page: int = Query(1, ge=1, description="页码"),
     page_size: int = Query(20, ge=1, le=100, description="每页数量"),
+    current_user: Optional[UserRead] = Depends(get_current_user_optional),
     db: AsyncSession = Depends(get_db),
     redis_client = Depends(get_redis),
 ):
@@ -177,6 +178,14 @@ async def list_posts(
     """
     try:
         # 调用服务层查询
+        # 黑名单过滤：获取拉黑了当前用户的用户 ID 列表 + 当前用户拉黑的目标 ID 列表
+        blocker_ids = []
+        blocked_target_ids = []
+        if current_user:
+            blocker_ids = await BlacklistService.get_blocker_ids(db, current_user.user_id)
+            blocked_target_ids = await BlacklistService.get_blocked_target_ids(db, current_user.user_id)
+        exclude_ids = list(set(blocker_ids + blocked_target_ids))
+
         posts, total = await PostService.list_posts(
             db,
             keyword=keyword,
@@ -192,6 +201,7 @@ async def list_posts(
             template_segment_2=template_segment_2,
             page=page,
             page_size=page_size,
+            exclude_publisher_ids=exclude_ids if exclude_ids else None,
         )
         post_id_list = [post.post_id for post in posts]
         current_accepters_map = await OrderService.get_current_accepters_count_map(
@@ -297,10 +307,16 @@ async def list_public_user_posts(
     status: Optional[str] = Query(None, description="状态筛选"),
     page: int = Query(1, ge=1, description="页码"),
     size: int = Query(20, ge=1, le=100, alias="size", description="每页数量"),
+    current_user: Optional[UserRead] = Depends(get_current_user_optional),
     db: AsyncSession = Depends(get_db),
     redis_client = Depends(get_redis),
 ):
     """公开查询指定用户发布的帖子。"""
+
+    # 黑名单拦截
+    if current_user:
+        if await BlacklistService.is_blocked(db, user_id, current_user.user_id):
+            raise BusinessHTTPException(code=102, msg="由于对方的隐私设置，无法访问该主页")
 
     posts, total = await PostService.list_public_posts_by_user(
         db=db,

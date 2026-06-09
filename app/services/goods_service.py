@@ -104,9 +104,13 @@ class GoodsService:
         status: Optional[str] = None,
         page: int = 1,
         page_size: int = 20,
+        exclude_publisher_ids: Optional[list[int]] = None,
     ) -> Tuple[List[Goods], int]:
         """Marketplace lobby paginated query with filters."""
         stmt = select(Goods).where(Goods.is_deleted == False)
+        # 黑名单过滤：排除拉黑了当前用户的发布者
+        if exclude_publisher_ids:
+            stmt = stmt.where(Goods.publisher_id.notin_(exclude_publisher_ids))
         if status:
             stmt = stmt.where(Goods.status == GoodsStatus(status))
         if category_id:

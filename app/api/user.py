@@ -353,6 +353,10 @@ async def get_user_profile(
             code=settings.USER_GET_FAILED_CODE,
             msg="用户不存在",
         )
+    # 黑名单拦截
+    if current_user:
+        if await BlacklistService.is_blocked(db, user_id, current_user.user_id):
+            raise BusinessHTTPException(code=102, msg="由于对方的隐私设置，无法访问该主页")
     reputation = await ReputationService.get_user_reputation(redis, db, user_id)
     return ResponseModel(code=settings.SUCCESS_CODE, message=reputation)
 
@@ -363,6 +367,7 @@ async def get_user_reviews(
     role: Literal["CARRIER", "CLIENT"] = "CARRIER",
     offset: int = 0,
     limit: int = 20,
+    current_user: Optional[UserSchema] = Depends(get_current_user_optional),
     db: AsyncSession = Depends(get_db),
 ):
     """延迟加载用户评价详情（支持 CARRIER/CLIENT 双 Tab 页签）。
@@ -376,6 +381,10 @@ async def get_user_reviews(
             code=settings.USER_GET_FAILED_CODE,
             msg="用户不存在",
         )
+    # 黑名单拦截
+    if current_user:
+        if await BlacklistService.is_blocked(db, user_id, current_user.user_id):
+            raise BusinessHTTPException(code=102, msg="由于对方的隐私设置，无法访问该主页")
     result = await ReputationService.get_user_reviews(db, user_id, role, offset, limit)
     return ResponseModel(code=settings.SUCCESS_CODE, message=result)
 
@@ -398,6 +407,11 @@ async def get_user_public(
             code=settings.SUCCESS_CODE,
             message=UserProfileResponse.model_validate(user_data),
         )
+
+    # 黑名单拦截：若被访用户拉黑了当前访客，禁止查看
+    if current_user:
+        if await BlacklistService.is_blocked(db, user_id, current_user.user_id):
+            raise BusinessHTTPException(code=102, msg="由于对方的隐私设置，无法访问该主页")
 
     # Read-Through: Redis user:profile:public:{user_id} cache first
     cache_key = f"user:profile:public:{user_id}"

@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import timedelta
 from typing import Optional, Sequence
 
-from sqlalchemy import and_, case, func, or_, select, update
+from sqlalchemy import and_, case, func, not_, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import BusinessHTTPException, ResourceHTTPException, get_now_naive, settings
@@ -70,7 +70,7 @@ class ChatService:
         return session
 
     @staticmethod
-    async def list_sessions(db: AsyncSession, current_user_id: int) -> list[ChatSession]:
+    async def list_sessions(db: AsyncSession, current_user_id: int, exclude_peer_ids: list[int] | None = None) -> list[ChatSession]:
         unread_subquery = (
             select(
                 ChatMessage.session_id.label("session_id"),
@@ -106,6 +106,9 @@ class ChatService:
             session.unread_count = int(unread_count or 0)  # type: ignore[attr-defined]
             session.peer_id = session.user_two_id if session.user_one_id == current_user_id else session.user_one_id  # type: ignore[attr-defined]
             sessions.append(session)
+        # 黑名单过滤：排除会话对方拉黑了当前用户的会话
+        if exclude_peer_ids:
+            sessions = [s for s in sessions if s.peer_id not in exclude_peer_ids]
         return sessions
 
     @staticmethod

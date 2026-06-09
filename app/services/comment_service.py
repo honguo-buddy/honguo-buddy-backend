@@ -197,6 +197,7 @@ class CommentService:
         target_id: int,
         cursor: Optional[int] = None,
         size: int = 20,
+        exclude_user_ids: Optional[list[int]] = None,
     ) -> Tuple[List[Comment], Optional[int]]:
         """获取目标的根评论列表（游标分页）。
         
@@ -225,6 +226,9 @@ class CommentService:
             Comment.parent_id.is_(None),
             Comment.is_deleted == False,
         ]
+        # 黑名单过滤：排除拉黑了当前用户的评论发布者
+        if exclude_user_ids:
+            where_conditions.append(Comment.user_id.notin_(exclude_user_ids))
         
         # 游标分页：获取 cursor 之前的评论（降序）
         if cursor is not None:
@@ -258,6 +262,7 @@ class CommentService:
         comment_id: int,
         cursor: Optional[int] = None,
         size: int = 20,
+        exclude_user_ids: Optional[list[int]] = None,
     ) -> Tuple[List[Comment], Optional[int]]:
         """获取单条根评论下的所有回复（按时间正序）。
         
@@ -286,6 +291,9 @@ class CommentService:
             Comment.parent_id == comment_id,
             Comment.is_deleted == False,
         ]
+        # 黑名单过滤：排除拉黑了当前用户的评论发布者
+        if exclude_user_ids:
+            where_conditions.append(Comment.user_id.notin_(exclude_user_ids))
         
         # 游标分页：获取 cursor 之后的评论（正序，按create_time或comment_id）
         if cursor is not None:

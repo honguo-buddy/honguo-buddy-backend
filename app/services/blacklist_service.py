@@ -105,3 +105,36 @@ class BlacklistService:
             "page_size": page_size,
             "list": items,
         }
+    @staticmethod
+    async def is_blocked(db: AsyncSession, blocker_id: int, current_user_id: int) -> bool:
+        """检查 current_user_id 是否被 blocker_id 拉黑了。"""
+        if blocker_id == current_user_id:
+            return False
+        result = await db.execute(
+            select(UserBlacklist).where(
+                UserBlacklist.user_id == blocker_id,
+                UserBlacklist.target_id == current_user_id,
+            )
+        )
+        return result.scalar_one_or_none() is not None
+
+    @staticmethod
+    async def get_blocker_ids(db: AsyncSession, current_user_id: int) -> list[int]:
+        """获取所有拉黑了 current_user_id 的用户 ID 列表。"""
+        result = await db.execute(
+            select(UserBlacklist.user_id).where(
+                UserBlacklist.target_id == current_user_id,
+            )
+        )
+        return [row[0] for row in result.all()]
+
+    @staticmethod
+    async def get_blocked_target_ids(db: AsyncSession, current_user_id: int) -> list[int]:
+        """获取 current_user_id 拉黑的所有目标用户 ID 列表。"""
+        result = await db.execute(
+            select(UserBlacklist.target_id).where(
+                UserBlacklist.user_id == current_user_id,
+            )
+        )
+        return [row[0] for row in result.all()]
+

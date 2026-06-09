@@ -19,7 +19,7 @@ from app.schemas import (
     GoodsListResponse,
     UserRead,
 )
-from app.services import GoodsService, MetricsService, OrderService, SocialService, WeChatNotificationService
+from app.services import BlacklistService, GoodsService, MetricsService, OrderService, SocialService, WeChatNotificationService
 
 logger = logging.getLogger(__name__)
 
@@ -86,13 +86,22 @@ async def list_goods(
     status: Optional[str] = Query(None, description="status filter"),
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
+    current_user: Optional[UserRead] = Depends(get_current_user_optional),
     db: AsyncSession = Depends(get_db),
     redis_client = Depends(get_redis),
 ):
     """Marketplace lobby paginated query with counter hydration."""
     try:
+        # 黑名单过滤：获取拉黑了当前用户的用户 ID 列表
+        blocker_ids = []
+        blocked_target_ids = []
+        if current_user:
+            blocker_ids = await BlacklistService.get_blocker_ids(db, current_user.user_id)
+            blocked_target_ids = await BlacklistService.get_blocked_target_ids(db, current_user.user_id)
+        exclude_ids = list(set(blocker_ids + blocked_target_ids))
         goods_items, total = await GoodsService.list_all_goods(
-            db, keyword=keyword, category_id=category_id, status=status, page=page, page_size=page_size
+            db, keyword=keyword, category_id=category_id, status=status, page=page, page_size=page_size,
+            exclude_publisher_ids=exclude_ids if exclude_ids else None,
         )
 
         raw_dicts = []

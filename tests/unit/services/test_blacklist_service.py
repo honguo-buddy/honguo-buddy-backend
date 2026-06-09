@@ -98,3 +98,65 @@ class TestBlacklistService:
         assert result["total"] == 1
         assert result["list"][0]["target_name"] == "testuser"
         assert result["list"][0]["target_avatar"] == "/static/av.png"
+
+class TestBlacklistServiceBlocked:
+
+    async def test_is_blocked_true(self):
+        """user_id=2 拉黑了 target_id=1，检查 1 是否被 2 拉黑 -> True"""
+        db = MagicMock()
+        db.execute = AsyncMock(return_value=_make_scalar_result(MagicMock()))
+        result = await BlacklistService.is_blocked(db, blocker_id=2, current_user_id=1)
+        assert result is True
+
+    async def test_is_blocked_false(self):
+        """没有被拉黑 -> False"""
+        db = MagicMock()
+        db.execute = AsyncMock(return_value=_make_scalar_result(None))
+        result = await BlacklistService.is_blocked(db, blocker_id=2, current_user_id=1)
+        assert result is False
+
+    async def test_is_blocked_self_always_false(self):
+        """自己不能拉黑自己，始终返回 False"""
+        db = MagicMock()
+        result = await BlacklistService.is_blocked(db, blocker_id=1, current_user_id=1)
+        assert result is False
+        db.execute.assert_not_called()
+
+    async def test_get_blocker_ids_empty(self):
+        """没有拉黑记录 -> 空列表"""
+        db = MagicMock()
+        inner = MagicMock()
+        inner.all.return_value = []
+        result_mock = MagicMock()
+        result_mock.all.return_value = []
+        db.execute = AsyncMock(return_value=result_mock)
+        result = await BlacklistService.get_blocker_ids(db, current_user_id=1)
+        assert result == []
+
+    async def test_get_blocker_ids_with_entries(self):
+        """有 2 个用户拉黑了 current_user -> 返回 [2, 3]"""
+        db = MagicMock()
+        result_mock = MagicMock()
+        result_mock.all.return_value = [(2,), (3,)]
+        db.execute = AsyncMock(return_value=result_mock)
+        result = await BlacklistService.get_blocker_ids(db, current_user_id=1)
+        assert result == [2, 3]
+
+    async def test_get_blocked_target_ids_empty(self):
+        """没有拉黑记录 -> 空列表"""
+        db = MagicMock()
+        result_mock = MagicMock()
+        result_mock.all.return_value = []
+        db.execute = AsyncMock(return_value=result_mock)
+        result = await BlacklistService.get_blocked_target_ids(db, current_user_id=1)
+        assert result == []
+
+    async def test_get_blocked_target_ids_with_entries(self):
+        """current_user 拉黑了 user 4 和 5 -> 返回 [4, 5]"""
+        db = MagicMock()
+        result_mock = MagicMock()
+        result_mock.all.return_value = [(4,), (5,)]
+        db.execute = AsyncMock(return_value=result_mock)
+        result = await BlacklistService.get_blocked_target_ids(db, current_user_id=1)
+        assert result == [4, 5]
+

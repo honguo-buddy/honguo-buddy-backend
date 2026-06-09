@@ -777,3 +777,30 @@ SixtyFour User profile Redis cache must be invalidated and rebuilt on EVERY user
 [Solution] 1) Created shared _refresh_user_profile_cache(uid, db) helper in user.py that invalidates 3 keys and rebuilds from fresh DB data; 2) Applied it to: PATCH /me, POST /me/phone/bind, PUT /{user_id} (admin); 3) Added cache invalidation (delete only) to: DELETE /me, DELETE /{user_id} (admin); 4) Fixed auth.py: POST /email/verify-code (email bind) and POST /wxLogin-equivalent swagger_login (last_login update) to invalidate cache.
 
 [Rule] Any endpoint that modifies a field present in the cached user profile dict must either call _refresh_user_profile_cache or at minimum delete the 3 Redis keys (user:profile:cache:{uid}, user:profile:me:{uid}, user:profile:public:{uid}). Audit all @router.put/patch/post/delete in api/ for user-modifying side effects.
+
+
+
+SixtyFive Blacklist full-stack block: profile viewing + message sending + content filtering
+
+[Problem] Blacklist operations (add/remove) existed but had no enforcement across the platform. Blacklisted users could still view blocker profiles, send messages, and their content appeared in public lists.
+
+[Solution] Added three-tier enforcement across 11 endpoints:
+
+Tier 1 - Block profile viewing: GET /users/{user_id}, /users/{user_id}/profile, /users/{user_id}/reviews, /posts/user/{user_id} -> check if blocker (path user) blacklisted current_user, raise BusinessHTTPException(code=102)
+
+Tier 2 - Block message sending: POST /chats/sessions/init, POST /chats/messages -> check if receiver blacklisted sender, raise BusinessHTTPException(code=99)
+
+Tier 3 - Hide content in lists: GET /posts, /goods, /comments/{type}/{id}, /comments/{id}/replies, /chats/sessions -> inject exclude_publisher_ids/exclude_user_ids/exclude_peer_ids filter to exclude blacklisted users'' content
+
+Added BlacklistService.is_blocked(db, blocker_id, current_user_id) and BlacklistService.get_blocker_ids(db, current_user_id) helper methods.
+
+[Rule] After implementing a social feature like blacklist/follow/favorite, immediately audit all public-facing GET endpoints and all POST interaction endpoints to ensure the social relationship is enforced. Use get_blocker_ids for bulk filtering in list queries instead of per-item is_blocked checks.
+
+SixtySix Blacklist content filtering requires bidirectional exclusion (blocker + blocked)
+
+[Problem] The Tier-3 content filtering in list endpoints only used get_blocker_ids() (users who blocked me), but not get_blocked_target_ids() (users I blocked). This meant when user A blacklisted user B, A could still see B''s posts/goods/comments in public lists.
+
+[Solution] 1) Added BlacklistService.get_blocked_target_ids(db, current_user_id) to return target_ids where user_id == current_user_id; 2) Updated all list endpoints (posts, goods, comments root+replies, chat sessions) to merge both blocker_ids and blocked_target_ids into a single exclude list via list(set(blocker_ids + blocked_target_ids)).
+
+[Rule] When filtering content based on social relationships, always consider BOTH directions: who blocked me AND who I blocked. The exclude list must be the union of both sets. Also note that the user_blacklist table uses (user_id, target_id) as composite PK where user_id is the blocker (who initiated the block) and target_id is the blocked (who got blocked). get_blocker_ids(): SELECT user_id WHERE target_id = me (who blocked me); get_blocked_target_ids(): SELECT target_id WHERE user_id = me (who I blocked).
+

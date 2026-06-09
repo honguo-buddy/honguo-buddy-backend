@@ -1419,6 +1419,25 @@ GET /users/me/blacklist?page=1&page_size=20
 
 ---
 
+#### 4.2.25 黑名单生效范围
+
+当用户 A 拉黑用户 B 后，全平台生效如下约束：
+
+**[双向可见性隔离]**
+- A 无法查看 B 的个人主页（GET /users/{user_id}）、声誉画像（GET /users/{user_id}/profile）及评价列表（GET /users/{user_id}/reviews）
+- B 同样无法查看 A 的上述页面
+
+**[内容大厅过滤]**
+- A 在帖子大厅（GET /posts）和商品大厅（GET /goods）中看不到 B 发布的帖子与商品，B 也看不到 A 的
+- A 在评论列表（GET /comments/{target_type}/{target_id}、GET /comments/{comment_id}/replies）中看不到 B 的评论，B 也看不到 A 的
+
+**[私信双向阻断]**
+- A 无法向 B 发起会话（POST /chats/sessions/init），提示 code=99 "你已被对方拉黑"
+- A 无法向现有会话中的 B 发送消息（POST /chats/messages），提示 code=99 "你已被对方拉黑"
+- 双方会话列表中隐藏与拉黑对象相关的会话
+
+---
+
 ### 4.3 附件上传模块
 
 #### 4.3.1 上传附件 (POST: /attachments/upload)

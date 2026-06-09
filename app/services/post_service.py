@@ -376,9 +376,13 @@ class PostService:
         template_segment_2: Optional[str] = None,
         page: int = 1,
         page_size: int = 20,
+        exclude_publisher_ids: Optional[list[int]] = None,
     ) -> Tuple[List[Post], int]:
         """查询帖子列表，支持多条件过滤和分页。"""
         conditions = [Post.is_deleted == False]
+        # 黑名单过滤：排除拉黑了当前用户的发布者
+        if exclude_publisher_ids:
+            conditions.append(Post.publisher_id.notin_(exclude_publisher_ids))
         if category_id is not None:
             conditions.append(Post.category_id == category_id)
         

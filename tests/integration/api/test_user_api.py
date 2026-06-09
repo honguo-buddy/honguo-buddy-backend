@@ -1089,3 +1089,181 @@ async def test_blacklist_add_and_remove(client, test_user_token, fake_redis, tes
     )
     assert resp.status_code == 200
     assert resp.json()["code"] == 0
+
+# ========== 黑名单全盘拦截集成测试 ==========
+
+async def test_blocked_user_cannot_view_profile(client, test_user_token, fake_redis, test_user, db_session):
+    """被拉黑用户访问拉黑者主页 -> code=102"""
+    from app.models import SexEnum, User, UserBlacklist, UserType
+
+    blocker = User(
+        user_id=3001, user_uuid=b"blocker000000001", user_name="blocker_user",
+        sex=SexEnum.UNKNOWN, user_type=UserType.USER,
+        is_active=True, is_deleted=False, credit_score=100,
+        wechat_openid="blocker_openid_3001",
+    )
+    db_session.add(blocker)
+    await db_session.flush()
+
+    # 模拟: blocker(3001) 拉黑了 test_user(1001)
+    entry = UserBlacklist(user_id=3001, target_id=1001)
+    db_session.add(entry)
+    await db_session.flush()
+
+    await fake_redis.set(f"token:{test_user_token}", str(test_user.user_id))
+    await fake_redis.set(f"user_token:{test_user.user_id}", test_user_token)
+
+    # test_user 尝试访问 blocker 的主页
+    resp = await client.get(
+        f"/users/3001",
+        headers={"Authorization": f"Bearer {test_user_token}"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["code"] == 102
+    assert "隐私设置" in body["message"]["msg"]
+
+
+async def test_blocked_user_cannot_view_public_posts(client, test_user_token, fake_redis, test_user, db_session):
+    """被拉黑用户访问拉黑者的公开帖子列表 -> code=102"""
+    from app.models import SexEnum, User, UserBlacklist, UserType
+
+    blocker = User(
+        user_id=3002, user_uuid=b"blocker000000002", user_name="blocker2",
+        sex=SexEnum.UNKNOWN, user_type=UserType.USER,
+        is_active=True, is_deleted=False, credit_score=100,
+        wechat_openid="blocker_openid_3002",
+    )
+    db_session.add(blocker)
+    await db_session.flush()
+
+    entry = UserBlacklist(user_id=3002, target_id=1001)
+    db_session.add(entry)
+    await db_session.flush()
+
+    await fake_redis.set(f"token:{test_user_token}", str(test_user.user_id))
+    await fake_redis.set(f"user_token:{test_user.user_id}", test_user_token)
+
+    resp = await client.get(
+        "/posts/user/3002",
+        headers={"Authorization": f"Bearer {test_user_token}"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["code"] == 102
+
+
+async def test_non_blocked_user_can_view_profile(client, test_user_token, fake_redis, test_user, db_session):
+    """未被拉黑的用户正常访问他人主页 -> code=0"""
+    from app.models import SexEnum, User, UserType
+
+    other = User(
+        user_id=3003, user_uuid=b"other00000000003", user_name="other_user",
+        sex=SexEnum.UNKNOWN, user_type=UserType.USER,
+        is_active=True, is_deleted=False, credit_score=100,
+        wechat_openid="other_openid_3003",
+    )
+    db_session.add(other)
+    await db_session.flush()
+
+    await fake_redis.set(f"token:{test_user_token}", str(test_user.user_id))
+    await fake_redis.set(f"user_token:{test_user.user_id}", test_user_token)
+
+    resp = await client.get(
+        f"/users/3003",
+        headers={"Authorization": f"Bearer {test_user_token}"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    # 未被拉黑，正常返回（可能是公开信息或 code=0）
+    assert body["code"] in (0, 103)  # 103 = 无缓存时可能
+
+
+async def test_blocking_hides_posts_from_list(client, test_user_token, fake_redis, test_user, db_session):
+    """拉黑者在大厅列表中看不到被拉黑者的帖子"""
+    from app.models import Category, Direction, Post, PostStatus, SexEnum, UrgencyLevel, User, UserBlacklist, UserType
+
+    blocked_user = User(
+        user_id=4001, user_uuid=b"blocked000000001", user_name="blocked_user",
+        sex=SexEnum.UNKNOWN, user_type=UserType.USER,
+        is_active=True, is_deleted=False, credit_score=100,
+        wechat_openid="blocked_openid_4001",
+    )
+    db_session.add(blocked_user)
+    await db_session.flush()
+
+    # test_user(1001) 拉黑 blocked_user(4001)
+    entry = UserBlacklist(user_id=1001, target_id=4001)
+    db_session.add(entry)
+    await db_session.flush()
+
+    # 创建分类
+    cat = Category(category_id=1, name="test_cat", config_json={})
+    db_session.add(cat)
+    await db_session.flush()
+
+    # blocked_user 发一个帖子
+    post = Post(
+        post_id=5001, publisher_id=4001, category_id=1, title="blocked post", direction=Direction.SELL,
+        urgency=UrgencyLevel.NORMAL, status=PostStatus.OPEN,
+        template_data={"max_accepters": 1},
+    )
+    db_session.add(post)
+    await db_session.flush()
+
+    await fake_redis.set(f"token:{test_user_token}", str(test_user.user_id))
+    await fake_redis.set(f"user_token:{test_user.user_id}", test_user_token)
+
+    resp = await client.get(
+        "/posts/?page=1&page_size=20",
+        headers={"Authorization": f"Bearer {test_user_token}"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["code"] == 0
+    # blocked_user 的帖子不应该出现在列表中
+    post_ids = [p["post_id"] for p in body["message"]["list"]]
+    assert 5001 not in post_ids
+
+
+async def test_blocking_hides_goods_from_list(client, test_user_token, fake_redis, test_user, db_session):
+    """拉黑者在大厅列表中看不到被拉黑者的商品"""
+    from app.models import Goods, GoodsCondition, GoodsStatus, SexEnum, User, UserBlacklist, UserType
+
+    blocked_user = User(
+        user_id=4002, user_uuid=b"blocked000000002", user_name="blocked_goods_user",
+        sex=SexEnum.UNKNOWN, user_type=UserType.USER,
+        is_active=True, is_deleted=False, credit_score=100,
+        wechat_openid="blocked_openid_4002",
+    )
+    db_session.add(blocked_user)
+    await db_session.flush()
+
+    entry = UserBlacklist(user_id=1001, target_id=4002)
+    db_session.add(entry)
+    await db_session.flush()
+
+    from app.models import Category
+    cat = Category(category_id=1, name="test_cat", config_json={})
+    db_session.add(cat)
+    await db_session.flush()
+
+    goods = Goods(
+        goods_id=6001, publisher_id=4002, name="blocked item",
+        category_id=1, condition=GoodsCondition.NEAR_NEW, status=GoodsStatus.ON_SALE,
+    )
+    db_session.add(goods)
+    await db_session.flush()
+
+    await fake_redis.set(f"token:{test_user_token}", str(test_user.user_id))
+    await fake_redis.set(f"user_token:{test_user.user_id}", test_user_token)
+
+    resp = await client.get(
+        "/goods/?page=1&page_size=20",
+        headers={"Authorization": f"Bearer {test_user_token}"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["code"] == 0
+    goods_ids = [g["goods_id"] for g in body["message"]["list"]]
+    assert 6001 not in goods_ids

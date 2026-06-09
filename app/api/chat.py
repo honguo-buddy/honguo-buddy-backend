@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api import get_current_user
-from app.core import settings
+from app.core import BusinessHTTPException, settings
 from app.db import get_db
 from app.schemas import (
 	ChatBroadcastRequest,
@@ -20,7 +20,7 @@ from app.schemas import (
 	ResponseModel,
 )
 from app.schemas.user import user as UserSchema
-from app.services import ChatService
+from app.services import BlacklistService, ChatService
 
 router = APIRouter()
 
@@ -64,6 +64,10 @@ async def init_session(
 	current_user: UserSchema = Depends(get_current_user),
 	db: AsyncSession = Depends(get_db),
 ):
+	# 黑名单拦截：若对方拉黑了你，禁止发起会话
+	if await BlacklistService.is_blocked(db, req.peer_id, current_user.user_id):
+		raise BusinessHTTPException(code=99, msg="消息发送失败，你已被对方拉黑")
+
 	session = await ChatService.init_session(
 		db=db,
 		current_user_id=current_user.user_id,
@@ -80,7 +84,11 @@ async def list_sessions(
 	current_user: UserSchema = Depends(get_current_user),
 	db: AsyncSession = Depends(get_db),
 ):
-	sessions = await ChatService.list_sessions(db=db, current_user_id=current_user.user_id)
+	# 黑名单过滤：排除拉黑了当前用户的会话对方的会话
+	blocker_ids = await BlacklistService.get_blocker_ids(db, current_user.user_id)
+	blocked_target_ids = await BlacklistService.get_blocked_target_ids(db, current_user.user_id)
+	exclude_peer_ids = list(set(blocker_ids + blocked_target_ids))
+	sessions = await ChatService.list_sessions(db=db, current_user_id=current_user.user_id, exclude_peer_ids=blocker_ids)
 	items = [_build_session_read(session, current_user.user_id) for session in sessions]
 	return ResponseModel(code=settings.SUCCESS_CODE, message=ChatSessionListResponse(items=items))
 
@@ -91,6 +99,14 @@ async def send_message(
 	current_user: UserSchema = Depends(get_current_user),
 	db: AsyncSession = Depends(get_db),
 ):
+	# 黑名单拦截：获取会话对方并检查是否被拉黑
+	from app.models import ChatSession
+	session_obj = await db.get(ChatSession, req.session_id)
+	if session_obj:
+		peer_id = session_obj.user_two_id if session_obj.user_one_id == current_user.user_id else session_obj.user_one_id
+		if await BlacklistService.is_blocked(db, peer_id, current_user.user_id):
+			raise BusinessHTTPException(code=99, msg="消息发送失败，你已被对方拉黑")
+
 	message = await ChatService.send_message(
 		db=db,
 		current_user_id=current_user.user_id,
