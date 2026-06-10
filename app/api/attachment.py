@@ -22,6 +22,7 @@ async def upload_attachment(
     current_user = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    """上传图片附件，并在落盘前按目标类型压缩、缩放和统一转为 WebP。"""
     attachment = await AttachmentService.upload(file=file, target_type=target_type, target_id=target_id, current_user=current_user, db=db)
 
     return ResponseModel(

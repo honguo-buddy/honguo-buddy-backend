@@ -1442,7 +1442,7 @@ GET /users/me/blacklist?page=1&page_size=20
 
 #### 4.3.1 上传附件 (POST: /attachments/upload)
 
-用途: 上传图片附件并返回附件 ID 与可访问 URL。若 `target_type=USER`，系统会自动回填该附件到对应用户的 `avatar_id`。
+用途: 上传图片附件并返回附件 ID 与可访问 URL。若 `target_type=USER`，系统会自动回填该附件到对应用户的 `avatar_id`。所有上传图片都会在落盘前按目标类型压缩、缩放并统一转换为 `.webp`。
 
 请求头: Authorization: Bearer <token>。
 
@@ -1451,6 +1451,10 @@ GET /users/me/blacklist?page=1&page_size=20
 - `file`：文件字段。
 - `target_type`：可选，上传附件类型。
 - `target_id`：可选，关联目标 ID。
+- 图像处理规则：
+- `USER`：居中裁剪为 `200x200`，压缩质量 `80`
+- `POST` / `GOODS`：最大宽度压到 `1080px`，等比缩放，压缩质量 `75`
+- `COMMENT` / `CHAT` / 其他：最大宽度压到 `800px`，等比缩放，压缩质量 `70`
 
 请求示例（multipart/form-data）:
 
@@ -1469,7 +1473,7 @@ GET /users/me/blacklist?page=1&page_size=20
     "code": 0,
     "message": {
         "id": 123,
-        "url": "/static/avatar/avatar_123.png"
+        "url": "/static/avatar/user_1001_123456789.webp"
     }
 }
 ```
@@ -1477,7 +1481,7 @@ GET /users/me/blacklist?page=1&page_size=20
 常见错误:
 
 - code: 105 - Token 失效或缺失。
-- code: 99 - 上传文件格式不合法或请求体缺失。
+- code: 99 - 上传文件不是受支持的图片，或请求体缺失。
 - code: 301 - 文件保存失败或数据库写入失败。
 
 ### 4.4 Category 模板分类模块
