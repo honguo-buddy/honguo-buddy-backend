@@ -918,6 +918,18 @@ async def test_list_orders_and_post_application_edge_cases(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_mark_post_applications_seen_and_count_system_unread():
+    db = build_db(execute_side_effect=[FakeResult()])
+    await OrderService.mark_post_applications_seen_by_seller(db, 2001)
+    assert db.execute.await_count == 1
+    assert db.commit.await_count == 1
+
+    count_db = build_db(execute_side_effect=[FakeResult(scalar_value=3)])
+    unread = await OrderService.get_system_pending_unread_count(count_db, current_user_id=3001)
+    assert unread == 3
+
+
+@pytest.mark.asyncio
 async def test_lookup_helpers_and_create_order_edge_paths(monkeypatch):
     with pytest.raises(ResourceHTTPException):
         await OrderService._get_post_for_update(build_db(execute_side_effect=[FakeResult(items=[])]), 1)

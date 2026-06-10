@@ -66,6 +66,7 @@ from app.schemas.user import (
     FavoriteListResponse,
     HistoryItem,
     HistoryListResponse,
+    UserUnreadCountsResponse,
 )
 from app.schemas.comment import (
     CommentCreateRequest,
@@ -191,6 +192,7 @@ __all__ = [
     "FavoriteListResponse",
     "HistoryItem",
     "HistoryListResponse",
+    "UserUnreadCountsResponse",
     # category
     "CategoryCreate",
     "CategoryUpdate",

@@ -6,7 +6,7 @@ from typing import Optional
 
 import logging
 
-from sqlalchemy import and_, func, or_, select, text
+from sqlalchemy import and_, func, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased, selectinload
 
@@ -851,6 +851,48 @@ class OrderService:
                 }
             )
         return rows
+
+    @staticmethod
+    async def mark_post_applications_seen_by_seller(db: AsyncSession, post_id: int) -> None:
+        """发帖人查看申请列表后，将该帖子下未查阅的待处理申请批量标记为已读。"""
+        stmt = (
+            update(Order)
+            .where(
+                Order.item_type == ItemType.POST,
+                Order.item_id == post_id,
+                Order.status == OrderStatus.PENDING,
+                Order.is_seen_by_seller == False,
+                Order.is_deleted == False,
+            )
+            .values(is_seen_by_seller=True)
+            .execution_options(synchronize_session="fetch")
+        )
+        await db.execute(stmt)
+        await db.commit()
+
+    @staticmethod
+    async def get_system_pending_unread_count(db: AsyncSession, current_user_id: int) -> int:
+        """统计当前用户作为发帖人的系统未读申请总数。"""
+        stmt = (
+            select(func.count())
+            .select_from(Order)
+            .join(
+                Post,
+                and_(
+                    Order.item_type == ItemType.POST,
+                    Order.item_id == Post.post_id,
+                ),
+            )
+            .where(
+                Post.publisher_id == current_user_id,
+                Post.is_deleted == False,
+                Order.status == OrderStatus.PENDING,
+                Order.is_seen_by_seller == False,
+                Order.is_deleted == False,
+            )
+        )
+        res = await db.execute(stmt)
+        return int(res.scalar_one() or 0)
 
     @staticmethod
     async def get_order_detail(db: AsyncSession, order_id: int, current_user_id: int) -> Order:

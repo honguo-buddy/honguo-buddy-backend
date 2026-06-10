@@ -112,6 +112,28 @@ class ChatService:
         return sessions
 
     @staticmethod
+    async def get_total_unread_count(db: AsyncSession, current_user_id: int) -> int:
+        """聚合当前用户所有私信会话中的未读消息总数。"""
+        session_ids_stmt = select(ChatSession.session_id).where(
+            or_(
+                ChatSession.user_one_id == current_user_id,
+                ChatSession.user_two_id == current_user_id,
+            )
+        )
+        session_ids_res = await db.execute(session_ids_stmt)
+        session_ids = [int(row[0]) for row in session_ids_res.all() if row[0] is not None]
+        if not session_ids:
+            return 0
+
+        unread_stmt = select(func.count()).select_from(ChatMessage).where(
+            ChatMessage.session_id.in_(session_ids),
+            ChatMessage.sender_id != current_user_id,
+            ChatMessage.is_read == False,
+        )
+        unread_res = await db.execute(unread_stmt)
+        return int(unread_res.scalar_one() or 0)
+
+    @staticmethod
     async def _validate_session_membership(db: AsyncSession, session_id: int, current_user_id: int) -> ChatSession:
         stmt = select(ChatSession).where(ChatSession.session_id == session_id)
         result = await db.execute(stmt)
@@ -358,4 +380,3 @@ class ChatService:
             except Exception:
                 continue
         return {"sent_count": sent_count, "buyer_ids": buyer_ids}
-

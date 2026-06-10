@@ -452,6 +452,7 @@ async def list_post_applications(
         raise AuthHTTPException(code=settings.INSUFFICIENT_AUTHORITY_CODE, msg="仅帖子拥有者可查看申请列表")
 
     applications_data = await OrderService.list_post_applications(db, post_id)
+    await OrderService.mark_post_applications_seen_by_seller(db, post_id)
     applications = []
     for row in applications_data:
         order = row["order"]

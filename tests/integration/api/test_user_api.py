@@ -146,6 +146,88 @@ class TestGetUserProfile:
         assert response2.status_code == 200
         assert response2.json()["code"] == settings.TOKEN_INVALID_CODE
 
+    async def test_get_my_unread_counts_aggregates_chat_and_system(
+        self,
+        client: AsyncClient,
+        db_session,
+        test_user: User,
+        test_admin_user: User,
+        test_user_token: str,
+        test_admin_token: str,
+        fake_redis,
+    ):
+        from app.models import Category, ChatMessage, ChatSession, ItemType, Order, OrderStatus, OrderTriggerType
+
+        await fake_redis.set(f"token:{test_user_token}", str(test_user.user_id))
+        await fake_redis.set(f"user_token:{test_user.user_id}", test_user_token)
+        await fake_redis.set(f"token:{test_admin_token}", str(test_admin_user.user_id))
+
+        category = Category(category_id=9701, name="未读聚合分类", config_json={})
+        db_session.add(category)
+        await db_session.flush()
+
+        post = Post(
+            post_id=9702,
+            publisher_id=test_user.user_id,
+            category_id=category.category_id,
+            title="未读聚合帖子",
+            description="用于未读聚合测试",
+            price=20.0,
+            template_data={"max_accepters": 2},
+            direction=Direction.BUY,
+            urgency=UrgencyLevel.NORMAL,
+            status=PostStatus.OPEN,
+        )
+        db_session.add(post)
+        await db_session.flush()
+
+        pending_application = Order(
+            buyer_id=test_user.user_id,
+            seller_id=test_admin_user.user_id,
+            initiator_id=test_admin_user.user_id,
+            item_type=ItemType.POST,
+            item_id=post.post_id,
+            status=OrderStatus.PENDING,
+            trigger_type=OrderTriggerType.APPLICATION,
+            is_seen_by_seller=False,
+        )
+        db_session.add(pending_application)
+
+        session = ChatSession(
+            session_id=9703,
+            user_one_id=min(test_user.user_id, test_admin_user.user_id),
+            user_two_id=max(test_user.user_id, test_admin_user.user_id),
+        )
+        db_session.add(session)
+        await db_session.flush()
+
+        unread_message_1 = ChatMessage(
+            session_id=session.session_id,
+            sender_id=test_admin_user.user_id,
+            content="未读消息1",
+            is_read=False,
+        )
+        unread_message_2 = ChatMessage(
+            session_id=session.session_id,
+            sender_id=test_admin_user.user_id,
+            content="未读消息2",
+            is_read=False,
+        )
+        db_session.add_all([unread_message_1, unread_message_2])
+        await db_session.flush()
+
+        resp = await client.get(
+            "/users/me/unread-counts",
+            headers={"Authorization": f"Bearer {test_user_token}"},
+        )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["code"] == settings.SUCCESS_CODE
+        assert body["message"]["chat_unread_count"] == 2
+        assert body["message"]["system_unread_count"] == 1
+        assert body["message"]["total_unread_count"] == 3
+
 
 class TestUserEndpoints:
     async def test_get_me_returns_avatar_and_fields(

@@ -242,6 +242,14 @@ class HistoryListResponse(BaseModel):
     list: list[HistoryItem]
 
 
+class UserUnreadCountsResponse(BaseModel):
+    """用户全局未读数聚合响应。"""
+
+    chat_unread_count: int = Field(default=0, description="私信未读总数")
+    system_unread_count: int = Field(default=0, description="系统新申请未读数")
+    total_unread_count: int = Field(default=0, description="全量未读总数")
+
+
 # 别名：用于 API 响应中的用户信息
 UserRead = UserPublicResponse
 

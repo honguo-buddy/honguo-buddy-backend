@@ -74,6 +74,7 @@ class Order(Base):
 
     # 扩展字段：存放非标数据（如：征集批次号、接单备注、特殊要求）
     meta_data = Column(JSON, nullable=True, comment="订单元数据/扩展配置")
+    is_seen_by_seller = Column(Boolean, default=False, nullable=False, comment="发帖卖家是否已在申请列表中查阅过该单")
 
     # 基础元数据
     is_deleted = Column(Boolean, default=False, nullable=False, comment="是否软删除")

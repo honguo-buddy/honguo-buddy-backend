@@ -765,6 +765,75 @@ async def test_post_applications_returns_owner_view_with_completed_count(
 	assert application["note"] is None
 	assert application["created_at"]
 
+	pending_order = await db_session.get(Order, application["application_id"])
+	assert pending_order is not None
+	assert pending_order.is_seen_by_seller is True
+
+
+@pytest.mark.asyncio
+async def test_post_applications_marks_pending_orders_seen_for_unread_counts(
+	client: AsyncClient,
+	db_session,
+	test_user,
+	test_user_token,
+	fake_redis,
+):
+	"""测试查看申请列表后会将该帖子下待处理申请标记为卖家已查阅。"""
+	await fake_redis.set(f"token:{test_user_token}", str(test_user.user_id))
+	await fake_redis.set(f"user_token:{test_user.user_id}", test_user_token)
+
+	category = Category(category_id=112, name="申请已读分类", config_json={})
+	db_session.add(category)
+	await db_session.flush()
+
+	applicant = await _create_user_with_avatar(
+		db_session,
+		user_id=3012,
+		user_name="已读申请人",
+		openid="openid-applicant-seen",
+		avatar_url="/static/avatar/applicant_seen.png",
+	)
+	applicant_token = await _bind_user_token(fake_redis, applicant)
+
+	post = Post(
+		post_id=3400,
+		publisher_id=test_user.user_id,
+		category_id=category.category_id,
+		title="待标记已读的 BUY 帖子",
+		description="用于申请已读测试",
+		price=16.0,
+		template_data={"max_accepters": 2},
+		direction=Direction.BUY,
+		urgency=UrgencyLevel.NORMAL,
+		status=PostStatus.OPEN,
+	)
+	db_session.add(post)
+	await db_session.flush()
+
+	apply_resp = await client.post(
+		f"/posts/{post.post_id}/accept",
+		headers={"Authorization": f"Bearer {applicant_token}"},
+	)
+	assert apply_resp.status_code == 200
+	apply_body = apply_resp.json()
+	assert apply_body["code"] == settings.SUCCESS_CODE
+	order_id = apply_body["message"]["order_id"]
+
+	order_before = await db_session.get(Order, order_id)
+	assert order_before is not None
+	assert order_before.is_seen_by_seller is False
+
+	resp = await client.get(
+		f"/posts/{post.post_id}/applications",
+		headers={"Authorization": f"Bearer {test_user_token}"},
+	)
+	assert resp.status_code == 200
+	assert resp.json()["code"] == settings.SUCCESS_CODE
+
+	order_after = await db_session.get(Order, order_id)
+	assert order_after is not None
+	assert order_after.is_seen_by_seller is True
+
 
 @pytest.mark.asyncio
 async def test_post_applications_rejects_non_owner(

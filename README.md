@@ -1438,6 +1438,42 @@ GET /users/me/blacklist?page=1&page_size=20
 
 ---
 
+#### 4.2.26 获取我的全局未读数 (GET: /users/me/unread-counts)
+
+用途: 获取当前登录用户的全局未读数聚合，包含私信未读总数、系统新申请未读数，以及两者求和后的总未读数。
+
+请求头: Authorization: Bearer <token>。
+
+请求示例:
+
+```json
+{}
+```
+
+成功响应:
+
+```json
+{
+    "code": 0,
+    "message": {
+        "chat_unread_count": 2,
+        "system_unread_count": 1,
+        "total_unread_count": 3
+    }
+}
+```
+
+说明：
+- `chat_unread_count` 按当前用户所有会话中的未读私信总数聚合计算。
+- `system_unread_count` 按当前用户作为帖子发布者、且尚未在申请列表中查阅的 `PENDING` 申请数聚合计算。
+- `total_unread_count` 为上述两项之和。
+
+常见错误:
+
+- code: 105 - Token 失效或缺失。
+
+---
+
 ### 4.3 附件上传模块
 
 #### 4.3.1 上传附件 (POST: /attachments/upload)
@@ -2201,7 +2237,7 @@ GET /posts/1001
 
 #### 4.5.9 查看接单申请列表 (GET: /posts/{post_id}/applications)
 
-用途: 帖子发布者查看当前帖子下的申请列表，用于同意/拒绝接单。仅帖子拥有者可访问。
+用途: 帖子发布者查看当前帖子下的申请列表，用于同意/拒绝接单。仅帖子拥有者可访问。查看成功后，后端会将该帖子下所有 `PENDING` 且 `is_seen_by_seller = 0` 的申请批量标记为已查阅，用于清空系统未读计数。
 
 请求头: Authorization: Bearer <token>。
 
@@ -2249,7 +2285,6 @@ GET /posts/1001
 - code: 105 - Token 失效或缺失。
 - code: 102 - 仅帖子拥有者可查看申请列表。
 - code: 103 - 帖子不存在。
-
 
 #### 4.5.10 帖子公告栏读写 (POST/GET: /posts/{post_id}/bulletin)
 

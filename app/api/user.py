@@ -32,12 +32,13 @@ from app.schemas import (
     UserFollowListResponse,
     UserFollowToggleRequest,
     UserFollowToggleResponse,
+    UserUnreadCountsResponse,
     user as UserSchema,
     UserProfileResponse,
     UserPublicResponse,
     UserSelfUpdateRequest,
 )
-from app.services import AttachmentService, BlacklistService, ContactService, MetricsService, ReputationService, SMSService, SocialService, UserService
+from app.services import AttachmentService, BlacklistService, ChatService, ContactService, MetricsService, OrderService, ReputationService, SMSService, SocialService, UserService
 from app.models import User as UserModel
 
 
@@ -298,6 +299,26 @@ async def list_my_histories(
         await MetricsService.hydrate_goods_with_metrics(db, redis_client, goods_items, [it["target_id"] for it in goods_items])
 
     return ResponseModel(code=settings.SUCCESS_CODE, message=HistoryListResponse.model_validate(result))
+
+
+@router.get("/me/unread-counts", response_model=ResponseModel[UserUnreadCountsResponse])
+async def get_my_unread_counts(
+    current_user: UserSchema = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """获取当前用户的全局未读数聚合（私信未读 + 系统新申请未读）。"""
+    chat_unread_count = await ChatService.get_total_unread_count(db, current_user.user_id)
+    system_unread_count = await OrderService.get_system_pending_unread_count(db, current_user.user_id)
+    total_unread_count = chat_unread_count + system_unread_count
+
+    return ResponseModel(
+        code=settings.SUCCESS_CODE,
+        message=UserUnreadCountsResponse(
+            chat_unread_count=chat_unread_count,
+            system_unread_count=system_unread_count,
+            total_unread_count=total_unread_count,
+        ),
+    )
 
 
 @router.post("/me/histories/delete", response_model=ResponseModel[dict])
