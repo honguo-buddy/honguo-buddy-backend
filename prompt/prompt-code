@@ -622,6 +622,14 @@ OrderService.approve_order 和 reject_order 需要校验 post.publisher_id。
 
 四十九、 严禁在异步高频循环内部重复生灭 HTTP 客户端，必须强制复用长连接池 (HTTP Client Connection Pool Reuse)
 
+六十九、 业务动态配置不得继续停留在 config.py 常量层，必须落库并支持热更新 (Business Config Must Move from Static Settings to DB-backed Dynamic Config)
+
+【问题】虽然曾经把业务魔法数字统一收敛进 `config.py`，但诸如信用分初值、自动完结小时数、历史记录 TTL、活跃帖子上限等参数仍然需要改代码、重启服务才能生效。在多实例部署下，这类“伪配置”既不利于运营调参，也容易让不同节点出现配置漂移。
+
+【解决】1) 对纯业务参数建立 `sys_config` 表持久化存储，字段至少包含 `config_key` / `config_value` / `config_type` / `description`；2) 启动时若表为空，必须自动落入默认配置种子，再由 `DynamicConfigManager.load_all()` 一次性装载进进程内存；3) 运行期读取必须只走 `DynamicConfigManager.get()` 的内存字典，严禁在高频业务路径里现查数据库；4) 管理员修改配置后，必须先更新 MySQL，再通过 Redis 频道广播刷新信号，让所有实例重新装载本地缓存；5) 现有业务代码若已经大量使用 `settings.X`，优先提供兼容代理层，避免一次性全仓大改。
+
+【铁律】业务参数分两类：基础设施配置（数据库、Redis、AK/SK、密钥）继续留在 `.env + settings`；可运营调参的业务常数必须迁移到数据库动态配置中心。任何新增“运营可能要求在线修改”的业务参数，都不得再直接硬编码进 `config.py`。
+
 【问题】微信通知服务的 _get_access_token 与 send_subscribe_message 内部分别使用 async with httpx.AsyncClient() 创建短连接，每次调用即生即灭。高并发批量通知场景下操作系统 TCP 端口被 TIME_WAIT 填满，引发套接字耗尽假死。
 
 【解决】1) 在模块级别定义 _httpx_client: Optional[httpx.AsyncClient] 全局连接池句柄；2) 通过 _get_httpx_client() 懒初始化并全局复用；3) 所有 HTTP 调用统一走此长连接池。铁律：任何需要复用 HTTP 的服务模块，必须在模块级维护单例连接池，严禁在方法体内反复构造销毁 AsyncClient。

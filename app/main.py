@@ -8,8 +8,15 @@ import os
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from app.core import BEIJING_TZ
 
-from app.api import auth, user, attachment, category, post, order, comment, chat, goods
-from app.core import register_exception_handlers, LogMiddleware, settings, watch_delayed_queues_task
+from app.api import auth, user, attachment, category, post, order, comment, chat, goods, admin_config
+from app.core import (
+    DynamicConfigManager,
+    LogMiddleware,
+    register_exception_handlers,
+    settings,
+    watch_delayed_queues_task,
+    watch_dynamic_config_refresh,
+)
 from app.db import engine, Base, redis, AsyncSessionLocal
 from app.services import OrderReviewService, MetricsService
 
@@ -112,6 +119,11 @@ async def lifespan(app: FastAPI):
         async with engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
 
+        # 业务动态配置：启动时落库默认值并装载到内存
+        async with AsyncSessionLocal() as db:
+            await DynamicConfigManager().seed_defaults_if_empty(db)
+            await DynamicConfigManager().load_all(db)
+
         # 启动 APScheduler 并注册候补队列同步任务（强制使用北京时间时区）
         scheduler = AsyncIOScheduler(timezone=BEIJING_TZ)
         register_scheduler_jobs(scheduler)
@@ -120,6 +132,10 @@ async def lifespan(app: FastAPI):
 
         app.state.delay_worker = asyncio.create_task(watch_delayed_queues_task())
         logger.info("✓ Redis delayed queue worker 已启动")
+        app.state.dynamic_config_worker = asyncio.create_task(
+            watch_dynamic_config_refresh(redis, AsyncSessionLocal)
+        )
+        logger.info("✓ 动态配置 Redis 订阅已启动")
 
         logger.info(" Application startup complete")
         yield  # 应用正常运行
@@ -161,6 +177,14 @@ async def lifespan(app: FastAPI):
             except asyncio.CancelledError:
                 logger.info(" Delayed queue worker cancelled")
 
+        dynamic_config_worker = getattr(app.state, "dynamic_config_worker", None)
+        if dynamic_config_worker:
+            dynamic_config_worker.cancel()
+            try:
+                await dynamic_config_worker
+            except asyncio.CancelledError:
+                logger.info(" Dynamic config worker cancelled")
+
         logger.info("Application shutdown complete")
 
 app = FastAPI(title=settings.PROJECT_NAME,lifespan=lifespan)
@@ -196,6 +220,7 @@ try:
     app.include_router(router=comment.router, prefix="/comments", tags=["comments"])
     app.include_router(router=chat.router, prefix="/chats", tags=["chats"])
     app.include_router(router=goods.router, prefix="/goods", tags=["goods"])
+    app.include_router(router=admin_config.router, prefix="/admin", tags=["admin-config"])
     logger.info("All routers registered successfully")
 except Exception as e:
     logger.error(f"Failed to register routers: {e}", exc_info=True)

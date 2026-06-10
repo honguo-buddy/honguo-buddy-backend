@@ -140,6 +140,10 @@ from app.schemas.goods import (
     GoodsDetailRead,
     GoodsListResponse,
 )
+from app.schemas.sys_config import (
+    SysConfigRead,
+    SysConfigUpdateRequest,
+)
 
 __all__ = [
     # auth
@@ -226,4 +230,6 @@ __all__ = [
     "GoodsRead",
     "GoodsDetailRead",
     "GoodsListResponse",
+    "SysConfigRead",
+    "SysConfigUpdateRequest",
 ]

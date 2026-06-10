@@ -29,6 +29,13 @@ from app.core.security import (
 )
 from app.core.log_middleware import LogMiddleware, save_log_to_db
 from app.core.cleantask import create_cleanup_task, watch_delayed_queues_task
+from app.core.dynamic_config import (
+    DEFAULT_DYNAMIC_CONFIGS,
+    SYS_CONFIG_REFRESH_CHANNEL,
+    DynamicConfigItem,
+    DynamicConfigManager,
+    watch_dynamic_config_refresh,
+)
 
 __all__ = [
     "Settings",
@@ -57,4 +64,9 @@ __all__ = [
     "save_log_to_db",
     "create_cleanup_task",
     "watch_delayed_queues_task",
+    "DynamicConfigManager",
+    "DynamicConfigItem",
+    "DEFAULT_DYNAMIC_CONFIGS",
+    "SYS_CONFIG_REFRESH_CHANNEL",
+    "watch_dynamic_config_refresh",
 ]

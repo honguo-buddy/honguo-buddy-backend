@@ -14,6 +14,7 @@ from app.models.user_contact import UserContact
 from app.models.user_favorite import FavoriteTargetType, UserFavorite
 from app.models.user_follow import UserFollow
 from app.models.feedback import Feedback
+from app.models.sys_config import SysConfig
 
 __all__ = [
     "Attachment",
@@ -51,4 +52,5 @@ __all__ = [
     "FavoriteTargetType",
     "UserFollow",
     "Feedback",
+    "SysConfig",
 ]

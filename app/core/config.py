@@ -1,7 +1,13 @@
+from typing import Any
+
+from pydantic import PrivateAttr
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from app.core.dynamic_config import DEFAULT_DYNAMIC_CONFIGS, DynamicConfigManager
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+    _dynamic_overrides: dict[str, Any] = PrivateAttr(default_factory=dict)
 
     PROJECT_NAME: str = "HONGUO-BUDDY"    
     
@@ -55,19 +61,7 @@ class Settings(BaseSettings):
     SMS_RATE_LIMIT_SECONDS: int = 60
     SMS_VERIFIED_WINDOW_SECONDS: int = 900
 
-    # 业务常数配置 - 信用与订单管理
-    USER_INITIAL_CREDIT_SCORE: int = 60  # 用户初始信用分
-    ORDER_COMPLETE_CREDIT: int = 10      # 订单完成后卖家获得的积分奖励
-    ORDER_AUTO_CONFIRM_HOURS: int = 12    # CONFIRMED 状态超时自动完结时限（小时）
-    ORDER_ACCEPT_COOLDOWN_SECONDS: int = 300  # 申请取消后冷静期（秒）
-    ORDER_ACCEPT_CANCEL_DAILY_LIMIT: int = 3  # 同一用户同一帖子每天允许取消次数
-    REVIEW_DOUBLE_BLIND_DAYS: int = 1    # 评价双盲期（天）
-    HISTORY_TTL_SECONDS: int = 30 * 86400 # 历史记录过期时间（秒），默认30天
-    HISTORY_MAX_SIZE: int = 100 # 历史记录最大条数
-    MAX_OPEN_POSTS_PER_USER: int = 10  # 用户同时开启的帖子/商品上限
     GLOBAL_CANCEL_DAILY_LIMIT: int = 10 # 全局取消申请每日限制次数（已弃用，保留兼容）
-    LIGHTNING_CANCEL_LIMIT_SECONDS: int = 600  # 闪电退单分水岭阈值（秒），订单创建后此时限内取消视为闪电退单
-    LIGHTNING_CANCEL_DAILY_LIMIT: int = 10  # 闪电退单每人每日上限次数
     
     # 业务常数配置 - 错误码
     
@@ -105,6 +99,33 @@ class Settings(BaseSettings):
     WX_TEMPLATE_NEW_APPLICATION: str = "FDpm9NoLGRMa0LlE6beYuhh2vTKl541qHvauNW0smZY"  # 购买申请通知·万能前置审批互动
     WX_ACCESS_TOKEN_CACHE_KEY: str = "wx:access_token:cache"  # Redis 缓存键
     WX_ACCESS_TOKEN_CACHE_TTL: int = 6600  # access_token 缓存有效期（秒），110分钟
+
+    @staticmethod
+    def _get_dynamic_default(name: str) -> Any:
+        meta = DEFAULT_DYNAMIC_CONFIGS[name]
+        return DynamicConfigManager._convert_value(meta["config_type"], meta["config_value"])
+
+    def __getattr__(self, name: str) -> Any:
+        if name in DEFAULT_DYNAMIC_CONFIGS:
+            try:
+                overrides = object.__getattribute__(self, "_dynamic_overrides")
+            except AttributeError:
+                overrides = {}
+            if name in overrides:
+                return overrides[name]
+            return DynamicConfigManager().get(name, self._get_dynamic_default(name))
+        raise AttributeError(f"{self.__class__.__name__!s} object has no attribute {name!r}")
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        if name in DEFAULT_DYNAMIC_CONFIGS:
+            try:
+                overrides = object.__getattribute__(self, "_dynamic_overrides")
+            except AttributeError:
+                overrides = {}
+                object.__setattr__(self, "_dynamic_overrides", overrides)
+            overrides[name] = value
+            return
+        super().__setattr__(name, value)
 
 
 settings = Settings()

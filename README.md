@@ -79,6 +79,13 @@ SMTP_USER=example@qq.com
 SMTP_PASSWORD=qq_mail_auth_code
 ```
 
+业务动态配置说明：
+
+- 订单、信用分、历史记录上限、活跃帖子上限等可调业务参数已从 `app/core/config.py` 的硬编码迁移至数据库表 `sys_config`。
+- 服务启动时会自动将默认业务配置落库并装载到内存缓存。
+- 多实例下通过 Redis 频道 `sys_config_refresh_channel` 广播刷新事件，实现热更新同步。
+- 管理员可通过 `PATCH /admin/configs/{config_key}` 在线修改这类业务参数，无需重启服务。
+
 ## 二、项目架构 (Project Structure)
 
 项目遵循职责分离，推荐按以下方式理解：
@@ -439,6 +446,135 @@ DATA_GET_FAILED: 301
 常见错误:
 
 - code: 99  - content 少于10字或请求体格式不合法。
+
+---
+
+### 4.1A ADMIN-CONFIG 管理端动态配置模块
+
+#### 4.1A.1 获取全部业务动态配置 (GET: /admin/configs)
+
+用途: 仅管理员可查看当前全部可热更新业务配置字段及其当前值。
+
+请求头: Authorization: Bearer <token>。
+
+说明：
+- 仅返回已经纳入动态配置中心的业务项。
+- 若某个默认业务配置尚未被写入 `sys_config` 表，接口仍会按系统默认值返回，避免后台管理页出现字段缺失。
+
+请求示例:
+
+```json
+{}
+```
+
+成功响应:
+
+```json
+{
+    "code": 0,
+    "message": [
+        {
+            "config_key": "HISTORY_MAX_SIZE",
+            "config_value": "100",
+            "config_type": "int",
+            "description": "历史记录最大条数"
+        },
+        {
+            "config_key": "MAX_OPEN_POSTS_PER_USER",
+            "config_value": "18",
+            "config_type": "int",
+            "description": "用户同时开启的帖子/商品上限"
+        }
+    ]
+}
+```
+
+常见错误:
+
+- code: 102 - 非管理员无权查看。
+
+---
+
+#### 4.1A.2 获取单个业务配置详情 (GET: /admin/configs/{config_key})
+
+用途: 仅管理员可按配置键查询单个业务动态配置的当前值、类型与说明。
+
+请求头: Authorization: Bearer <token>。
+
+请求示例:
+
+```json
+{}
+```
+
+成功响应:
+
+```json
+{
+    "code": 0,
+    "message": {
+        "config_key": "MAX_OPEN_POSTS_PER_USER",
+        "config_value": "18",
+        "config_type": "int",
+        "description": "用户同时开启的帖子/商品上限"
+    }
+}
+```
+
+常见错误:
+
+- code: 102 - 非管理员无权查看。
+- code: 99 - 配置项不存在或不允许热更新。
+
+---
+
+#### 4.1A.3 热更新业务配置 (PATCH: /admin/configs/{config_key})
+
+用途: 仅管理员可在线修改业务动态配置，并立即广播到 Redis 触发所有实例刷新内存缓存。
+
+请求头: Authorization: Bearer <token>。
+
+说明：
+- 仅允许修改已经纳入动态配置中心的业务项。
+- 当前支持的配置键包括：
+  - `USER_INITIAL_CREDIT_SCORE`
+  - `ORDER_COMPLETE_CREDIT`
+  - `ORDER_AUTO_CONFIRM_HOURS`
+  - `ORDER_ACCEPT_COOLDOWN_SECONDS`
+  - `ORDER_ACCEPT_CANCEL_DAILY_LIMIT`
+  - `REVIEW_DOUBLE_BLIND_DAYS`
+  - `HISTORY_TTL_SECONDS`
+  - `HISTORY_MAX_SIZE`
+  - `MAX_OPEN_POSTS_PER_USER`
+  - `LIGHTNING_CANCEL_LIMIT_SECONDS`
+  - `LIGHTNING_CANCEL_DAILY_LIMIT`
+
+请求示例:
+
+```json
+{
+    "config_value": "18"
+}
+```
+
+成功响应:
+
+```json
+{
+    "code": 0,
+    "message": {
+        "config_key": "MAX_OPEN_POSTS_PER_USER",
+        "config_value": "18",
+        "config_type": "int",
+        "description": "用户同时开启的帖子/商品上限"
+    }
+}
+```
+
+常见错误:
+
+- code: 102 - 非管理员无权操作。
+- code: 99 - 配置项不存在，或配置值与配置类型不匹配。
 
 ---
 
@@ -1725,7 +1861,7 @@ GET /users/me/blacklist?page=1&page_size=20
 - `description`、`price`、`category_id`、`template_filters`、`attachment_ids` 均为可选字段。
 - `direction` 默认为 `SELL`，`urgency` 默认为 `NORMAL`，`max_accepters` 默认为 `1`。
 - `expire_time` 可选，截止时间。支持格式: `"HH:MM"` / `"HH:MM:SS"` (默认今天)、`"YYYY-MM-DD HH:MM:SS"`、`"YYYY-MM-DD"`、`"YYYY/MM/DD HH:MM:SS"` 等。不能早于或等于当前时间。
-- 每位用户同时最多开启 `MAX_OPEN_POSTS_PER_USER` (默认 3) 个活跃帖子，超限返回 code=99 错误。
+- 每位用户同时最多开启 `MAX_OPEN_POSTS_PER_USER` 个活跃帖子。该值已改为数据库动态配置，默认初始化为 `10`，可由管理员热更新。
 
 请求头: Authorization: Bearer <token>。
 

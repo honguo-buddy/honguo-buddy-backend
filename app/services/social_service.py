@@ -431,9 +431,9 @@ class SocialService:
         await redis_client.zadd(key, {fingerprint: float(score)})
         # 2. 先检查当前总数，防止负数索引越界被 Redis 误判归零
         current_card = await redis_client.zcard(key)
-        if current_card > 100:
+        if current_card > settings.HISTORY_MAX_SIZE:
         # 只有大于100条时，才安全切除冷数据（从0数到倒数第101条）
-            await redis_client.zremrangebyrank(key, 0, -101)
+            await redis_client.zremrangebyrank(key, 0, -(settings.HISTORY_MAX_SIZE + 1))
         # 3. 滚动刷新整张卡片的30天全局生死大限
         await redis_client.expire(key, settings.HISTORY_TTL_SECONDS)
 

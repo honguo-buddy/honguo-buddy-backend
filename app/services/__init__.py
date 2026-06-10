@@ -17,6 +17,7 @@ from app.services.wechat_notification_service import WeChatNotificationService
 from app.services.contact_service import ContactService
 from app.services.blacklist_service import BlacklistService
 from app.services.feedback_service import FeedbackService
+from app.services.config_service import ConfigService
 try:
     from app.services.sms_service import SMSService
 except ImportError:
@@ -38,4 +39,8 @@ __all__ = [
     "ReputationService",
     "GoodsService",
     "WeChatNotificationService",
+    "ContactService",
+    "BlacklistService",
+    "FeedbackService",
+    "ConfigService",
 ]

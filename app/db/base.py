@@ -47,6 +47,7 @@ from app.models import (  # noqa: E402,F401
     User,
     UserAccessLog,
     UserType,
+    SysConfig,
     parse_user_type,
 )
 
