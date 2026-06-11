@@ -51,6 +51,7 @@ class GoodsService:
                 raise
             except Exception as e:
                 logger.warning(f"截止时间解析失败 expire_time={obj_in.expire_time!r}: {e}")
+                raise BusinessHTTPException(code=settings.REQ_ERROR_CODE, msg="截止时间格式不正确")
         db.add(goods)
         await db.flush()
 

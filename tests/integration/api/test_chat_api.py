@@ -5,7 +5,7 @@ from httpx import AsyncClient
 from sqlalchemy import select
 
 from app.core import settings
-from app.models import Attachment, AttachmentTargetType, Category, ChatMessage, ChatSession, Direction, Post, PostStatus, UrgencyLevel
+from app.models import Attachment, AttachmentTargetType, Category, ChatMessage, ChatSession, Direction, Post, PostStatus, UrgencyLevel, UserBlacklist
 from tests.helpers import assert_api_error
 
 
@@ -257,8 +257,6 @@ async def test_blocked_user_cannot_init_session(
     fake_redis,
 ):
     """被拉黑者无法发起会话 -> code=99"""
-    from app.models import UserBlacklist
-
     # admin(1002) 拉黑 test_user(1001)
     entry = UserBlacklist(user_id=test_admin_user.user_id, target_id=test_user.user_id)
     db_session.add(entry)
@@ -288,8 +286,6 @@ async def test_blocked_user_cannot_send_message(
     fake_redis,
 ):
     """被拉黑者无法发送消息 -> code=99"""
-    from app.models import Category, ChatSession, Direction, Post, PostStatus, UrgencyLevel, UserBlacklist
-
     await fake_redis.set(f"token:{test_user_token}", str(test_user.user_id))
     await fake_redis.set(f"token:{test_admin_token}", str(test_admin_user.user_id))
 
@@ -340,8 +336,6 @@ async def test_blocked_user_session_not_in_list(
     fake_redis,
 ):
     """拉黑者的会话不在被拉黑者的会话列表中"""
-    from app.models import ChatSession, UserBlacklist
-
     await fake_redis.set(f"token:{test_user_token}", str(test_user.user_id))
     await fake_redis.set(f"token:{test_admin_token}", str(test_admin_user.user_id))
 
@@ -368,3 +362,36 @@ async def test_blocked_user_session_not_in_list(
     assert body["code"] == 0
     session_ids = [s["session_id"] for s in body["message"]["items"]]
     assert 9213 not in session_ids
+
+
+@pytest.mark.asyncio
+async def test_current_user_blocked_peer_session_not_in_list(
+    client: AsyncClient,
+    db_session,
+    test_user,
+    test_admin_user,
+    test_user_token,
+    fake_redis,
+):
+    """当前用户主动拉黑对方后，对方会话不应出现在当前用户会话列表中。"""
+    await fake_redis.set(f"token:{test_user_token}", str(test_user.user_id))
+
+    session = ChatSession(
+        session_id=9214,
+        user_one_id=test_user.user_id,
+        user_two_id=test_admin_user.user_id,
+    )
+    blacklist_entry = UserBlacklist(user_id=test_user.user_id, target_id=test_admin_user.user_id)
+    db_session.add_all([session, blacklist_entry])
+    await db_session.flush()
+
+    resp = await client.get(
+        "/chats/sessions",
+        headers={"Authorization": f"Bearer {test_user_token}"},
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["code"] == 0
+    session_ids = [s["session_id"] for s in body["message"]["items"]]
+    assert 9214 not in session_ids

@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api import get_current_user
 from app.core import BusinessHTTPException, settings
 from app.db import get_db
+from app.models import ChatSession
 from app.schemas import (
 	ChatBroadcastRequest,
 	ChatMessageCreateRequest,
@@ -88,7 +89,7 @@ async def list_sessions(
 	blocker_ids = await BlacklistService.get_blocker_ids(db, current_user.user_id)
 	blocked_target_ids = await BlacklistService.get_blocked_target_ids(db, current_user.user_id)
 	exclude_peer_ids = list(set(blocker_ids + blocked_target_ids))
-	sessions = await ChatService.list_sessions(db=db, current_user_id=current_user.user_id, exclude_peer_ids=blocker_ids)
+	sessions = await ChatService.list_sessions(db=db, current_user_id=current_user.user_id, exclude_peer_ids=exclude_peer_ids)
 	items = [_build_session_read(session, current_user.user_id) for session in sessions]
 	return ResponseModel(code=settings.SUCCESS_CODE, message=ChatSessionListResponse(items=items))
 
@@ -100,7 +101,6 @@ async def send_message(
 	db: AsyncSession = Depends(get_db),
 ):
 	# 黑名单拦截：获取会话对方并检查是否被拉黑
-	from app.models import ChatSession
 	session_obj = await db.get(ChatSession, req.session_id)
 	if session_obj:
 		peer_id = session_obj.user_two_id if session_obj.user_one_id == current_user.user_id else session_obj.user_one_id

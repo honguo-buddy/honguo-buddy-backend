@@ -227,6 +227,26 @@ async def test_create_post_with_fallback_enums_and_attachment_binding(monkeypatc
     assert db.commit.await_count == 1
 
 
+async def test_create_post_rejects_invalid_expire_time():
+    db = build_db(execute_side_effect=[FakeResult(scalar_value=3)])
+    payload = PostCreate.model_validate(
+        {
+            "title": "无效截止时间",
+            "description": "desc",
+            "price": 12.5,
+            "direction": "SELL",
+            "expire_time": "not-a-real-time",
+        }
+    )
+
+    with pytest.raises(BusinessHTTPException) as exc_info:
+        await PostService.create_post(db, publisher_id=1001, post_create=payload)
+
+    assert "截止时间格式不正确" in exc_info.value.detail["msg"]
+    assert db.add.call_count == 0
+    assert db.commit.await_count == 0
+
+
 async def test_update_post_permission_status_pending_and_field_updates(monkeypatch):
     post = build_post_obj(template_data={"a": 1, "max_accepters": 1})
     monkeypatch.setattr(PostService, "_get_post_for_update", AsyncMock(return_value=post))
@@ -352,6 +372,20 @@ async def test_list_posts_and_user_scopes(monkeypatch):
     public_posts, public_total = await PostService.list_public_posts_by_user(db_public, user_id=1001, status="CLOSED,INVALID")
     assert public_total == 1
     assert len(public_posts) == 1
+
+
+async def test_list_posts_template_filters_use_portable_cast(monkeypatch):
+    post = build_post_obj()
+    db = build_db(execute_side_effect=[FakeResult(scalar_value=1), FakeResult(items=[post])])
+
+    await PostService.list_posts(
+        db,
+        template_filters={"pickup_address": "南门"},
+    )
+
+    executed_sql = str(db.execute.await_args_list[0].args[0])
+    assert "JSON_EXTRACT" not in executed_sql
+    assert "astext" not in executed_sql.lower()
 
 
 async def test_get_post_detail_success_and_not_found():

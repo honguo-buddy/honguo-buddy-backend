@@ -127,6 +127,7 @@ class PostService:
                 raise
             except Exception as e:
                 logger.warning(f"截止时间解析失败 expire_time={post_create.expire_time!r}: {e}")
+                raise BusinessHTTPException(code=settings.REQ_ERROR_CODE, msg="截止时间格式不正确")
         db.add(post)
         await db.flush()
         await db.refresh(post)
@@ -435,12 +436,11 @@ class PostService:
                 logger.warning(f"无效的 create_time_end 格式: {create_time_end}")
         
         if template_filters and isinstance(template_filters, dict):
+            template_text = cast(Post.template_data, String)
             for key, value in template_filters.items():
                 if value is not None:
-                    if isinstance(value, str):
-                        conditions.append(Post.template_data[key].astext.ilike(f"%{value}%"))
-                    else:
-                        conditions.append(Post.template_data[key] == value)
+                    conditions.append(template_text.like(f'%"{key}"%'))
+                    conditions.append(template_text.like(f"%{value}%"))
         
         # template_data 全文字段安全模糊匹配（通过 cast + param binding 防注入）
         if template_segment_1:

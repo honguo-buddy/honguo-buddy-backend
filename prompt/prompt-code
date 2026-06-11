@@ -851,3 +851,33 @@ Seventy Comment and interaction writes must enforce blacklist before persistence
 [Solution] After loading the target entity and before `db.add()`, resolve the target owner via `publisher_id`, then run bidirectional blacklist checks: owner blocked current user and current user blocked owner. If either side exists, raise `BusinessHTTPException` and stop persistence.
 
 [Rule] Every interaction write endpoint such as comment, message, order application, purchase, follow-like actions must enforce social relationship guards after target existence validation and before database mutation. Read-side filtering is not sufficient; write-side guard clauses are mandatory.
+
+
+
+SeventyOne Bidirectional blacklist filters must pass the merged exclusion list
+
+[Problem] `/chats/sessions` correctly queried both `get_blocker_ids()` and `get_blocked_target_ids()`, but then passed only `blocker_ids` into `ChatService.list_sessions(...)`. This made sessions from users I blocked remain visible, despite the code appearing to have computed the bidirectional exclusion list.
+
+[Solution] Build `exclude_peer_ids = list(set(blocker_ids + blocked_target_ids))` and pass that exact merged list to the service call. Add integration tests for both directions: users who blocked me and users I blocked.
+
+[Rule] When code computes a security filter union, verify the final downstream call receives the union variable, not one of the source lists. Tests must cover both social relationship directions because one-way tests cannot catch wrong-variable pass-through bugs.
+
+
+
+SeventyTwo Invalid expire_time input must fail closed before persistence
+
+[Problem] Post/Goods creation parsed `expire_time` inside `try/except`, logged parse failures, then continued to `db.add()` and committed records with `expire_time=None`. Invalid client input therefore silently downgraded a time-locked item into a never-expiring item.
+
+[Solution] Keep past-time validation as `BusinessHTTPException`, and convert parse failures into `BusinessHTTPException(code=settings.REQ_ERROR_CODE, msg="截止时间格式不正确")` before any database mutation.
+
+[Rule] Time-lock fields are security/business boundary fields. Invalid time input must fail closed and stop persistence. Never log-and-continue around `expire_time` parsing in create/update flows.
+
+
+
+SeventyThree JSON template filters must avoid database-specific `.astext`
+
+[Problem] `PostService.list_posts` used `Post.template_data[key].astext.ilike(...)`, which is not available on the current MySQL SQLAlchemy expression and crashes before query execution.
+
+[Solution] For portable fuzzy matching, cast the full JSON field to `String` and apply SQLAlchemy `.like(...)` parameter binding for the key and value fragments. This matches the existing template segment filtering style and avoids database-specific JSON operators.
+
+[Rule] List-query filters that touch JSON columns must use SQLAlchemy portable expressions unless a dialect-specific branch is explicitly tested. Do not use `.astext` for MySQL-backed paths.

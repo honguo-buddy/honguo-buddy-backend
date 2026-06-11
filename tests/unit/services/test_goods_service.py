@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, Mock
 import pytest
 from sqlalchemy import select
 
+from app.core import BusinessHTTPException
 from app.models.goods import GoodsStatus, GoodsCondition
 from app.schemas.goods import GoodsCreate, GoodsUpdate
 from app.services.goods_service import GoodsService
@@ -59,6 +60,17 @@ class TestCreateGoods:
         goods = await GoodsService.create_goods(db, 1001, obj_in)
         assert goods.publisher_id == 1001
         db.execute.assert_called()  # attachment binding
+
+    async def test_create_rejects_invalid_expire_time(self):
+        db = build_db()
+        obj_in = GoodsCreate(name="bad expire", category_id=1, expire_time="not-a-real-time")
+
+        with pytest.raises(BusinessHTTPException) as exc_info:
+            await GoodsService.create_goods(db, 1001, obj_in)
+
+        assert "截止时间格式不正确" in exc_info.value.detail["msg"]
+        db.add.assert_not_called()
+        db.commit.assert_not_awaited()
 
 
 class TestGetGoodsById:
