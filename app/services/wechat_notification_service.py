@@ -33,6 +33,14 @@ def _get_httpx_client() -> httpx.AsyncClient:
 class WeChatNotificationService:
     """微信订阅消息通知服务，完全解耦于核心业务逻辑。"""
 
+    @staticmethod
+    async def close_httpx_client() -> None:
+        """关闭模块级 httpx 长连接池，供应用 shutdown 阶段调用。"""
+        global _httpx_client
+        if _httpx_client is not None:
+            await _httpx_client.aclose()
+            _httpx_client = None
+
     # ======================== Token 缓存自愈 ========================
 
     @staticmethod

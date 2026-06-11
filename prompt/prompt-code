@@ -881,3 +881,13 @@ SeventyThree JSON template filters must avoid database-specific `.astext`
 [Solution] For portable fuzzy matching, cast the full JSON field to `String` and apply SQLAlchemy `.like(...)` parameter binding for the key and value fragments. This matches the existing template segment filtering style and avoids database-specific JSON operators.
 
 [Rule] List-query filters that touch JSON columns must use SQLAlchemy portable expressions unless a dialect-specific branch is explicitly tested. Do not use `.astext` for MySQL-backed paths.
+
+
+
+SeventyFour Low-risk hardening must still be test-locked
+
+[Problem] Low-risk issues such as function-local imports, hard-coded CORS origins, and unclosed module-level HTTP clients do not always produce immediate business failures, but they degrade startup visibility, static analysis quality, deployment safety, and long-running resource hygiene.
+
+[Solution] 1) Move scheduler/job and route imports to file top-level through package entry points; 2) expose CORS origins as `settings.CORS_ALLOW_ORIGINS` instead of hard-coding route middleware arguments; 3) provide a service-level close method for module-level `httpx.AsyncClient` instances and call it from application shutdown; 4) add AST/source-level regression tests for these low-risk architectural rules.
+
+[Rule] Treat low-risk audit findings as enforceable architecture contracts, not optional cleanup. Any module-level long-lived client must have a shutdown close path, and any new CORS origin must be configured through settings rather than direct code edits.

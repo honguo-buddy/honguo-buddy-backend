@@ -62,6 +62,7 @@ class Settings(BaseSettings):
     SMS_VERIFIED_WINDOW_SECONDS: int = 900
 
     GLOBAL_CANCEL_DAILY_LIMIT: int = 10 # 全局取消申请每日限制次数（已弃用，保留兼容）
+    CORS_ALLOW_ORIGINS: list[str] = ["http://localhost:5000", "http://localhost:3000"]
     
     # 业务常数配置 - 错误码
     

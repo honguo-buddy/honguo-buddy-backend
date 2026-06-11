@@ -1,24 +1,28 @@
-from fastapi import FastAPI,Depends, Request, Response,status,HTTPException
-from fastapi.staticfiles import StaticFiles
-from fastapi.middleware.cors import CORSMiddleware
 import logging
-from contextlib import asynccontextmanager
 import asyncio
 import os
+from contextlib import asynccontextmanager
+
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from app.core import BEIJING_TZ
+from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from sqlalchemy import update
 
 from app.api import auth, user, attachment, category, post, order, comment, chat, goods, admin_config, search
 from app.core import (
+    BEIJING_TZ,
     DynamicConfigManager,
     LogMiddleware,
+    get_now_naive,
     register_exception_handlers,
     settings,
     watch_delayed_queues_task,
     watch_dynamic_config_refresh,
 )
 from app.db import engine, Base, redis, AsyncSessionLocal
-from app.services import OrderReviewService, MetricsService
+from app.models import Goods, GoodsStatus, Post, PostStatus
+from app.services import MetricsService, OrderReviewService, WeChatNotificationService
 
 # 确保 logs 文件夹存在
 os.makedirs("logs", exist_ok=True)
@@ -52,10 +56,6 @@ async def _flush_metrics_job():
 
 async def _auto_suspend_expired_items_job():
     """每60秒巡检：将到期OPEN帖子/商品自动挂起。"""
-    from sqlalchemy import update
-    from app.models.post import Post, PostStatus
-    from app.models.goods import Goods, GoodsStatus
-    from app.core.datetime_utils import get_now_naive
     async with AsyncSessionLocal() as db:
         now = get_now_naive()
         # 帖子到期挂起
@@ -151,6 +151,12 @@ async def lifespan(app: FastAPI):
         if scheduler and scheduler.running:
             scheduler.shutdown()
             logger.info("✓ APScheduler 已停止")
+
+        try:
+            await WeChatNotificationService.close_httpx_client()
+            logger.info(" WeChat notification HTTP client closed")
+        except Exception as e:
+            logger.warning(f"WeChat notification HTTP client close failed: {e}")
         
         # 清理 Redis
         try:
@@ -202,7 +208,7 @@ app.add_middleware(
 #中间件解决跨域(后续需扩展)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5000", "http://localhost:3000"],
+    allow_origins=settings.CORS_ALLOW_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
