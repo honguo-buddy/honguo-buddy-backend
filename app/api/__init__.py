@@ -12,6 +12,7 @@ from app.api import comment
 from app.api import chat
 from app.api import goods
 from app.api import admin_config
+from app.api import search
 
 __all__ = [
     "auth",
@@ -24,6 +25,7 @@ __all__ = [
     "chat",
     "goods",
     "admin_config",
+    "search",
     "get_current_user",
     "get_current_user_optional",
 ]

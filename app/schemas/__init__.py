@@ -144,6 +144,13 @@ from app.schemas.sys_config import (
     SysConfigRead,
     SysConfigUpdateRequest,
 )
+from app.schemas.search import (
+    SearchTab,
+    SearchSort,
+    SearchTime,
+    GlobalSearchItem,
+    GlobalSearchResponse,
+)
 
 __all__ = [
     # auth
@@ -232,4 +239,9 @@ __all__ = [
     "GoodsListResponse",
     "SysConfigRead",
     "SysConfigUpdateRequest",
+    "SearchTab",
+    "SearchSort",
+    "SearchTime",
+    "GlobalSearchItem",
+    "GlobalSearchResponse",
 ]

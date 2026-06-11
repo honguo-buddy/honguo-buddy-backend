@@ -18,6 +18,7 @@ from app.services.contact_service import ContactService
 from app.services.blacklist_service import BlacklistService
 from app.services.feedback_service import FeedbackService
 from app.services.config_service import ConfigService
+from app.services.search_service import SearchService
 try:
     from app.services.sms_service import SMSService
 except ImportError:
@@ -43,4 +44,5 @@ __all__ = [
     "BlacklistService",
     "FeedbackService",
     "ConfigService",
+    "SearchService",
 ]

@@ -578,6 +578,86 @@ DATA_GET_FAILED: 301
 
 ---
 
+### 4.1B SEARCH 全局搜索模块
+
+#### 4.1B.1 全局聚合搜索 (GET: /search/global)
+
+用途: 聚合搜索委托、服务与商品，支持分类 Tab、多维指标排序、时间范围过滤。公开端点可不登录访问；若携带 Bearer Token，后端会自动排除双方黑名单相关内容。
+
+请求头: Authorization: Bearer <token>（可选）。
+
+说明：
+- `keyword` 可选；为空字符串、全空格或完全不传时，接口进入大厅兜底模式，不追加任何模糊搜索条件，只按 `tab`、`sort_by`、`time_range`、分页返回内容。
+- `keyword` 非空时，后端会先按空白符切分为多个词根；所有词根都必须命中，但每个词根可在标题、描述或 `template_data` JSON 内部 Value 中任一命中。
+- JSON 搜索使用数据库 `json_search(json_doc, 'one', pattern)` 对 Value 做滑动匹配，不会因为 JSON Key 包含关键词而误命中。
+- `tab` 可选：`ALL`、`BUY_POST`、`SELL_POST`、`GOODS`，默认 `ALL`。
+- `sort_by` 可选：`DEFAULT`、`FAVORITE`、`COMMENT`、`VIEW`，默认 `DEFAULT`。
+- `time_range` 可选：`ALL`、`1D`、`7D`、`180D`，默认 `ALL`。
+- `page` 默认 `1`，`page_size` 默认 `20`，最大 `100`。
+
+请求示例:
+
+```json
+{
+    "keyword": "北门 近邻宝",
+    "tab": "ALL",
+    "sort_by": "VIEW",
+    "time_range": "7D",
+    "page": 1,
+    "page_size": 20
+}
+```
+
+成功响应:
+
+```json
+{
+    "code": 0,
+    "message": {
+        "total": 2,
+        "page": 1,
+        "page_size": 20,
+        "list": [
+            {
+                "id": 1001,
+                "item_type": "BUY_POST",
+                "title": "求代取快递",
+                "description": "北门近邻宝取件",
+                "price": 5.0,
+                "status": "OPEN",
+                "create_time": "2026-06-11T12:00:00",
+                "template_data": {
+                    "pickup_address": "北门近邻宝",
+                    "pieces": "2"
+                },
+                "hit_tips": "在【取件地址】中匹配到: 北门近邻宝",
+                "view_count": 120,
+                "favorite_count": 8,
+                "comment_count": 3,
+                "publisher": {
+                    "user_id": 2001,
+                    "user_uuid": "6f7d2f9c-4f5f-4de5-a2b2-6f8d6e4ce100",
+                    "user_name": "校园用户",
+                    "avatar": "/static/avatar/user_2001.webp",
+                    "sex": "未知",
+                    "bio": null,
+                    "credit_score": 100,
+                    "is_verified": true,
+                    "user_type": "user"
+                }
+            }
+        ]
+    }
+}
+```
+
+常见错误:
+
+- code: 99 - 请求参数校验失败，例如分页参数越界、枚举值非法。
+- code: 301 - 全局搜索失败。
+
+---
+
 ### 4.2 USER 用户模块
 
 #### 4.2.1 获取当前用户信息 (GET: /users/info)

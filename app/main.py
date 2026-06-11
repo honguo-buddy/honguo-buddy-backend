@@ -8,7 +8,7 @@ import os
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from app.core import BEIJING_TZ
 
-from app.api import auth, user, attachment, category, post, order, comment, chat, goods, admin_config
+from app.api import auth, user, attachment, category, post, order, comment, chat, goods, admin_config, search
 from app.core import (
     DynamicConfigManager,
     LogMiddleware,
@@ -221,6 +221,7 @@ try:
     app.include_router(router=chat.router, prefix="/chats", tags=["chats"])
     app.include_router(router=goods.router, prefix="/goods", tags=["goods"])
     app.include_router(router=admin_config.router, prefix="/admin", tags=["admin-config"])
+    app.include_router(router=search.router, prefix="/search", tags=["search"])
     logger.info("All routers registered successfully")
 except Exception as e:
     logger.error(f"Failed to register routers: {e}", exc_info=True)
