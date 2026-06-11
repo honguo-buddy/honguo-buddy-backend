@@ -105,10 +105,21 @@ async def test_send_code_rate_limit_and_template_validation(monkeypatch, fake_re
 
 
 async def test_send_code_provider_failure_and_success(monkeypatch, fake_redis):
+    import app.services.sms_service as sms_module
+
     monkeypatch.setattr("app.services.sms_service.redis", fake_redis)
     monkeypatch.setattr("app.services.sms_service.settings.SMS_TEMPLATE_CODE", "TEMPLATE")
     monkeypatch.setattr("app.services.sms_service.settings.SMS_SIGN_NAME", "SIGN")
     monkeypatch.setattr(SMSService, "_generate_code", lambda length=6: "123456")
+
+    to_thread_calls = []
+
+    async def fake_to_thread(func, *args, **kwargs):
+        to_thread_calls.append((func, args, kwargs))
+        return func(*args, **kwargs)
+
+    to_thread_mock = AsyncMock(side_effect=fake_to_thread)
+    monkeypatch.setattr(sms_module, "asyncio", SimpleNamespace(to_thread=to_thread_mock), raising=False)
 
     # 模拟 SDK 抛出异常
     fail_client = SimpleNamespace(send_sms_with_options=MagicMock(side_effect=RuntimeError("provider error")))
@@ -116,6 +127,7 @@ async def test_send_code_provider_failure_and_success(monkeypatch, fake_redis):
         with pytest.raises(BusinessHTTPException) as send_err:
             await SMSService.send_code("13800138001")
     assert "短信发送失败" in send_err.value.detail["msg"]
+    assert "provider error" not in send_err.value.detail["msg"]
     assert await fake_redis.get("sms:code:13800138001") is None
 
     # 模拟阿里云返回业务失败（code != "OK"）
@@ -139,6 +151,15 @@ async def test_send_code_provider_failure_and_success(monkeypatch, fake_redis):
 
     assert result["detail"] == "验证码已发送"
     assert json.loads(await fake_redis.get("sms:code:13800138001"))["code"] == "123456"
+    assert to_thread_mock.await_count == 3
+    assert all(len(call[1]) == 2 for call in to_thread_calls)
+    _, (_, runtime), _ = to_thread_calls[-1]
+    if hasattr(runtime, "kwargs"):
+        assert runtime.kwargs["connect_timeout"] == 500
+        assert runtime.kwargs["read_timeout"] == 500
+    else:
+        assert runtime.connect_timeout == 500
+        assert runtime.read_timeout == 500
 
 
 async def test_verify_code_error_paths(monkeypatch, fake_redis):

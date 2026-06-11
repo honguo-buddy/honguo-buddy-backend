@@ -1,3 +1,4 @@
+import asyncio
 import json
 import random
 import re
@@ -291,7 +292,7 @@ class AuthService:
             "<p>该验证码有效期为5分钟，请勿泄露给他人。</p>"
             "</body></html>"
         )
-        if not send_email(email, subject, body):
+        if not await asyncio.to_thread(send_email, email, subject, body):
             await redis.delete(f"email_verify_code:{email}")
             raise BusinessHTTPException(
                 code=settings.UPDATEPROFILE_FAILED_CODE,

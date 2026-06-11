@@ -832,3 +832,22 @@ SixtyEight Thread-pool image processing must keep AsyncSession and ORM assets ou
 
 [Rule] Worker-thread helpers used by FastAPI services must be pure functions whenever possible. Never pass AsyncSession, ORM model instances, Redis clients, or request objects into run_in_executor/to_thread. The worker may only do CPU-bound transforms and return plain data to the async caller.
 
+
+
+SixtyNine Async service paths must isolate synchronous network I/O and mask raw exceptions
+
+[Problem] High-risk async service methods directly called blocking SMTP and Alibaba SMS SDK functions. A single slow provider call could occupy the FastAPI event loop. At the same time, global unknown exception handling and SMS SDK except branches returned raw `str(exc)` to the frontend, leaking driver/provider internals.
+
+[Solution] 1) In `async def` service paths, wrap unavoidable synchronous network calls with `asyncio.to_thread(...)`; 2) Set provider-level hard timeouts such as SMTP `timeout=0.5` and SMS `RuntimeOptions(connect_timeout=500, read_timeout=500)`; 3) Keep full exception details only in backend logs with `exc_info=True`; 4) Return a stable, sanitized frontend message for unexpected exceptions.
+
+[Rule] Any async route or service must never call `smtplib`, synchronous third-party SDKs, `requests`, or other blocking network I/O inline. If no async client exists, isolate the exact sync call in a worker thread and pass only primitive arguments. Unknown exception responses must never contain `str(exc)`, SQL driver messages, credentials, provider stack details, or local paths.
+
+
+
+Seventy Comment and interaction writes must enforce blacklist before persistence
+
+[Problem] Blacklist filtering covered public list reads, but comment creation still only checked whether the target Post/Goods existed. A blocked user could bypass list hiding and directly post a comment against the blocker resource by calling `POST /comments`.
+
+[Solution] After loading the target entity and before `db.add()`, resolve the target owner via `publisher_id`, then run bidirectional blacklist checks: owner blocked current user and current user blocked owner. If either side exists, raise `BusinessHTTPException` and stop persistence.
+
+[Rule] Every interaction write endpoint such as comment, message, order application, purchase, follow-like actions must enforce social relationship guards after target existence validation and before database mutation. Read-side filtering is not sufficient; write-side guard clauses are mandatory.

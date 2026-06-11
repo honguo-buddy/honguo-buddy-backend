@@ -1,13 +1,16 @@
-import os
+import asyncio
 import json
+import logging
 import random
-from typing import Optional
+
 from alibabacloud_dysmsapi20170525.client import Client as Dysmsapi20170525Client
 from alibabacloud_tea_openapi import models as open_api_models
 from alibabacloud_dysmsapi20170525 import models as dysmsapi_models
 from alibabacloud_tea_util import models as util_models
 from app.db import redis
 from app.core import BusinessHTTPException, get_now, settings
+
+logger = logging.getLogger(__name__)
 
 class SMSService:
     """短信验证码服务适配器。负责生成、发送、校验验证码与防刷控制。
@@ -73,9 +76,12 @@ class SMSService:
             template_code=template_code,
             template_param=json.dumps({"code": code}),
         )
-        runtime = util_models.RuntimeOptions()
+        runtime = util_models.RuntimeOptions(
+            connect_timeout=500,
+            read_timeout=500,
+        )
         try:
-            response = client.send_sms_with_options(req, runtime)
+            response = await asyncio.to_thread(client.send_sms_with_options, req, runtime)
             if response.body.code != "OK":
                 await redis.delete(f"sms:code:{phone}")
                 err_msg = getattr(response.body, "message", "") or "未知错误"
@@ -85,11 +91,12 @@ class SMSService:
                 )
         except BusinessHTTPException:
             raise
-        except Exception as e:
+        except Exception:
             await redis.delete(f"sms:code:{phone}")
+            logger.warning("短信 SDK 发送失败", exc_info=True)
             raise BusinessHTTPException(
                 code=settings.DATA_GET_FAILED_CODE,
-                msg=f"短信发送失败：{str(e)}"
+                msg="短信发送失败，请稍后重试"
             )
         return {"detail": "验证码已发送"}
 

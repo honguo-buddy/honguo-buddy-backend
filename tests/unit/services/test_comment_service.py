@@ -183,3 +183,67 @@ async def test_create_comment_on_existing_target_succeeds(monkeypatch):
     assert comment.content == "valid comment"
     assert comment.target_id == 100
 
+
+async def test_create_comment_blocks_blacklist_relationship(monkeypatch):
+    import app.services.comment_service as comment_module
+
+    fake_post = type("Post", (), {
+        "is_deleted": False,
+        "post_id": 100,
+        "publisher_id": 2001,
+    })()
+    db = build_db()
+    db.get = AsyncMock(return_value=fake_post)
+
+    is_blocked_mock = AsyncMock(side_effect=[True, False])
+    monkeypatch.setattr(
+        comment_module,
+        "BlacklistService",
+        SimpleNamespace(is_blocked=is_blocked_mock),
+        raising=False,
+    )
+
+    with pytest.raises(BusinessHTTPException) as exc_info:
+        await CommentService.create_comment(
+            db,
+            user_id=1001,
+            target_type="POST",
+            target_id=100,
+            content="blocked comment",
+        )
+
+    assert "拉黑" in exc_info.value.detail["msg"]
+    assert db.add.call_count == 0
+
+
+async def test_create_comment_blocks_when_current_user_blocked_target_owner(monkeypatch):
+    import app.services.comment_service as comment_module
+
+    fake_goods = type("Goods", (), {
+        "is_deleted": False,
+        "goods_id": 88,
+        "publisher_id": 3001,
+    })()
+    db = build_db()
+    db.get = AsyncMock(return_value=fake_goods)
+
+    is_blocked_mock = AsyncMock(side_effect=[False, True])
+    monkeypatch.setattr(
+        comment_module,
+        "BlacklistService",
+        SimpleNamespace(is_blocked=is_blocked_mock),
+        raising=False,
+    )
+
+    with pytest.raises(BusinessHTTPException) as exc_info:
+        await CommentService.create_comment(
+            db,
+            user_id=1001,
+            target_type="GOODS",
+            target_id=88,
+            content="blocked goods comment",
+        )
+
+    assert "拉黑" in exc_info.value.detail["msg"]
+    assert db.add.call_count == 0
+

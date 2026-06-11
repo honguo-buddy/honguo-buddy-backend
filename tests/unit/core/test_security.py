@@ -1,8 +1,9 @@
 import asyncio
 import pytest
 from jose import jwt
+from unittest.mock import MagicMock
 
-from app.core import create_access_token, get_hash_pwd, verify_pwd, generate_email_verify_token, verify_email_token, get_user_id_from_request, settings
+from app.core import create_access_token, get_hash_pwd, verify_pwd, generate_email_verify_token, verify_email_token, get_user_id_from_request, send_email, settings
 
 pytestmark = pytest.mark.asyncio
 
@@ -45,6 +46,22 @@ async def test_hash_and_verify_password(monkeypatch):
     hashed = get_hash_pwd(pwd)
     assert verify_pwd(pwd, hashed) is True
     assert verify_pwd("wrong", hashed) is False
+
+
+async def test_send_email_sets_smtp_timeout(monkeypatch):
+    import app.core.security as sec
+
+    smtp_instance = MagicMock()
+    smtp_instance.__enter__.return_value = smtp_instance
+    smtp_instance.__exit__.return_value = None
+    smtp_ssl_mock = MagicMock(return_value=smtp_instance)
+    monkeypatch.setattr(sec.smtplib, "SMTP_SSL", smtp_ssl_mock)
+
+    result = send_email("to@example.com", "测试主题", "<p>测试内容</p>")
+
+    assert result is True
+    smtp_ssl_mock.assert_called_once_with(settings.SMTP_SERVER, settings.SMTP_PORT, timeout=0.5)
+    smtp_instance.login.assert_called_once_with(settings.SMTP_USER, settings.SMTP_PASSWORD)
 
 
 async def test_get_user_id_from_request_success(monkeypatch):

@@ -54,17 +54,9 @@ def register_exception_handlers(app):
     #无法处理异常
     @app.exception_handler(Exception)
     async def global_exception_handler(request: Request, exc: Exception):
-        logger.error(f"Unhandled Exception: {traceback.format_exc()}")
-        
-        # 确保异常信息完全转换为字符串,避免 JSON 序列化错误
-        error_detail = str(exc)
-        try:
-            # 尝试提取更多异常信息
-            if hasattr(exc, 'detail'):
-                error_detail = str(exc.detail)
-        except Exception:
-            pass
-        
+        logger.error("Unhandled Exception: %s", traceback.format_exc())
+        error_detail = "服务器内部错误，请稍后重试"
+
         return JSONResponse(
             status_code=200,
             content=ResponseModel(
