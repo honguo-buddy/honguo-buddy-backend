@@ -190,3 +190,17 @@ async def test_message_attachment_urls_map(monkeypatch):
     mapping = await ChatService.get_message_attachment_urls_map(db, [11, 12])
     assert mapping[11] == ["https://cdn/a.png", "https://cdn/b.png"]
     assert mapping[12] == []
+
+
+async def test_get_total_unread_count():
+    db = build_db(
+        execute_side_effect=[
+            FakeResult(rows=[(1,), (2,)]),
+            FakeResult(scalar_value=5),
+        ]
+    )
+    unread = await ChatService.get_total_unread_count(db, current_user_id=1001)
+    assert unread == 5
+
+    empty_db = build_db(execute_side_effect=[FakeResult(rows=[])])
+    assert await ChatService.get_total_unread_count(empty_db, current_user_id=1001) == 0

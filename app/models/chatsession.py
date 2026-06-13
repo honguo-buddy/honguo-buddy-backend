@@ -21,6 +21,6 @@ class ChatSession(Base):
         Index("idx_chat_session_last_message_time", "last_message_time"),
     )
 
-    user_one = relationship("User", foreign_keys=[user_one_id], lazy="selectin", overlaps="chat_sessions_as_user_one")
-    user_two = relationship("User", foreign_keys=[user_two_id], lazy="selectin", overlaps="chat_sessions_as_user_two")
-    messages = relationship("ChatMessage", back_populates="session", cascade="all, delete-orphan", lazy="selectin")
+    user_one = relationship("User", foreign_keys=[user_one_id], overlaps="chat_sessions_as_user_one")
+    user_two = relationship("User", foreign_keys=[user_two_id], overlaps="chat_sessions_as_user_two")
+    messages = relationship("ChatMessage", back_populates="session", cascade="all, delete-orphan")

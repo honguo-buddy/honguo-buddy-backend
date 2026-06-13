@@ -5,6 +5,7 @@ from pydantic import ValidationError
 
 from app.models.goods import GoodsCondition, GoodsStatus
 from app.schemas.goods import (
+    GoodsAttachmentBriefRead,
     GoodsBase,
     GoodsCreate,
     GoodsUpdate,
@@ -75,6 +76,18 @@ class TestGoodsRead:
         assert obj.favorite_count == 7
         assert obj.comment_count == 3
 
+    def test_template_data_field_exists(self):
+        obj = GoodsRead(
+            goods_id=1,
+            category_id=2,
+            name="test",
+            condition=GoodsCondition.BRAND_NEW,
+            status=GoodsStatus.ON_SALE,
+            create_time=datetime(2026, 5, 30),
+            template_data={"brand": "Apple"},
+        )
+        assert obj.model_dump()["template_data"] == {"brand": "Apple"}
+
 
 class TestGoodsDetailRead:
     def test_inherited_fields_exist(self):
@@ -88,7 +101,19 @@ class TestGoodsDetailRead:
         )
         assert obj.goods_id == 1
         assert obj.description is None
-        assert obj.comments == []
+
+    def test_attachment_briefs_exist(self):
+        obj = GoodsDetailRead(
+            goods_id=1,
+            category_id=2,
+            name="test",
+            condition=GoodsCondition.BRAND_NEW,
+            status=GoodsStatus.ON_SALE,
+            create_time=datetime(2026, 5, 30),
+            attachment_urls=["/static/goods/a.webp"],
+            attachments=[GoodsAttachmentBriefRead(id=201, url="/static/goods/a.webp")],
+        )
+        assert obj.attachments[0].id == 201
 
 
 class TestGoodsListResponse:

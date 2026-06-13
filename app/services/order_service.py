@@ -6,7 +6,7 @@ from typing import Optional
 
 import logging
 
-from sqlalchemy import and_, func, or_, select, text
+from sqlalchemy import and_, func, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased, selectinload
 
@@ -15,6 +15,20 @@ from app.core.delay_queue import ORDER_AUTO_CONFIRM_QUEUE_KEY, enqueue_delayed_t
 from app.models import CreditLog, Direction, Goods, GoodsStatus, ItemType, Order, OrderStatus, OrderTriggerType, Post, PostStatus, User
 
 logger = logging.getLogger(__name__)
+
+
+
+def apply_expire_lazy_override(item, open_status, expired_status):
+    """懒检查：若 item 状态为 open_status 但 expire_time 已过期，动态覆写为 expired_status。
+    
+    用于 GET 列表/详情接口在定时任务未执行时提前让前端感知到期。
+    返回 (是否修改, 修改后的状态值)。
+    """
+    if getattr(item, "expire_time", None) is not None and getattr(item, "expire_time") <= get_now_naive():
+        if hasattr(item, "status") and getattr(item, "status") == open_status:
+            setattr(item, "status", expired_status)
+            return True, expired_status
+    return False, getattr(item, "status", None)
 
 
 class OrderService:
@@ -352,7 +366,7 @@ class OrderService:
 
         - POST SELL: 发帖人是卖家，接单人是买家，初始 PENDING，后续走双向确认/双盲评价
         - POST BUY: 发帖人是买家，接单人是卖家，初始 PENDING，后续走申请制审批
-        - GOODS: 直接创建 ONGOING，进入买卖交付流程
+        - GOODS: 创建 PENDING 申请单，仅用于建立联系，不直接锁单
         """
         t = str(item_type).upper()
         if t == ItemType.POST.name:
@@ -366,6 +380,8 @@ class OrderService:
                 raise BusinessHTTPException(code=settings.REQ_ERROR_CODE, msg="楼主已暂停招募新人")
             if post.status != PostStatus.OPEN:
                 raise BusinessHTTPException(code=settings.REQ_ERROR_CODE, msg="当前帖子状态不允许接单")
+            if getattr(post, "expire_time", None) is not None and getattr(post, "expire_time") <= get_now_naive():
+                raise BusinessHTTPException(code=settings.REQ_ERROR_CODE, msg="该帖子已到期截止，无法发起新的申请")
 
             if redis_client is not None:
                 await OrderService._raise_post_accept_rate_limit(redis_client, initiator_id, item_id)
@@ -426,46 +442,51 @@ class OrderService:
             return order
 
         elif t == ItemType.GOODS.name:
-            stmt = select(Goods).where(Goods.goods_id == item_id, Goods.is_deleted == False).with_for_update()
-            res = await db.execute(stmt)
-            goods = res.scalars().first()
+            goods = await OrderService._load_goods_for_update(db, item_id)
             if not goods:
                 raise ResourceHTTPException(code=settings.DATA_GET_FAILED_CODE, msg="商品不存在")
 
             if goods.publisher_id == initiator_id:
                 raise BusinessHTTPException(code=settings.REQ_ERROR_CODE, msg="不能购买自己的商品")
 
-            # 商品必须可用（未售出且未被显式锁定）
             if goods.status == GoodsStatus.SOLD:
                 raise BusinessHTTPException(code=settings.REQ_ERROR_CODE, msg="商品已售出")
             if goods.status != GoodsStatus.ON_SALE:
                 raise BusinessHTTPException(code=settings.REQ_ERROR_CODE, msg="商品当前不可购买")
+            if getattr(goods, "expire_time", None) is not None and getattr(goods, "expire_time") <= get_now_naive():
+                raise BusinessHTTPException(code=settings.REQ_ERROR_CODE, msg="该商品已到期下架，无法发起新的申请")
 
-            locked = False
-            try:
-                if goods.template_data and isinstance(goods.template_data, dict):
-                    locked = bool(goods.template_data.get("locked", False))
-            except Exception:
-                locked = False
-            if locked:
-                raise BusinessHTTPException(code=settings.REQ_ERROR_CODE, msg="商品已被锁定，无法购买")
+            duplicate_stmt = select(Order.order_id).where(
+                Order.item_type == ItemType.GOODS,
+                Order.item_id == item_id,
+                Order.is_deleted == False,
+                Order.status.in_(
+                    [
+                        OrderStatus.PENDING,
+                        OrderStatus.ONGOING,
+                        OrderStatus.CONFIRMED,
+                        OrderStatus.COMPLETED,
+                    ]
+                ),
+                or_(
+                    Order.initiator_id == initiator_id,
+                    Order.buyer_id == initiator_id,
+                    Order.seller_id == initiator_id,
+                ),
+            )
+            duplicate_res = await db.execute(duplicate_stmt)
+            if duplicate_res.scalar_one_or_none() is not None:
+                raise BusinessHTTPException(code=settings.REQ_ERROR_CODE, msg="该商品已申请过")
 
-            # 创建订单并立即进入 ONGOING
             order = Order(
                 buyer_id=initiator_id,
                 seller_id=goods.publisher_id,
                 initiator_id=initiator_id,
                 item_type=ItemType.GOODS,
                 item_id=item_id,
-                status=OrderStatus.ONGOING,
-                trigger_type=OrderTriggerType.DIRECT,
+                status=OrderStatus.PENDING,
+                trigger_type=OrderTriggerType.APPLICATION,
             )
-            # 标记商品为锁定，避免重复购买（临时置于 template_data.locked）
-            td = goods.template_data or {}
-            td = dict(td)
-            td["locked"] = True
-            goods.template_data = td
-            goods.status = GoodsStatus.OFF_SHELF
 
             db.add(order)
             await db.flush()
@@ -476,6 +497,85 @@ class OrderService:
 
         else:
             raise BusinessHTTPException(code=settings.REQ_ERROR_CODE, msg="不支持的 item_type")
+
+    @staticmethod
+    async def promote_goods_order_to_ongoing(
+        db: AsyncSession,
+        goods_id: int,
+        initiator_id: int,
+    ) -> Order:
+        """将当前用户针对商品的 PENDING 申请推进为 ONGOING，并洗掉其他待处理申请。"""
+        goods = await OrderService._load_goods_for_update(db, goods_id)
+        if not goods:
+            raise ResourceHTTPException(code=settings.DATA_GET_FAILED_CODE, msg="商品不存在")
+
+        if goods.publisher_id == initiator_id:
+            raise BusinessHTTPException(code=settings.REQ_ERROR_CODE, msg="不能购买自己的商品")
+        if goods.status == GoodsStatus.SOLD:
+            raise BusinessHTTPException(code=settings.REQ_ERROR_CODE, msg="商品已售出")
+        if goods.status != GoodsStatus.ON_SALE:
+            raise BusinessHTTPException(code=settings.REQ_ERROR_CODE, msg="商品当前不可购买")
+        if getattr(goods, "expire_time", None) is not None and getattr(goods, "expire_time") <= get_now_naive():
+            raise BusinessHTTPException(code=settings.REQ_ERROR_CODE, msg="该商品已到期下架，无法购买")
+
+        my_order_stmt = (
+            select(Order)
+            .where(
+                Order.item_type == ItemType.GOODS,
+                Order.item_id == goods_id,
+                Order.is_deleted == False,
+                Order.initiator_id == initiator_id,
+                Order.status.in_(
+                    [
+                        OrderStatus.PENDING,
+                        OrderStatus.ONGOING,
+                        OrderStatus.CONFIRMED,
+                        OrderStatus.COMPLETED,
+                    ]
+                ),
+            )
+            .with_for_update()
+        )
+        my_order_res = await db.execute(my_order_stmt)
+        order = my_order_res.scalars().first()
+        if not order:
+            raise BusinessHTTPException(code=settings.REQ_ERROR_CODE, msg="请先申请该商品")
+        if order.status == OrderStatus.ONGOING:
+            return order
+        if order.status != OrderStatus.PENDING:
+            raise BusinessHTTPException(code=settings.REQ_ERROR_CODE, msg="当前申请状态不允许发起购买")
+
+        other_pending_stmt = (
+            select(Order)
+            .where(
+                Order.item_type == ItemType.GOODS,
+                Order.item_id == goods_id,
+                Order.is_deleted == False,
+                Order.status == OrderStatus.PENDING,
+                Order.order_id != order.order_id,
+            )
+            .with_for_update()
+        )
+        other_pending_res = await db.execute(other_pending_stmt)
+        for pending_order in other_pending_res.scalars().all():
+            pending_order.status = OrderStatus.REJECTED
+
+        order.status = OrderStatus.ONGOING
+        order.accepted_time = get_now_naive()
+
+        td = goods.template_data or {}
+        if isinstance(td, dict):
+            td = dict(td)
+        else:
+            td = {}
+        td["locked"] = True
+        goods.template_data = td
+        goods.status = GoodsStatus.OFF_SHELF
+
+        await db.flush()
+        await db.refresh(order)
+        await db.commit()
+        return order
 
     @staticmethod
     def _batch_accept_error_code(exc: Exception) -> tuple[str, str]:
@@ -835,6 +935,111 @@ class OrderService:
         return rows
 
     @staticmethod
+    async def list_goods_applications(db: AsyncSession, goods_id: int) -> list[dict]:
+        """高效查询指定商品下的待处理申请记录，并一次性带出申请人统计信息。"""
+
+        applicant_user = aliased(User)
+        completed_count_subquery = (
+            select(func.count())
+            .select_from(Order)
+            .where(
+                Order.is_deleted == False,
+                Order.status == OrderStatus.COMPLETED,
+                or_(
+                    Order.buyer_id == applicant_user.user_id,
+                    Order.seller_id == applicant_user.user_id,
+                ),
+            )
+            .correlate(applicant_user)
+            .scalar_subquery()
+        )
+        applicant_id_expr = func.coalesce(Order.initiator_id, Order.seller_id, Order.buyer_id)
+        stmt = (
+            select(Order, applicant_user, completed_count_subquery.label("completed_order_count"))
+            .join(applicant_user, applicant_user.user_id == applicant_id_expr)
+            .options(selectinload(applicant_user.avatar_attachment))
+            .where(
+                Order.item_type == ItemType.GOODS,
+                Order.item_id == goods_id,
+                Order.status == OrderStatus.PENDING,
+                Order.is_deleted == False,
+            )
+            .order_by(Order.create_time.desc())
+        )
+        res = await db.execute(stmt)
+        rows = []
+        for order, applicant, completed_order_count in res.all():
+            rows.append(
+                {
+                    "order": order,
+                    "applicant": applicant,
+                    "completed_order_count": int(completed_order_count or 0),
+                    "note": (order.meta_data or {}).get("note") if isinstance(order.meta_data, dict) else None,
+                }
+            )
+        return rows
+
+    @staticmethod
+    async def mark_post_applications_seen_by_seller(db: AsyncSession, post_id: int) -> None:
+        """发帖人查看申请列表后，将该帖子下未查阅的待处理申请批量标记为已读。"""
+        stmt = (
+            update(Order)
+            .where(
+                Order.item_type == ItemType.POST,
+                Order.item_id == post_id,
+                Order.status == OrderStatus.PENDING,
+                Order.is_seen_by_seller == False,
+                Order.is_deleted == False,
+            )
+            .values(is_seen_by_seller=True)
+            .execution_options(synchronize_session="fetch")
+        )
+        await db.execute(stmt)
+        await db.commit()
+
+    @staticmethod
+    async def mark_goods_applications_seen_by_seller(db: AsyncSession, goods_id: int) -> None:
+        """商品发布者查看申请列表后，将该商品下未查阅的待处理申请批量标记为已读。"""
+        stmt = (
+            update(Order)
+            .where(
+                Order.item_type == ItemType.GOODS,
+                Order.item_id == goods_id,
+                Order.status == OrderStatus.PENDING,
+                Order.is_seen_by_seller == False,
+                Order.is_deleted == False,
+            )
+            .values(is_seen_by_seller=True)
+            .execution_options(synchronize_session="fetch")
+        )
+        await db.execute(stmt)
+        await db.commit()
+
+    @staticmethod
+    async def get_system_pending_unread_count(db: AsyncSession, current_user_id: int) -> int:
+        """统计当前用户作为发帖人的系统未读申请总数。"""
+        stmt = (
+            select(func.count())
+            .select_from(Order)
+            .join(
+                Post,
+                and_(
+                    Order.item_type == ItemType.POST,
+                    Order.item_id == Post.post_id,
+                ),
+            )
+            .where(
+                Post.publisher_id == current_user_id,
+                Post.is_deleted == False,
+                Order.status == OrderStatus.PENDING,
+                Order.is_seen_by_seller == False,
+                Order.is_deleted == False,
+            )
+        )
+        res = await db.execute(stmt)
+        return int(res.scalar_one() or 0)
+
+    @staticmethod
     async def get_order_detail(db: AsyncSession, order_id: int, current_user_id: int) -> Order:
         order = await OrderService._get_order_readonly(db, order_id)
         if current_user_id not in {order.buyer_id, order.seller_id}:
@@ -1049,8 +1254,6 @@ class OrderService:
         await db.commit()
         return order
 
-        return order
-
     @staticmethod
     async def update_status(db: AsyncSession, order_id: int, new_status: str, operator_id: int) -> Order:
         """状态机引擎：校验并执行状态迁移。
@@ -1144,7 +1347,7 @@ class OrderService:
                 await OrderService._add_credit(db, order.seller_id, settings.ORDER_COMPLETE_CREDIT, f"订单完成，order_id={order.order_id}")
             except Exception as e:
                 # 积分失败不应该阻断主流程，记录日志供人工/异步补偿
-                logger.error(f"Credit sync failed for order {order.order_id} seller {order.seller_id}: {e}")
+                logger.error(f"Credit sync failed for order {order.order_id} seller {order.seller_id}: {e}", exc_info=True)
 
             # 2) 统一收尾状态
             post = None

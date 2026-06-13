@@ -41,6 +41,7 @@ def build_user(**overrides):
         "last_login_ip": None,
         "last_login_time": None,
         "wechat_unionid": None,
+        "bio": None,
     }
     payload.update(overrides)
     return SimpleNamespace(**payload)
@@ -59,12 +60,14 @@ def build_attachment(**overrides):
 
 
 async def test_user_query_and_payload_building():
-    user = build_user(avatar_attachment=build_attachment())
+    user = build_user(avatar_attachment=build_attachment(), bio="公开简介")
     db = build_db(execute_side_effect=[FakeResult(items=[user]), FakeResult(items=[user]), FakeResult(items=[user])])
 
     assert await UserService.get_user_by_id(1001, db) == user
     assert (await UserService.get_user_with_avatar_url(1001, db))["avatar"] == "/static/avatar/a.png"
-    assert "email" not in (await UserService.get_user_public_with_avatar_url(1001, db))
+    public_payload = await UserService.get_user_public_with_avatar_url(1001, db)
+    assert "email" not in public_payload
+    assert public_payload["bio"] == "公开简介"
 
 
 async def test_update_profile_and_admin_update(monkeypatch):

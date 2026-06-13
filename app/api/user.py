@@ -1,35 +1,127 @@
 """用户 API 路由层。"""
 
 import json as _json
+import logging
 from types import SimpleNamespace
 from typing import Literal, Optional, Union
+
+logger = logging.getLogger(__name__)
 
 from fastapi import APIRouter, BackgroundTasks, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api import get_current_user, get_current_user_optional
-from app.core import settings, AuthHTTPException
+from app.core import settings, AuthHTTPException, BusinessHTTPException, ResourceHTTPException
 from app.db import get_db, get_redis, redis
 from app.schemas import (
     AuthErrorResponse,
+    BlacklistCreate,
+    BlacklistItem,
+    BlacklistListResponse,
+    ContactCreate,
+    ContactRead,
+    ContactListResponse,
     FavoriteListResponse,
     HistoryDeletePayload,
     FavoriteRequest,
     FavoriteResponse,
     HistoryListResponse,
+    PhoneSendCodeRequest,
+    PhoneBindRequest,
     ResponseModel,
     UserFollowListResponse,
+    UserOpenQuotaResponse,
     UserFollowToggleRequest,
     UserFollowToggleResponse,
+    UserUnreadCountsResponse,
     user as UserSchema,
     UserProfileResponse,
     UserPublicResponse,
     UserSelfUpdateRequest,
 )
-from app.services import AttachmentService, MetricsService, ReputationService, SocialService, UserService
-from app.models import User as UserModel
+from app.services import AttachmentService, BlacklistService, ChatService, ContactService, GoodsService, MetricsService, OrderService, PostService, ReputationService, SMSService, SocialService, UserService
+from app.models import Direction, User as UserModel
+
+# ---------------------------------------------------------------------------
+# 共享工具：用户 profile 缓存刷新
+# ---------------------------------------------------------------------------
+async def _refresh_user_profile_cache(uid: int, db: AsyncSession) -> None:
+    """删除旧缓存并用最新 DB 数据重建 user:profile:me:{uid}。"""
+    try:
+        await redis.delete(f"user:profile:cache:{uid}")
+        await redis.delete(f"user:profile:me:{uid}")
+        await redis.delete(f"user:profile:public:{uid}")
+    except Exception as e:
+        logger.warning("缓存删除失败 uid=%d: %s", uid, e, exc_info=True)
+
+    try:
+        user_data = await UserService.get_user_with_avatar_url(uid, db)
+        profile_dict = {
+            "user_id": user_data["user_id"],
+            "user_uuid": user_data["user_uuid"] if isinstance(user_data.get("user_uuid"), str) else "",
+            "user_name": user_data.get("user_name"),
+            "is_admin": user_data.get("is_admin", False),
+            "is_verified": user_data.get("is_verified", False),
+            "email": user_data.get("email"),
+            "phonenumber": user_data.get("phonenumber"),
+            "last_login_ip": user_data.get("last_login_ip"),
+            "last_login_time": user_data["last_login_time"].isoformat() if hasattr(user_data.get("last_login_time"), "isoformat") else user_data.get("last_login_time"),
+            "user_type": user_data.get("user_type"),
+            "avatar": user_data.get("avatar"),
+            "sex": user_data.get("sex"),
+            "bio": user_data.get("bio"),
+            "credit_score": user_data.get("credit_score", 0),
+            "is_active": user_data.get("is_active", True),
+            "wechat_unionid": user_data.get("wechat_unionid"),
+        }
+        await redis.setex(
+            f"user:profile:me:{uid}",
+            settings.USER_PROFILE_CACHE_TTL,
+            _json.dumps(profile_dict, ensure_ascii=False, default=str),
+        )
+    except Exception as e:
+        logger.warning("缓存重建失败 uid=%d: %s", uid, e, exc_info=True)
+
+
+def _build_public_profile_cache_payload(user_data: dict, user_id: int) -> dict:
+    """构造公开资料缓存载荷，并写入版本号用于淘汰历史脏缓存。"""
+    return {
+        "_cache_version": settings.USER_PUBLIC_PROFILE_CACHE_VERSION,
+        "user_id": user_data.get("user_id", user_id),
+        "user_uuid": str(user_data.get("user_uuid", "")),
+        "user_name": user_data.get("user_name"),
+        "avatar": user_data.get("avatar"),
+        "sex": user_data.get("sex"),
+        "bio": user_data.get("bio"),
+        "credit_score": int(user_data.get("credit_score", 0)),
+        "is_verified": bool(user_data.get("is_verified", False)),
+        "user_type": user_data.get("user_type"),
+    }
+
+
+def _extract_valid_public_profile_cache_payload(data: object) -> dict | None:
+    """校验公开资料缓存版本，旧版本缓存返回 None 以触发删除和重建。"""
+    if not isinstance(data, dict):
+        return None
+    if data.get("_cache_version") != settings.USER_PUBLIC_PROFILE_CACHE_VERSION:
+        return None
+    payload = dict(data)
+    payload.pop("_cache_version", None)
+    return payload
+
 
 router = APIRouter()
+
+
+async def _build_open_quota_response(
+    *,
+    limit: int,
+    used: int,
+) -> UserOpenQuotaResponse:
+    remaining = limit - used
+    if remaining < 0:
+        remaining = 0
+    return UserOpenQuotaResponse(limit=limit, used=used, remaining=remaining)
 
 
 @router.get("/me", response_model=ResponseModel[UserProfileResponse])
@@ -47,30 +139,33 @@ async def get_me(
                 code=settings.SUCCESS_CODE,
                 message=UserProfileResponse.model_validate(SimpleNamespace(**data)),
             )
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("Swallowed exception in user: %s", e, exc_info=True)
 
     user_data = await UserService.get_user_with_avatar_url(current_user.user_id, db)
 
     try:
         profile_dict = {
-            "user_id": user_data.user_id,
-            "user_uuid": user_data.user_uuid.hex() if hasattr(user_data, 'user_uuid') and user_data.user_uuid else "",
-            "user_name": user_data.user_name,
-            "is_admin": user_data.is_admin,
-            "is_verified": user_data.is_verified,
-            "email": user_data.email,
-            "phonenumber": user_data.phonenumber,
-            "last_login_ip": user_data.last_login_ip,
-            "last_login_time": user_data.last_login_time.isoformat() if user_data.last_login_time else None,
-            "user_type": getattr(user_data.user_type, 'value', str(user_data.user_type)) if user_data.user_type else None,
-            "avatar": getattr(user_data, 'avatar', None),
-            "sex": getattr(user_data, 'sex', {}).value if hasattr(getattr(user_data, 'sex', None), 'value') else str(getattr(user_data, 'sex', '')),
-            "credit_score": getattr(user_data, 'credit_score', 0),
+            "user_id": user_data["user_id"],
+            "user_uuid": user_data["user_uuid"] if isinstance(user_data.get("user_uuid"), str) else "",
+            "user_name": user_data.get("user_name"),
+            "is_admin": user_data.get("is_admin", False),
+            "is_verified": user_data.get("is_verified", False),
+            "email": user_data.get("email"),
+            "phonenumber": user_data.get("phonenumber"),
+            "last_login_ip": user_data.get("last_login_ip"),
+            "last_login_time": user_data["last_login_time"].isoformat() if hasattr(user_data.get("last_login_time"), "isoformat") else user_data.get("last_login_time"),
+            "user_type": user_data.get("user_type"),
+            "avatar": user_data.get("avatar"),
+            "sex": user_data.get("sex"),
+            "bio": user_data.get("bio"),
+            "credit_score": user_data.get("credit_score", 0),
+            "is_active": user_data.get("is_active", True),
+            "wechat_unionid": user_data.get("wechat_unionid"),
         }
         await redis.setex(cache_key, settings.USER_PROFILE_CACHE_TTL, _json.dumps(profile_dict, ensure_ascii=False, default=str))
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("Swallowed exception in user: %s", e, exc_info=True)
 
     return ResponseModel(
         code=settings.SUCCESS_CODE,
@@ -89,8 +184,8 @@ async def update_me(
     仅允许修改以下字段：
     - user_name: 用户名
     - avatar_id: 用户头像附件ID
+    - bio: 个人简介
     - sex: 性别
-    
     以下字段无法修改：
     - user_id、user_uuid（固定标识）
     - email、phonenumber（需专门认证接口）
@@ -101,23 +196,15 @@ async def update_me(
         user_name=update_req.user_name,
         avatar_id=update_req.avatar_id,
         sex=update_req.sex,
+        bio=update_req.bio,
         db=db,
     )
-    # Invalidate all Read-Through profile caches after mutation
-    try:
-        uid = current_user.user_id
-        await redis.delete(f"user:profile:cache:{uid}")
-        await redis.delete(f"user:profile:me:{uid}")
-        await redis.delete(f"user:profile:public:{uid}")
-    except Exception:
-        pass
+    # 清除旧缓存并用最新 DB 数据强制重建
+    await _refresh_user_profile_cache(current_user.user_id, db)
 
-    # Fetch fresh profile with avatar URL
-    avatar_url = await AttachmentService.get_attachment_url_by_id(
-        update_req.avatar_id, db
-    ) if update_req.avatar_id else None
-    # Re-fetch user from DB to get latest state
+    # Fetch fresh profile with avatar URL for response
     user_data = await UserService.get_user_with_avatar_url(current_user.user_id, db)
+
     return ResponseModel(
         code=settings.SUCCESS_CODE,
         message=UserProfileResponse.model_validate(user_data),
@@ -133,7 +220,15 @@ async def delete_me(
     
     账号逻辑删除后无法登录，数据保留在数据库。
     """
-    await UserService.delete_user(current_user.user_id, db)
+    uid = current_user.user_id
+    await UserService.delete_user(uid, db)
+    # 清除 Redis 缓存，注销后 profile 不再可用
+    try:
+        await redis.delete(f"user:profile:cache:{uid}")
+        await redis.delete(f"user:profile:me:{uid}")
+        await redis.delete(f"user:profile:public:{uid}")
+    except Exception as e:
+        logger.warning("缓存删除失败 uid=%d: %s", uid, e, exc_info=True)
     return ResponseModel(
         code=settings.SUCCESS_CODE,
         message={"message": "账号已注销"},
@@ -244,6 +339,68 @@ async def list_my_histories(
     return ResponseModel(code=settings.SUCCESS_CODE, message=HistoryListResponse.model_validate(result))
 
 
+@router.get("/me/unread-counts", response_model=ResponseModel[UserUnreadCountsResponse])
+async def get_my_unread_counts(
+    current_user: UserSchema = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """获取当前用户的全局未读数聚合（私信未读 + 系统新申请未读）。"""
+    chat_unread_count = await ChatService.get_total_unread_count(db, current_user.user_id)
+    system_unread_count = await OrderService.get_system_pending_unread_count(db, current_user.user_id)
+    total_unread_count = chat_unread_count + system_unread_count
+
+    return ResponseModel(
+        code=settings.SUCCESS_CODE,
+        message=UserUnreadCountsResponse(
+            chat_unread_count=chat_unread_count,
+            system_unread_count=system_unread_count,
+            total_unread_count=total_unread_count,
+        ),
+    )
+
+
+@router.get("/me/open-quota/buy-posts", response_model=ResponseModel[UserOpenQuotaResponse])
+async def get_my_buy_post_open_quota(
+    current_user: UserSchema = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """获取当前登录用户委托帖子可开启剩余额度。"""
+    limit = int(getattr(settings, "MAX_OPEN_BUY_POSTS_PER_USER"))
+    used = await PostService.count_open_posts_by_direction(db, current_user.user_id, Direction.BUY)
+    return ResponseModel(
+        code=settings.SUCCESS_CODE,
+        message=await _build_open_quota_response(limit=limit, used=used),
+    )
+
+
+@router.get("/me/open-quota/sell-posts", response_model=ResponseModel[UserOpenQuotaResponse])
+async def get_my_sell_post_open_quota(
+    current_user: UserSchema = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """获取当前登录用户服务帖子可开启剩余额度。"""
+    limit = int(getattr(settings, "MAX_OPEN_SELL_POSTS_PER_USER"))
+    used = await PostService.count_open_posts_by_direction(db, current_user.user_id, Direction.SELL)
+    return ResponseModel(
+        code=settings.SUCCESS_CODE,
+        message=await _build_open_quota_response(limit=limit, used=used),
+    )
+
+
+@router.get("/me/open-quota/goods", response_model=ResponseModel[UserOpenQuotaResponse])
+async def get_my_goods_open_quota(
+    current_user: UserSchema = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """获取当前登录用户商品可开启剩余额度。"""
+    limit = int(getattr(settings, "MAX_OPEN_GOODS_PER_USER"))
+    used = await GoodsService.count_open_goods_by_user(db, current_user.user_id)
+    return ResponseModel(
+        code=settings.SUCCESS_CODE,
+        message=await _build_open_quota_response(limit=limit, used=used),
+    )
+
+
 @router.post("/me/histories/delete", response_model=ResponseModel[dict])
 async def delete_my_histories(
     payload: HistoryDeletePayload,
@@ -297,6 +454,10 @@ async def get_user_profile(
             code=settings.USER_GET_FAILED_CODE,
             msg="用户不存在",
         )
+    # 黑名单拦截
+    if current_user:
+        if await BlacklistService.is_blocked(db, user_id, current_user.user_id):
+            raise BusinessHTTPException(code=102, msg="由于对方的隐私设置，无法访问该主页")
     reputation = await ReputationService.get_user_reputation(redis, db, user_id)
     return ResponseModel(code=settings.SUCCESS_CODE, message=reputation)
 
@@ -307,6 +468,7 @@ async def get_user_reviews(
     role: Literal["CARRIER", "CLIENT"] = "CARRIER",
     offset: int = 0,
     limit: int = 20,
+    current_user: Optional[UserSchema] = Depends(get_current_user_optional),
     db: AsyncSession = Depends(get_db),
 ):
     """延迟加载用户评价详情（支持 CARRIER/CLIENT 双 Tab 页签）。
@@ -320,6 +482,10 @@ async def get_user_reviews(
             code=settings.USER_GET_FAILED_CODE,
             msg="用户不存在",
         )
+    # 黑名单拦截
+    if current_user:
+        if await BlacklistService.is_blocked(db, user_id, current_user.user_id):
+            raise BusinessHTTPException(code=102, msg="由于对方的隐私设置，无法访问该主页")
     result = await ReputationService.get_user_reviews(db, user_id, role, offset, limit)
     return ResponseModel(code=settings.SUCCESS_CODE, message=result)
 
@@ -343,36 +509,36 @@ async def get_user_public(
             message=UserProfileResponse.model_validate(user_data),
         )
 
+    # 黑名单拦截：若被访用户拉黑了当前访客，禁止查看
+    if current_user:
+        if await BlacklistService.is_blocked(db, user_id, current_user.user_id):
+            raise BusinessHTTPException(code=102, msg="由于对方的隐私设置，无法访问该主页")
+
     # Read-Through: Redis user:profile:public:{user_id} cache first
     cache_key = f"user:profile:public:{user_id}"
     try:
         cached = await redis.get(cache_key)
         if cached:
             data = _json.loads(cached)
-            return ResponseModel(
-                code=settings.SUCCESS_CODE,
-                message=UserPublicResponse.model_validate(SimpleNamespace(**data)),
-            )
-    except Exception:
-        pass
+            valid_payload = _extract_valid_public_profile_cache_payload(data)
+            if valid_payload is None:
+                await redis.delete(cache_key)
+            else:
+                return ResponseModel(
+                    code=settings.SUCCESS_CODE,
+                    message=UserPublicResponse.model_validate(SimpleNamespace(**valid_payload)),
+                )
+    except Exception as e:
+        logger.warning("Swallowed exception in user: %s", e, exc_info=True)
 
     # Cache miss: query DB then backfill Redis
     user_data = await UserService.get_user_public_with_avatar_url(user_id, db)
     try:
-        public_dict = {
-            "user_id": getattr(user_data, "user_id", user_id),
-            "user_uuid": str(getattr(user_data, "user_uuid", "")),
-            "user_name": getattr(user_data, "user_name", None),
-            "avatar": getattr(user_data, "avatar", None),
-            "sex": getattr(user_data, "sex", None),
-            "credit_score": int(getattr(user_data, "credit_score", 0)),
-            "is_verified": bool(getattr(user_data, "is_verified", False)),
-            "user_type": getattr(user_data, "user_type", None),
-        }
+        public_dict = _build_public_profile_cache_payload(user_data, user_id)
         await redis.setex(cache_key, settings.USER_PROFILE_CACHE_TTL,
                           _json.dumps(public_dict, ensure_ascii=False, default=str))
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("Swallowed exception in user: %s", e, exc_info=True)
     return ResponseModel(
         code=settings.SUCCESS_CODE,
         message=UserPublicResponse.model_validate(user_data),
@@ -404,13 +570,8 @@ async def update_user_admin(
         sex=update_req.sex,
         db=db,
     )
-    # Invalidate all Read-Through profile caches for the updated user
-    try:
-        await redis.delete(f"user:profile:cache:{user_id}")
-        await redis.delete(f"user:profile:me:{user_id}")
-        await redis.delete(f"user:profile:public:{user_id}")
-    except Exception:
-        pass
+    # 刷新 Redis 缓存，管理员更新后目标用户 GET /me 立即生效
+    await _refresh_user_profile_cache(user_id, db)
     # 管理员更新后也返回带 avatar URL 的 payload
     user_data = await UserService.get_user_with_avatar_url(user_id, db)
     return ResponseModel(
@@ -444,9 +605,133 @@ async def delete_user_admin(
         )
 
     await UserService.admin_delete_user(user_id, db)
+    # 清除 Redis 缓存
+    try:
+        await redis.delete(f"user:profile:cache:{user_id}")
+        await redis.delete(f"user:profile:me:{user_id}")
+        await redis.delete(f"user:profile:public:{user_id}")
+    except Exception as e:
+        logger.warning("缓存删除失败 uid=%d: %s", user_id, e, exc_info=True)
     return ResponseModel(
         code=settings.SUCCESS_CODE,
         message={"message": f"用户 {user_id} 已被禁用/删除"},
     )
 
+# ── 手机号绑定 ──────────────────────────────────────────────
 
+@router.post("/me/phone/send-code", response_model=ResponseModel)
+async def send_phone_bind_code(
+    payload: PhoneSendCodeRequest,
+    current_user: UserSchema = Depends(get_current_user),
+):
+    """发送手机号绑定验证码。
+
+    调用阿里云 SMS 服务向指定手机号发送6位数字验证码，内置60秒防刷节流。
+    验证码有效期5分钟，最多尝试3次。
+    """
+    if SMSService is None:
+        raise BusinessHTTPException(code=settings.DATA_GET_FAILED_CODE, msg="短信服务未初始化")
+    result = await SMSService.send_code(payload.phone)
+    return ResponseModel(code=settings.SUCCESS_CODE, message=result)
+
+
+@router.post("/me/phone/bind", response_model=ResponseModel)
+async def bind_phone(
+    payload: PhoneBindRequest,
+    current_user: UserSchema = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """校验验证码并绑定手机号到当前用户。
+
+    先调用 SMSService.verify_code 核销验证码，验证通过后将 phone 写入
+    current_user.phonenumber 并 commit 落库。
+    """
+    if SMSService is None:
+        raise BusinessHTTPException(code=settings.DATA_GET_FAILED_CODE, msg="短信服务未初始化")
+    await SMSService.verify_code(payload.phone, payload.code)
+
+    # 写入 phonenumber
+    user_obj = await db.get(UserModel, current_user.user_id)
+    if not user_obj:
+        raise ResourceHTTPException(code=settings.USER_GET_FAILED_CODE, msg="用户不存在")
+    user_obj.phonenumber = payload.phone
+    await db.commit()
+
+    # 刷新 Redis 缓存，确保 GET /me 返回最新手机号
+    await _refresh_user_profile_cache(current_user.user_id, db)
+
+    return ResponseModel(code=settings.SUCCESS_CODE, message={"detail": "手机号绑定成功", "phone": payload.phone})
+
+# ── 联系方式管理 ──────────────────────────────────────────────
+
+@router.get("/me/contacts", response_model=ResponseModel[ContactListResponse])
+async def list_my_contacts(
+    current_user: UserSchema = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """拉取当前用户配置的所有联系方式。"""
+    contacts = await ContactService.list_contacts(db, current_user.user_id)
+    return ResponseModel(
+        code=settings.SUCCESS_CODE,
+        message=ContactListResponse(list=[ContactRead.model_validate(c) for c in contacts]),
+    )
+
+
+@router.post("/me/contacts", response_model=ResponseModel[ContactRead])
+async def upsert_my_contact(
+    payload: ContactCreate,
+    current_user: UserSchema = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """新增或覆盖某种联系方式。同一类型（PHONE/WECHAT/QQ）只能有一条记录。"""
+    contact = await ContactService.upsert_contact(
+        db, current_user.user_id, payload.contact_type, payload.contact_value, payload.is_public
+    )
+    return ResponseModel(code=settings.SUCCESS_CODE, message=ContactRead.model_validate(contact))
+
+
+@router.delete("/me/contacts/{contact_id}", response_model=ResponseModel)
+async def delete_my_contact(
+    contact_id: int,
+    current_user: UserSchema = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """定点删除某个联系方式渠道。"""
+    await ContactService.delete_contact(db, current_user.user_id, contact_id)
+    return ResponseModel(code=settings.SUCCESS_CODE, message={"detail": "联系方式已删除"})
+
+
+# ── 黑名单管理 ──────────────────────────────────────────────
+
+@router.post("/me/blacklist", response_model=ResponseModel)
+async def add_blacklist(
+    payload: BlacklistCreate,
+    current_user: UserSchema = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """拉黑目标用户。"""
+    entry = await BlacklistService.add_to_blacklist(db, current_user.user_id, payload.target_id)
+    return ResponseModel(code=settings.SUCCESS_CODE, message={"detail": "已拉黑", "target_id": payload.target_id})
+
+
+@router.delete("/me/blacklist/{target_id}", response_model=ResponseModel)
+async def remove_blacklist(
+    target_id: int,
+    current_user: UserSchema = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """解除拉黑。"""
+    await BlacklistService.remove_from_blacklist(db, current_user.user_id, target_id)
+    return ResponseModel(code=settings.SUCCESS_CODE, message={"detail": "已解除拉黑", "target_id": target_id})
+
+
+@router.get("/me/blacklist", response_model=ResponseModel[BlacklistListResponse])
+async def list_my_blacklist(
+    page: int = 1,
+    page_size: int = 20,
+    current_user: UserSchema = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """分页拉取当前用户的黑名单列表。"""
+    result = await BlacklistService.list_blacklist(db, current_user.user_id, page, page_size)
+    return ResponseModel(code=settings.SUCCESS_CODE, message=BlacklistListResponse(**result))

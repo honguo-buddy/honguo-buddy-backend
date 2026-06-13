@@ -36,10 +36,13 @@ class UserService:
         user_name: str | None = None,
         avatar_id: int | None = None,
         sex: str | None = None,
+        bio: str | None = None,
         db: AsyncSession | None = None,
     ) -> User:
-        """更新用户个人资料（本人修改）。"""
+        """更新用户个人资料（本人修改，含 bio 个人简介）。"""
         update_data = {}
+        if bio is not None:
+            update_data["bio"] = bio
         if user_name is not None:
             update_data["user_name"] = user_name
         if avatar_id is not None:
@@ -172,10 +175,11 @@ class UserService:
 
         payload = {
             "user_id": user.user_id,
-            "user_uuid": user.user_uuid,
+            "user_uuid": user.user_uuid.hex() if isinstance(user.user_uuid, bytes) else str(user.user_uuid) if user.user_uuid else "",
             "user_name": user.user_name,
             "avatar": avatar_url,
             "sex": user.sex.value if hasattr(user.sex, "value") else user.sex,
+            "bio": user.bio,
             "user_type": user.user_type.value if hasattr(user.user_type, "value") else user.user_type,
             "credit_score": user.credit_score,
             "is_verified": user.is_verified,

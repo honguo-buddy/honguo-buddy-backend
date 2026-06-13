@@ -56,6 +56,8 @@ async def test_get_post_for_update_not_found_raises():
 async def test_create_post_with_attachments_and_bind(monkeypatch):
     # prepare fake db which resolves default category and handles add/flush/refresh/commit
     class FakeDB2:
+        async def get(self, model, pk):
+            return type("Cat", (), {"direction": "SELL"})()
         def __init__(self):
             self.added = None
 
@@ -99,6 +101,8 @@ async def test_create_post_with_attachments_and_bind(monkeypatch):
 @pytest.mark.asyncio
 async def test_create_post_bind_raises_logs(monkeypatch):
     class FakeDB3:
+        async def get(self, model, pk):
+            return type("Cat", (), {"direction": "SELL"})()
         def __init__(self):
             self.added = None
 
@@ -134,6 +138,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from sqlalchemy.exc import OperationalError
 
 from app.core.exception_handler import BusinessHTTPException, ResourceHTTPException
 from app.models import Direction, PostStatus, UrgencyLevel
@@ -153,6 +158,8 @@ def build_db(*, execute_side_effect=None):
     db.flush = AsyncMock()
     db.refresh = AsyncMock()
     db.commit = AsyncMock()
+    db.get = AsyncMock(return_value=type("Cat", (), {"direction": "SELL"})())
+    db.rollback = AsyncMock()
     return db
 
 
@@ -205,7 +212,7 @@ async def test_create_post_with_fallback_enums_and_attachment_binding(monkeypatc
             "title": "测试创建",
             "description": "desc",
             "price": 12.5,
-            "direction": "INVALID",
+            "direction": "SELL",
             "urgency": "INVALID",
             "max_accepters": 2,
             "template_filters": {"k": "v"},
@@ -220,6 +227,26 @@ async def test_create_post_with_fallback_enums_and_attachment_binding(monkeypatc
     assert post.template_data["max_accepters"] == 2
     assert bind_mock.await_count == 1
     assert db.commit.await_count == 1
+
+
+async def test_create_post_rejects_invalid_expire_time():
+    db = build_db(execute_side_effect=[FakeResult(scalar_value=3)])
+    payload = PostCreate.model_validate(
+        {
+            "title": "无效截止时间",
+            "description": "desc",
+            "price": 12.5,
+            "direction": "SELL",
+            "expire_time": "not-a-real-time",
+        }
+    )
+
+    with pytest.raises(BusinessHTTPException) as exc_info:
+        await PostService.create_post(db, publisher_id=1001, post_create=payload)
+
+    assert "截止时间格式不正确" in exc_info.value.detail["msg"]
+    assert db.add.call_count == 0
+    assert db.commit.await_count == 0
 
 
 async def test_update_post_permission_status_pending_and_field_updates(monkeypatch):
@@ -266,7 +293,7 @@ async def test_update_post_permission_status_pending_and_field_updates(monkeypat
 async def test_update_post_binds_attachments(monkeypatch):
     post = build_post_obj()
     monkeypatch.setattr(PostService, "_get_post_for_update", AsyncMock(return_value=post))
-    db = build_db(execute_side_effect=[FakeResult(scalar_value=0)])
+    db = build_db(execute_side_effect=[FakeResult(scalar_value=0), FakeResult()])
     bind_mock = AsyncMock()
     monkeypatch.setattr(AttachmentService, "bind_attachments_to_target", bind_mock, raising=False)
 
@@ -280,6 +307,54 @@ async def test_update_post_binds_attachments(monkeypatch):
         target_id=post.post_id,
         creator_id=1001,
     )
+
+
+async def test_update_post_replaces_existing_attachments(monkeypatch):
+    post = build_post_obj()
+    monkeypatch.setattr(PostService, "_get_post_for_update", AsyncMock(return_value=post))
+    db = build_db(execute_side_effect=[FakeResult(scalar_value=0), FakeResult()])
+    bind_mock = AsyncMock()
+    monkeypatch.setattr(AttachmentService, "bind_attachments_to_target", bind_mock, raising=False)
+
+    payload = PostUpdate.model_validate({"attachment_ids": [77, 88]})
+    await PostService.update_post(db, post_id=1, payload=payload, operator_id=1001)
+
+    assert db.execute.await_count == 2
+    bind_mock.assert_awaited_once_with(
+        db=db,
+        attachment_ids=[77, 88],
+        target_type="POST",
+        target_id=post.post_id,
+        creator_id=1001,
+    )
+
+
+async def test_update_post_allows_clearing_attachments(monkeypatch):
+    post = build_post_obj()
+    monkeypatch.setattr(PostService, "_get_post_for_update", AsyncMock(return_value=post))
+    db = build_db(execute_side_effect=[FakeResult(scalar_value=0), FakeResult()])
+    bind_mock = AsyncMock()
+    monkeypatch.setattr(AttachmentService, "bind_attachments_to_target", bind_mock, raising=False)
+
+    payload = PostUpdate.model_validate({"attachment_ids": []})
+    await PostService.update_post(db, post_id=1, payload=payload, operator_id=1001)
+
+    assert db.execute.await_count == 2
+    bind_mock.assert_not_awaited()
+
+
+async def test_update_post_response_can_carry_attachment_briefs(monkeypatch):
+    post = build_post_obj(
+        attachments=[
+            SimpleNamespace(attachment_id=5, url="/static/post/5.webp", is_deleted=False),
+            SimpleNamespace(attachment_id=6, url="/static/post/6.webp", is_deleted=False),
+        ]
+    )
+    monkeypatch.setattr(PostService, "_get_post_for_update", AsyncMock(return_value=post))
+    db = build_db(execute_side_effect=[FakeResult(scalar_value=0)])
+
+    updated = await PostService.update_post(db, post_id=1, payload=PostUpdate.model_validate({"title": "x"}), operator_id=1001)
+    assert [att.attachment_id for att in updated.attachments] == [5, 6]
 
 
 async def test_update_post_rejects_invalid_direction_and_urgency(monkeypatch):
@@ -349,6 +424,20 @@ async def test_list_posts_and_user_scopes(monkeypatch):
     assert len(public_posts) == 1
 
 
+async def test_list_posts_template_filters_use_portable_cast(monkeypatch):
+    post = build_post_obj()
+    db = build_db(execute_side_effect=[FakeResult(scalar_value=1), FakeResult(items=[post])])
+
+    await PostService.list_posts(
+        db,
+        template_filters={"pickup_address": "南门"},
+    )
+
+    executed_sql = str(db.execute.await_args_list[0].args[0])
+    assert "JSON_EXTRACT" not in executed_sql
+    assert "astext" not in executed_sql.lower()
+
+
 async def test_get_post_detail_success_and_not_found():
     post = build_post_obj()
     db = build_db(execute_side_effect=[FakeResult(items=[post])])
@@ -359,3 +448,64 @@ async def test_get_post_detail_success_and_not_found():
     with pytest.raises(ResourceHTTPException) as exc_info:
         await PostService.get_post_detail(db, post_id=1)
     assert "帖子不存在或已删除" in exc_info.value.detail["msg"]
+
+
+async def test_list_posts_retries_when_attachment_sort_order_column_missing(monkeypatch):
+    post = build_post_obj()
+    db = build_db()
+
+    class FakeOrigExc(Exception):
+        args = (1054, "Unknown column 'sort_order' in 'field list'")
+
+    execute_count = {"value": 0}
+
+    async def execute_side_effect(stmt):
+        execute_count["value"] += 1
+        if execute_count["value"] == 1:
+            return FakeResult(scalar_value=1)
+        if execute_count["value"] == 2:
+            raise OperationalError("SELECT attachment.sort_order ...", {}, FakeOrigExc())
+        return FakeResult(items=[post])
+
+    db.execute = AsyncMock(side_effect=execute_side_effect)
+    ensure_mock = AsyncMock()
+    hydrate_mock = AsyncMock()
+    monkeypatch.setattr(AttachmentService, "ensure_sort_order_column", ensure_mock, raising=False)
+    monkeypatch.setattr(PostService, "_hydrate_posts_avatar", hydrate_mock, raising=False)
+
+    posts, total = await PostService.list_posts(db, page=1, page_size=20)
+
+    assert total == 1
+    assert len(posts) == 1
+    ensure_mock.assert_awaited_once_with(db)
+    db.rollback.assert_awaited_once()
+    db.commit.assert_awaited_once()
+
+
+async def test_get_post_detail_retries_when_attachment_sort_order_column_missing(monkeypatch):
+    post = build_post_obj()
+    db = build_db()
+
+    class FakeOrigExc(Exception):
+        args = (1054, "Unknown column 'sort_order' in 'field list'")
+
+    execute_count = {"value": 0}
+
+    async def execute_side_effect(stmt):
+        execute_count["value"] += 1
+        if execute_count["value"] == 1:
+            raise OperationalError("SELECT attachment.sort_order ...", {}, FakeOrigExc())
+        return FakeResult(items=[post])
+
+    db.execute = AsyncMock(side_effect=execute_side_effect)
+    ensure_mock = AsyncMock()
+    hydrate_mock = AsyncMock()
+    monkeypatch.setattr(AttachmentService, "ensure_sort_order_column", ensure_mock, raising=False)
+    monkeypatch.setattr(PostService, "_hydrate_posts_avatar", hydrate_mock, raising=False)
+
+    result = await PostService.get_post_detail(db, post_id=1)
+
+    assert result.post_id == post.post_id
+    ensure_mock.assert_awaited_once_with(db)
+    db.rollback.assert_awaited_once()
+    db.commit.assert_awaited_once()

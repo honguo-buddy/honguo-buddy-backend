@@ -200,19 +200,45 @@ async def test_create_order_goods_branches():
         await OrderService.create_order(db, "GOODS", 4001, 1002)
     assert "商品已售出" in sold_err.value.detail["msg"]
 
-    db = build_db(execute_side_effect=[FakeResult(items=[build_goods(template_data={"locked": True})])])
+    db = build_db(execute_side_effect=[FakeResult(items=[build_goods(status=GoodsStatus.OFF_SHELF, template_data={"locked": True})])])
     with pytest.raises(BusinessHTTPException) as locked_err:
         await OrderService.create_order(db, "GOODS", 4001, 1002)
-    assert "商品已被锁定，无法购买" in locked_err.value.detail["msg"]
+    assert "商品当前不可购买" in locked_err.value.detail["msg"]
 
     goods = build_goods(template_data={})
-    db = build_db(execute_side_effect=[FakeResult(items=[goods])])
+    db = build_db(execute_side_effect=[FakeResult(items=[goods]), FakeResult(scalar_value=None)])
     order = await OrderService.create_order(db, "GOODS", 4001, 1002)
 
-    assert order.status == OrderStatus.ONGOING
-    assert order.trigger_type == OrderTriggerType.DIRECT
-    assert goods.template_data["locked"] is True
+    assert order.status == OrderStatus.PENDING
+    assert order.trigger_type == OrderTriggerType.APPLICATION
+    assert goods.template_data.get("locked") is None
 
+
+async def test_promote_goods_order_to_ongoing_branches():
+    seller_goods = build_goods()
+
+    db = build_db()
+    with patch.object(OrderService, "_load_goods_for_update", AsyncMock(return_value=seller_goods)):
+        with pytest.raises(BusinessHTTPException) as own_err:
+            await OrderService.promote_goods_order_to_ongoing(db, 4001, seller_goods.publisher_id)
+    assert "不能购买自己的商品" in own_err.value.detail["msg"]
+
+    sold_goods = build_goods(status=GoodsStatus.SOLD)
+    with patch.object(OrderService, "_load_goods_for_update", AsyncMock(return_value=sold_goods)):
+        with pytest.raises(BusinessHTTPException) as sold_err:
+            await OrderService.promote_goods_order_to_ongoing(build_db(), 4001, 1002)
+    assert "商品已售出" in sold_err.value.detail["msg"]
+
+    on_sale_goods = build_goods(status=GoodsStatus.ON_SALE, template_data={})
+    pending_order = build_order(item_type=ItemType.GOODS, item_id=4001, initiator_id=1002, buyer_id=1002, seller_id=on_sale_goods.publisher_id, status=OrderStatus.PENDING)
+    other_pending = build_order(order_id=6002, item_type=ItemType.GOODS, item_id=4001, initiator_id=1003, buyer_id=1003, seller_id=on_sale_goods.publisher_id, status=OrderStatus.PENDING)
+    db_success = build_db(execute_side_effect=[FakeResult(items=[pending_order]), FakeResult(items=[other_pending])])
+    with patch.object(OrderService, "_load_goods_for_update", AsyncMock(return_value=on_sale_goods)):
+        result = await OrderService.promote_goods_order_to_ongoing(db_success, 4001, 1002)
+    assert result.status == OrderStatus.ONGOING
+    assert other_pending.status == OrderStatus.REJECTED
+    assert on_sale_goods.status == GoodsStatus.OFF_SHELF
+    assert on_sale_goods.template_data["locked"] is True
 
 async def test_batch_accept_posts_and_error_mapping(monkeypatch):
     db = build_db()
@@ -918,6 +944,18 @@ async def test_list_orders_and_post_application_edge_cases(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_mark_post_applications_seen_and_count_system_unread():
+    db = build_db(execute_side_effect=[FakeResult()])
+    await OrderService.mark_post_applications_seen_by_seller(db, 2001)
+    assert db.execute.await_count == 1
+    assert db.commit.await_count == 1
+
+    count_db = build_db(execute_side_effect=[FakeResult(scalar_value=3)])
+    unread = await OrderService.get_system_pending_unread_count(count_db, current_user_id=3001)
+    assert unread == 3
+
+
+@pytest.mark.asyncio
 async def test_lookup_helpers_and_create_order_edge_paths(monkeypatch):
     with pytest.raises(ResourceHTTPException):
         await OrderService._get_post_for_update(build_db(execute_side_effect=[FakeResult(items=[])]), 1)
@@ -937,9 +975,9 @@ async def test_lookup_helpers_and_create_order_edge_paths(monkeypatch):
             raise RuntimeError("boom")
 
     goods = build_goods(template_data=BrokenDict({"locked": False}))
-    db = build_db(execute_side_effect=[FakeResult(items=[goods])])
+    db = build_db(execute_side_effect=[FakeResult(items=[goods]), FakeResult(scalar_value=None)])
     order = await OrderService.create_order(db, "GOODS", 4001, 6001, commit=False)
-    assert order.status == OrderStatus.ONGOING
+    assert order.status == OrderStatus.PENDING
     assert db.commit.await_count == 0
 
     post = build_post(direction=Direction.SELL)

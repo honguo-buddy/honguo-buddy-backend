@@ -17,7 +17,7 @@ from app.schemas.comment import (
     CommentWithReplyCountResponse,
     CommentReplyPreview,
 )
-from app.services import CommentService
+from app.services import BlacklistService, CommentService
 from app.schemas.user import user as UserSchema
 
 router = APIRouter()
@@ -116,6 +116,7 @@ async def get_replies(
     comment_id: int,
     cursor: Optional[int] = Query(None, description="游标：上一页最后一条回复的ID"),
     size: int = Query(20, ge=1, le=100, description="每页大小"),
+    current_user: Optional[UserSchema] = Depends(get_current_user_optional),
     db: AsyncSession = Depends(get_db),
 ):
     """获取单条根评论下的所有回复（按时间正序）。
@@ -125,11 +126,20 @@ async def get_replies(
     
     公开接口，无需登录。
     """
+    # 黑名单过滤
+    blocker_ids = []
+    blocked_target_ids = []
+    if current_user:
+        blocker_ids = await BlacklistService.get_blocker_ids(db, current_user.user_id)
+        blocked_target_ids = await BlacklistService.get_blocked_target_ids(db, current_user.user_id)
+    exclude_user_ids = list(set(blocker_ids + blocked_target_ids))
+
     replies, next_cursor = await CommentService.get_replies(
         db=db,
         comment_id=comment_id,
         cursor=cursor,
         size=size,
+        exclude_user_ids=exclude_user_ids if exclude_user_ids else None,
     )
     
     reply_ids = [r.comment_id for r in replies]
@@ -163,6 +173,7 @@ async def get_root_comments(
     target_id: int,
     cursor: Optional[int] = Query(None, description="游标：上一页最后一条评论的ID"),
     size: int = Query(20, ge=1, le=100, description="每页大小"),
+    current_user: Optional[UserSchema] = Depends(get_current_user_optional),
     db: AsyncSession = Depends(get_db),
 ):
     """获取目标的根评论列表（游标分页）。
@@ -172,12 +183,21 @@ async def get_root_comments(
     
     公开接口，无需登录。
     """
+    # 黑名单过滤：获取拉黑了当前用户的用户 ID 列表
+    blocker_ids = []
+    blocked_target_ids = []
+    if current_user:
+        blocker_ids = await BlacklistService.get_blocker_ids(db, current_user.user_id)
+        blocked_target_ids = await BlacklistService.get_blocked_target_ids(db, current_user.user_id)
+    exclude_user_ids = list(set(blocker_ids + blocked_target_ids))
+
     comments, next_cursor = await CommentService.get_root_comments(
         db=db,
         target_type=target_type,
         target_id=target_id,
         cursor=cursor,
         size=size,
+        exclude_user_ids=exclude_user_ids if exclude_user_ids else None,
     )
     
     # Batch fetch reply counts, attachment URLs, and preview replies in 3 queries total

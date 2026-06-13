@@ -146,6 +146,250 @@ class TestGetUserProfile:
         assert response2.status_code == 200
         assert response2.json()["code"] == settings.TOKEN_INVALID_CODE
 
+    async def test_get_my_unread_counts_aggregates_chat_and_system(
+        self,
+        client: AsyncClient,
+        db_session,
+        test_user: User,
+        test_admin_user: User,
+        test_user_token: str,
+        test_admin_token: str,
+        fake_redis,
+    ):
+        from app.models import Category, ChatMessage, ChatSession, ItemType, Order, OrderStatus, OrderTriggerType
+
+        await fake_redis.set(f"token:{test_user_token}", str(test_user.user_id))
+        await fake_redis.set(f"user_token:{test_user.user_id}", test_user_token)
+        await fake_redis.set(f"token:{test_admin_token}", str(test_admin_user.user_id))
+
+        category = Category(category_id=9701, name="未读聚合分类", config_json={})
+        db_session.add(category)
+        await db_session.flush()
+
+        post = Post(
+            post_id=9702,
+            publisher_id=test_user.user_id,
+            category_id=category.category_id,
+            title="未读聚合帖子",
+            description="用于未读聚合测试",
+            price=20.0,
+            template_data={"max_accepters": 2},
+            direction=Direction.BUY,
+            urgency=UrgencyLevel.NORMAL,
+            status=PostStatus.OPEN,
+        )
+        db_session.add(post)
+        await db_session.flush()
+
+        pending_application = Order(
+            buyer_id=test_user.user_id,
+            seller_id=test_admin_user.user_id,
+            initiator_id=test_admin_user.user_id,
+            item_type=ItemType.POST,
+            item_id=post.post_id,
+            status=OrderStatus.PENDING,
+            trigger_type=OrderTriggerType.APPLICATION,
+            is_seen_by_seller=False,
+        )
+        db_session.add(pending_application)
+
+        session = ChatSession(
+            session_id=9703,
+            user_one_id=min(test_user.user_id, test_admin_user.user_id),
+            user_two_id=max(test_user.user_id, test_admin_user.user_id),
+        )
+        db_session.add(session)
+        await db_session.flush()
+
+        unread_message_1 = ChatMessage(
+            session_id=session.session_id,
+            sender_id=test_admin_user.user_id,
+            content="未读消息1",
+            is_read=False,
+        )
+        unread_message_2 = ChatMessage(
+            session_id=session.session_id,
+            sender_id=test_admin_user.user_id,
+            content="未读消息2",
+            is_read=False,
+        )
+        db_session.add_all([unread_message_1, unread_message_2])
+        await db_session.flush()
+
+        resp = await client.get(
+            "/users/me/unread-counts",
+            headers={"Authorization": f"Bearer {test_user_token}"},
+        )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["code"] == settings.SUCCESS_CODE
+        assert body["message"]["chat_unread_count"] == 2
+        assert body["message"]["system_unread_count"] == 1
+        assert body["message"]["total_unread_count"] == 3
+
+
+@pytest.mark.asyncio
+async def test_get_my_buy_post_open_quota_returns_limit_used_and_remaining(
+    client: AsyncClient,
+    db_session,
+    test_user,
+    test_user_token,
+    fake_redis,
+):
+    """GET /users/me/open-quota/buy-posts 返回当前用户 BUY 帖子剩余额度。"""
+    from app.core import DynamicConfigManager, settings
+    from app.models import Category, Direction, Post, PostStatus, UrgencyLevel
+
+    await fake_redis.set(f"token:{test_user_token}", str(test_user.user_id))
+    await fake_redis.set(f"user_token:{test_user.user_id}", test_user_token)
+
+    DynamicConfigManager()._cache["MAX_OPEN_BUY_POSTS_PER_USER"] = 3
+
+    category = Category(category_id=9701, name="buy额度用户分类", config_json={}, direction="BUY")
+    db_session.add(category)
+    await db_session.flush()
+
+    post_1 = Post(
+        post_id=9701,
+        publisher_id=test_user.user_id,
+        category_id=category.category_id,
+        title="buy post 1",
+        direction=Direction.BUY,
+        urgency=UrgencyLevel.NORMAL,
+        status=PostStatus.OPEN,
+        template_data={"max_accepters": 1},
+    )
+    post_2 = Post(
+        post_id=9702,
+        publisher_id=test_user.user_id,
+        category_id=category.category_id,
+        title="buy post 2",
+        direction=Direction.BUY,
+        urgency=UrgencyLevel.NORMAL,
+        status=PostStatus.IN_PROGRESS,
+        template_data={"max_accepters": 1},
+    )
+    db_session.add_all([post_1, post_2])
+    await db_session.flush()
+
+    resp = await client.get(
+        "/users/me/open-quota/buy-posts",
+        headers={"Authorization": f"Bearer {test_user_token}"},
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["code"] == settings.SUCCESS_CODE
+    assert body["message"]["limit"] == 3
+    assert body["message"]["used"] == 2
+    assert body["message"]["remaining"] == 1
+    DynamicConfigManager()._cache.pop("MAX_OPEN_BUY_POSTS_PER_USER", None)
+
+
+@pytest.mark.asyncio
+async def test_get_my_sell_post_open_quota_returns_limit_used_and_remaining(
+    client: AsyncClient,
+    db_session,
+    test_user,
+    test_user_token,
+    fake_redis,
+):
+    """GET /users/me/open-quota/sell-posts 返回当前用户 SELL 帖子剩余额度。"""
+    from app.core import DynamicConfigManager, settings
+    from app.models import Category, Direction, Post, PostStatus, UrgencyLevel
+
+    await fake_redis.set(f"token:{test_user_token}", str(test_user.user_id))
+    await fake_redis.set(f"user_token:{test_user.user_id}", test_user_token)
+
+    DynamicConfigManager()._cache["MAX_OPEN_SELL_POSTS_PER_USER"] = 2
+
+    category = Category(category_id=9702, name="sell额度用户分类", config_json={}, direction="SELL")
+    db_session.add(category)
+    await db_session.flush()
+
+    post_1 = Post(
+        post_id=9703,
+        publisher_id=test_user.user_id,
+        category_id=category.category_id,
+        title="sell post 1",
+        direction=Direction.SELL,
+        urgency=UrgencyLevel.NORMAL,
+        status=PostStatus.OPEN,
+        template_data={"max_accepters": 1},
+    )
+    db_session.add(post_1)
+    await db_session.flush()
+
+    resp = await client.get(
+        "/users/me/open-quota/sell-posts",
+        headers={"Authorization": f"Bearer {test_user_token}"},
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["code"] == settings.SUCCESS_CODE
+    assert body["message"]["limit"] == 2
+    assert body["message"]["used"] == 1
+    assert body["message"]["remaining"] == 1
+    DynamicConfigManager()._cache.pop("MAX_OPEN_SELL_POSTS_PER_USER", None)
+
+
+@pytest.mark.asyncio
+async def test_get_my_goods_open_quota_returns_limit_used_and_remaining(
+    client: AsyncClient,
+    db_session,
+    test_user,
+    test_user_token,
+    fake_redis,
+):
+    """GET /users/me/open-quota/goods 返回当前用户商品剩余额度。"""
+    from app.core import DynamicConfigManager, settings
+    from app.models import Category, Goods, GoodsCondition, GoodsStatus
+
+    await fake_redis.set(f"token:{test_user_token}", str(test_user.user_id))
+    await fake_redis.set(f"user_token:{test_user.user_id}", test_user_token)
+
+    DynamicConfigManager()._cache["MAX_OPEN_GOODS_PER_USER"] = 4
+
+    category = Category(category_id=9703, name="goods额度用户分类", config_json={})
+    db_session.add(category)
+    await db_session.flush()
+
+    goods_1 = Goods(
+        goods_id=9701,
+        publisher_id=test_user.user_id,
+        category_id=category.category_id,
+        name="goods quota 1",
+        price=20.0,
+        condition=GoodsCondition.BRAND_NEW,
+        status=GoodsStatus.ON_SALE,
+    )
+    goods_2 = Goods(
+        goods_id=9702,
+        publisher_id=test_user.user_id,
+        category_id=category.category_id,
+        name="goods quota 2",
+        price=30.0,
+        condition=GoodsCondition.BRAND_NEW,
+        status=GoodsStatus.ON_SALE,
+    )
+    db_session.add_all([goods_1, goods_2])
+    await db_session.flush()
+
+    resp = await client.get(
+        "/users/me/open-quota/goods",
+        headers={"Authorization": f"Bearer {test_user_token}"},
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["code"] == settings.SUCCESS_CODE
+    assert body["message"]["limit"] == 4
+    assert body["message"]["used"] == 2
+    assert body["message"]["remaining"] == 2
+    DynamicConfigManager()._cache.pop("MAX_OPEN_GOODS_PER_USER", None)
+
 
 class TestUserEndpoints:
     async def test_get_me_returns_avatar_and_fields(
@@ -209,6 +453,128 @@ class TestUserEndpoints:
         body = resp.json()
         assert body["code"] == settings.SUCCESS_CODE
         assert "avatar" in body["message"]
+
+    async def test_get_user_public_by_id_keeps_public_fields_after_cache_hit(
+        self,
+        client: AsyncClient,
+        db_session,
+        test_user,
+        fake_redis,
+    ):
+        """目的：匿名访问 /users/{user_id} 时，缓存回填前后公开字段必须一致，不能被写成 null。"""
+        attachment = Attachment(
+            attachment_id=6011,
+            target_type=AttachmentTargetType.USER,
+            target_id=test_user.user_id,
+            url=f"/static/avatar/user_{test_user.user_id}_public.webp",
+            creator_id=test_user.user_id,
+        )
+        db_session.add(attachment)
+        await db_session.flush()
+
+        test_user.avatar_id = attachment.attachment_id
+        test_user.bio = "公开简介"
+        test_user.is_verified = True
+        await db_session.flush()
+
+        first_resp = await client.get(f"/users/{test_user.user_id}")
+        assert first_resp.status_code == 200
+        first_body = first_resp.json()
+        assert first_body["code"] == settings.SUCCESS_CODE
+        assert first_body["message"]["user_name"] == test_user.user_name
+        assert first_body["message"]["avatar"] == attachment.url
+        assert first_body["message"]["bio"] == "公开简介"
+        assert first_body["message"]["credit_score"] == test_user.credit_score
+        assert first_body["message"]["is_verified"] is True
+
+        second_resp = await client.get(f"/users/{test_user.user_id}")
+        assert second_resp.status_code == 200
+        second_body = second_resp.json()
+        assert second_body["code"] == settings.SUCCESS_CODE
+        assert second_body["message"] == first_body["message"]
+
+    async def test_get_user_public_by_id_rebuilds_legacy_public_cache(
+        self,
+        client: AsyncClient,
+        db_session,
+        test_user,
+        fake_redis,
+    ):
+        """目的：命中旧版脏 public cache 时，应自动删掉并回源重建，而不是继续返回 null。"""
+        attachment = Attachment(
+            attachment_id=6012,
+            target_type=AttachmentTargetType.USER,
+            target_id=test_user.user_id,
+            url=f"/static/avatar/user_{test_user.user_id}_legacy.webp",
+            creator_id=test_user.user_id,
+        )
+        db_session.add(attachment)
+        await db_session.flush()
+
+        test_user.avatar_id = attachment.attachment_id
+        test_user.bio = "旧缓存修复简介"
+        test_user.is_verified = True
+        await db_session.flush()
+
+        await fake_redis.set(
+            f"user:profile:public:{test_user.user_id}",
+            '{"user_id": 1001, "user_uuid": "legacy", "user_name": null, "avatar": null, "sex": null, "credit_score": 0, "is_verified": false, "user_type": null}',
+        )
+
+        resp = await client.get(f"/users/{test_user.user_id}")
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["code"] == settings.SUCCESS_CODE
+        assert body["message"]["user_name"] == test_user.user_name
+        assert body["message"]["avatar"] == attachment.url
+        assert body["message"]["bio"] == "旧缓存修复简介"
+        assert body["message"]["is_verified"] is True
+
+    async def test_non_admin_get_user_public_by_id_stays_public_contract(
+        self,
+        client: AsyncClient,
+        db_session,
+        test_user,
+        test_user_token,
+        fake_redis,
+    ):
+        """目的：普通登录用户访问 /users/{user_id} 只能拿到公开字段，且公开字段不能为 null。"""
+        other_user = User(
+            user_id=2015,
+            user_uuid=uuid.uuid4().bytes,
+            user_name="public_target",
+            sex=test_user.sex,
+            user_type=test_user.user_type,
+            bio="对外可见简介",
+            credit_score=88,
+            is_verified=True,
+            email="hidden@example.com",
+            phonenumber="13800000001",
+            wechat_openid="openid-public-target",
+        )
+        db_session.add(other_user)
+        await db_session.flush()
+
+        await fake_redis.set(f"token:{test_user_token}", str(test_user.user_id))
+        await fake_redis.set(f"user_token:{test_user.user_id}", test_user_token)
+
+        resp = await client.get(
+            f"/users/{other_user.user_id}",
+            headers={"Authorization": f"Bearer {test_user_token}"},
+        )
+        assert resp.status_code == 200
+        body = resp.json()
+        assert body["code"] == settings.SUCCESS_CODE
+        assert body["message"]["user_name"] == "public_target"
+        assert body["message"]["bio"] == "对外可见简介"
+        assert body["message"]["credit_score"] == 88
+        assert body["message"]["is_verified"] is True
+        assert "email" not in body["message"]
+        assert "phonenumber" not in body["message"]
+        assert "is_admin" not in body["message"]
+        assert "last_login_ip" not in body["message"]
+        assert "last_login_time" not in body["message"]
+        assert "wechat_unionid" not in body["message"]
 
     async def test_follow_unfollow_and_list_followings(
         self,
@@ -970,3 +1336,300 @@ class TestHistoriesHydration:
         assert card["favorite_count"] == 4
         assert card["comment_count"] == 2
 
+# ── 联系方式集成测试 ──────────────────────────────────────────
+
+async def test_list_my_contacts_empty(client, test_user_token, fake_redis, test_user):
+    await fake_redis.set(f"token:{test_user_token}", str(test_user.user_id))
+    await fake_redis.set(f"user_token:{test_user.user_id}", test_user_token)
+    resp = await client.get(
+        "/users/me/contacts",
+        headers={"Authorization": f"Bearer {test_user_token}"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["code"] == 0
+    assert body["message"]["list"] == []
+
+
+async def test_create_and_list_contacts(client, test_user_token, fake_redis, test_user):
+    await fake_redis.set(f"token:{test_user_token}", str(test_user.user_id))
+    await fake_redis.set(f"user_token:{test_user.user_id}", test_user_token)
+    resp = await client.post(
+        "/users/me/contacts",
+        json={"contact_type": "WECHAT", "contact_value": "wx_test", "is_public": True},
+        headers={"Authorization": f"Bearer {test_user_token}"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["code"] == 0
+    contact_id = body["message"]["contact_id"]
+    assert body["message"]["contact_type"] == "WECHAT"
+
+    # 列表验证
+    resp = await client.get(
+        "/users/me/contacts",
+        headers={"Authorization": f"Bearer {test_user_token}"},
+    )
+    body = resp.json()
+    assert len(body["message"]["list"]) >= 1
+
+    # 删除
+    resp = await client.delete(
+        f"/users/me/contacts/{contact_id}",
+        headers={"Authorization": f"Bearer {test_user_token}"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["code"] == 0
+
+
+async def test_upsert_contact_overwrite(client, test_user_token, fake_redis, test_user):
+    await fake_redis.set(f"token:{test_user_token}", str(test_user.user_id))
+    await fake_redis.set(f"user_token:{test_user.user_id}", test_user_token)
+    await client.post(
+        "/users/me/contacts",
+        json={"contact_type": "QQ", "contact_value": "111111", "is_public": False},
+        headers={"Authorization": f"Bearer {test_user_token}"},
+    )
+    resp = await client.post(
+        "/users/me/contacts",
+        json={"contact_type": "QQ", "contact_value": "222222", "is_public": True},
+        headers={"Authorization": f"Bearer {test_user_token}"},
+    )
+    body = resp.json()
+    assert body["code"] == 0
+    assert body["message"]["contact_value"] == "222222"
+    assert body["message"]["is_public"] is True
+
+
+# ── 黑名单集成测试 ──────────────────────────────────────────
+
+async def test_blacklist_self_raises(client, test_user_token, fake_redis, test_user):
+    await fake_redis.set(f"token:{test_user_token}", str(test_user.user_id))
+    await fake_redis.set(f"user_token:{test_user.user_id}", test_user_token)
+    resp = await client.post(
+        "/users/me/blacklist",
+        json={"target_id": test_user.user_id},
+        headers={"Authorization": f"Bearer {test_user_token}"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["code"] != 0
+
+
+async def test_blacklist_add_and_remove(client, test_user_token, fake_redis, test_user, db_session):
+    await fake_redis.set(f"token:{test_user_token}", str(test_user.user_id))
+    await fake_redis.set(f"user_token:{test_user.user_id}", test_user_token)
+    from app.models import SexEnum, User, UserType
+    target = User(
+        user_id=2001,
+        user_uuid=b"aaaaaaaaaaaaaaaa",
+        user_name="target_user",
+        sex=SexEnum.UNKNOWN,
+        user_type=UserType.USER,
+        is_active=True,
+        is_deleted=False,
+        credit_score=100,
+        wechat_openid="target_openid_2001",
+    )
+    db_session.add(target)
+    await db_session.flush()
+
+    resp = await client.post(
+        "/users/me/blacklist",
+        json={"target_id": 2001},
+        headers={"Authorization": f"Bearer {test_user_token}"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["code"] == 0
+
+    resp = await client.get(
+        "/users/me/blacklist",
+        headers={"Authorization": f"Bearer {test_user_token}"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["message"]["total"] >= 1
+
+    resp = await client.delete(
+        "/users/me/blacklist/2001",
+        headers={"Authorization": f"Bearer {test_user_token}"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["code"] == 0
+
+# ========== 黑名单全盘拦截集成测试 ==========
+
+async def test_blocked_user_cannot_view_profile(client, test_user_token, fake_redis, test_user, db_session):
+    """被拉黑用户访问拉黑者主页 -> code=102"""
+    from app.models import SexEnum, User, UserBlacklist, UserType
+
+    blocker = User(
+        user_id=3001, user_uuid=b"blocker000000001", user_name="blocker_user",
+        sex=SexEnum.UNKNOWN, user_type=UserType.USER,
+        is_active=True, is_deleted=False, credit_score=100,
+        wechat_openid="blocker_openid_3001",
+    )
+    db_session.add(blocker)
+    await db_session.flush()
+
+    # 模拟: blocker(3001) 拉黑了 test_user(1001)
+    entry = UserBlacklist(user_id=3001, target_id=1001)
+    db_session.add(entry)
+    await db_session.flush()
+
+    await fake_redis.set(f"token:{test_user_token}", str(test_user.user_id))
+    await fake_redis.set(f"user_token:{test_user.user_id}", test_user_token)
+
+    # test_user 尝试访问 blocker 的主页
+    resp = await client.get(
+        f"/users/3001",
+        headers={"Authorization": f"Bearer {test_user_token}"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["code"] == 102
+    assert "隐私设置" in body["message"]["msg"]
+
+
+async def test_blocked_user_cannot_view_public_posts(client, test_user_token, fake_redis, test_user, db_session):
+    """被拉黑用户访问拉黑者的公开帖子列表 -> code=102"""
+    from app.models import SexEnum, User, UserBlacklist, UserType
+
+    blocker = User(
+        user_id=3002, user_uuid=b"blocker000000002", user_name="blocker2",
+        sex=SexEnum.UNKNOWN, user_type=UserType.USER,
+        is_active=True, is_deleted=False, credit_score=100,
+        wechat_openid="blocker_openid_3002",
+    )
+    db_session.add(blocker)
+    await db_session.flush()
+
+    entry = UserBlacklist(user_id=3002, target_id=1001)
+    db_session.add(entry)
+    await db_session.flush()
+
+    await fake_redis.set(f"token:{test_user_token}", str(test_user.user_id))
+    await fake_redis.set(f"user_token:{test_user.user_id}", test_user_token)
+
+    resp = await client.get(
+        "/posts/user/3002",
+        headers={"Authorization": f"Bearer {test_user_token}"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["code"] == 102
+
+
+async def test_non_blocked_user_can_view_profile(client, test_user_token, fake_redis, test_user, db_session):
+    """未被拉黑的用户正常访问他人主页 -> code=0"""
+    from app.models import SexEnum, User, UserType
+
+    other = User(
+        user_id=3003, user_uuid=b"other00000000003", user_name="other_user",
+        sex=SexEnum.UNKNOWN, user_type=UserType.USER,
+        is_active=True, is_deleted=False, credit_score=100,
+        wechat_openid="other_openid_3003",
+    )
+    db_session.add(other)
+    await db_session.flush()
+
+    await fake_redis.set(f"token:{test_user_token}", str(test_user.user_id))
+    await fake_redis.set(f"user_token:{test_user.user_id}", test_user_token)
+
+    resp = await client.get(
+        f"/users/3003",
+        headers={"Authorization": f"Bearer {test_user_token}"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    # 未被拉黑，正常返回（可能是公开信息或 code=0）
+    assert body["code"] in (0, 103)  # 103 = 无缓存时可能
+
+
+async def test_blocking_hides_posts_from_list(client, test_user_token, fake_redis, test_user, db_session):
+    """拉黑者在大厅列表中看不到被拉黑者的帖子"""
+    from app.models import Category, Direction, Post, PostStatus, SexEnum, UrgencyLevel, User, UserBlacklist, UserType
+
+    blocked_user = User(
+        user_id=4001, user_uuid=b"blocked000000001", user_name="blocked_user",
+        sex=SexEnum.UNKNOWN, user_type=UserType.USER,
+        is_active=True, is_deleted=False, credit_score=100,
+        wechat_openid="blocked_openid_4001",
+    )
+    db_session.add(blocked_user)
+    await db_session.flush()
+
+    # test_user(1001) 拉黑 blocked_user(4001)
+    entry = UserBlacklist(user_id=1001, target_id=4001)
+    db_session.add(entry)
+    await db_session.flush()
+
+    # 创建分类
+    cat = Category(category_id=1, name="test_cat", config_json={})
+    db_session.add(cat)
+    await db_session.flush()
+
+    # blocked_user 发一个帖子
+    post = Post(
+        post_id=5001, publisher_id=4001, category_id=1, title="blocked post", direction=Direction.SELL,
+        urgency=UrgencyLevel.NORMAL, status=PostStatus.OPEN,
+        template_data={"max_accepters": 1},
+    )
+    db_session.add(post)
+    await db_session.flush()
+
+    await fake_redis.set(f"token:{test_user_token}", str(test_user.user_id))
+    await fake_redis.set(f"user_token:{test_user.user_id}", test_user_token)
+
+    resp = await client.get(
+        "/posts/?page=1&page_size=20",
+        headers={"Authorization": f"Bearer {test_user_token}"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["code"] == 0
+    # blocked_user 的帖子不应该出现在列表中
+    post_ids = [p["post_id"] for p in body["message"]["list"]]
+    assert 5001 not in post_ids
+
+
+async def test_blocking_hides_goods_from_list(client, test_user_token, fake_redis, test_user, db_session):
+    """拉黑者在大厅列表中看不到被拉黑者的商品"""
+    from app.models import Goods, GoodsCondition, GoodsStatus, SexEnum, User, UserBlacklist, UserType
+
+    blocked_user = User(
+        user_id=4002, user_uuid=b"blocked000000002", user_name="blocked_goods_user",
+        sex=SexEnum.UNKNOWN, user_type=UserType.USER,
+        is_active=True, is_deleted=False, credit_score=100,
+        wechat_openid="blocked_openid_4002",
+    )
+    db_session.add(blocked_user)
+    await db_session.flush()
+
+    entry = UserBlacklist(user_id=1001, target_id=4002)
+    db_session.add(entry)
+    await db_session.flush()
+
+    from app.models import Category
+    cat = Category(category_id=1, name="test_cat", config_json={})
+    db_session.add(cat)
+    await db_session.flush()
+
+    goods = Goods(
+        goods_id=6001, publisher_id=4002, name="blocked item",
+        category_id=1, condition=GoodsCondition.NEAR_NEW, status=GoodsStatus.ON_SALE,
+    )
+    db_session.add(goods)
+    await db_session.flush()
+
+    await fake_redis.set(f"token:{test_user_token}", str(test_user.user_id))
+    await fake_redis.set(f"user_token:{test_user.user_id}", test_user_token)
+
+    resp = await client.get(
+        "/goods/?page=1&page_size=20",
+        headers={"Authorization": f"Bearer {test_user_token}"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["code"] == 0
+    goods_ids = [g["goods_id"] for g in body["message"]["list"]]
+    assert 6001 not in goods_ids

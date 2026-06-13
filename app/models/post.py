@@ -56,29 +56,28 @@ class Post(Base):
         comment="紧急程度",
     )
     expire_time = Column(DateTime, nullable=True, comment="过期时间")
+    contact = Column(JSON, nullable=True, comment="联系方式JSON: {phone, wx, qq}")
     is_deleted = Column(Boolean, default=False, nullable=False, comment="是否软删除")
     create_time = Column(DateTime, default=beijing_now_for_model, nullable=False, comment="创建时间")
     update_time = Column(DateTime, default=beijing_now_for_model, onupdate=beijing_now_for_model, nullable=False, comment="更新时间")
 
-    user = relationship("User", back_populates="posts", lazy="selectin")
-    category = relationship("Category", back_populates="posts", lazy="selectin")
+    user = relationship("User", back_populates="posts")
+    category = relationship("Category", back_populates="posts")
     orders = relationship(
         "Order",
         primaryjoin="and_(foreign(Order.item_id) == Post.post_id, Order.item_type == 'POST')",
         viewonly=True,
-        lazy="selectin",
     )
     comments = relationship(
         "Comment",
         primaryjoin="and_(foreign(Comment.target_id) == Post.post_id, Comment.target_type == 'POST')",
         viewonly=True,
-        lazy="selectin",
     )
 
     attachments = relationship(
         "Attachment",
         primaryjoin="and_(foreign(Attachment.target_id) == Post.post_id, Attachment.target_type == 'POST')",
-        lazy="selectin",
+        order_by="Attachment.sort_order.asc(), Attachment.attachment_id.asc()",
         overlaps="attachments",
         cascade="all, delete-orphan", # 当帖子删除时，自动清理附件记录
     )

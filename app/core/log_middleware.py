@@ -1,5 +1,5 @@
 import time
-from fastapi import Request,Depends
+from fastapi import Request, Depends
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.types import ASGIApp
 import json
@@ -8,6 +8,15 @@ import json
 from app.core.security import get_user_id_from_request  # 根据Token获取用户信息
 from app.db import redis, get_db, UserAccessLog
 from sqlalchemy.ext.asyncio import AsyncSession
+
+
+DOCS_EXCLUDED_PATHS = {
+    "/openapi.json",
+    "/docs",
+    "/docs/oauth2-redirect",
+    "/redoc",
+    "/favicon.ico",
+}
 
 async def save_log_to_db(log_data: dict):
     """将访问日志写入数据库"""
@@ -29,6 +38,8 @@ class LogMiddleware(BaseHTTPMiddleware):
         super().__init__(app)
 
     async def dispatch(self, request: Request, call_next):
+        if request.url.path in DOCS_EXCLUDED_PATHS or request.url.path.startswith("/docs/"):
+            return await call_next(request)
         
         #请求前
         start_time = time.time()
@@ -75,8 +86,12 @@ class LogMiddleware(BaseHTTPMiddleware):
 
         # Redis 去抖逻辑
         key = f"logdedup:{user_id}:{request.url.path}"
-        if not await redis.exists(key):
-            await redis.setex(key, 5, 1)
-            await save_log_to_db(log_data)
+        try:
+            if not await redis.exists(key):
+                await redis.setex(key, 5, 1)
+                await save_log_to_db(log_data)
+        except Exception:
+            # 文档页、健康接口之外的业务响应不应因日志链路抖动被拖垮
+            pass
             
         return response

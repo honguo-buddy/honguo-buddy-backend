@@ -35,12 +35,16 @@ class Attachment(Base):
 
     # 谁上传的（creator_id 使用 user.user_id）
     creator_id = Column(BigInteger, nullable=False, index=True, comment="上传者的用户主键 ID")
+    sort_order = Column(BigInteger, nullable=False, default=0, comment="同一目标下的附件排序序号，数值越小越靠前")
 
     # 审计字段
     create_time = Column(DateTime, default=beijing_now_for_model, nullable=False, comment="创建时间")
     update_time = Column(DateTime, default=beijing_now_for_model, onupdate=beijing_now_for_model, nullable=False, comment="更新时间")
     is_deleted = Column(Boolean, default=False, nullable=False, comment="是否软删除")
 
-    avatar_users = relationship("User", back_populates="avatar_attachment", lazy="selectin")
+    avatar_users = relationship("User", back_populates="avatar_attachment")
 
-    __table_args__ = (Index("idx_attachment_target_type_target_id", "target_type", "target_id"),)
+    __table_args__ = (
+        Index("idx_attachment_target_type_target_id", "target_type", "target_id"),
+        Index("idx_attachment_target_sort_order", "target_type", "target_id", "sort_order"),
+    )

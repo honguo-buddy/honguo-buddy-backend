@@ -3,23 +3,59 @@ import logging
 from typing import Optional, List, Tuple, Any
 
 from sqlalchemy import select, func, update, and_
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
-from app.core import AuthHTTPException, BusinessHTTPException, ResourceHTTPException, settings
+from sqlalchemy.orm import noload, selectinload
+from app.core import AuthHTTPException, BusinessHTTPException, ResourceHTTPException, get_now_naive, parse_datetime_to_beijing_naive, settings
 from app.models.goods import Goods, GoodsStatus, GoodsCondition
-from app.models.attachment import Attachment
 from app.models.user import User
 from app.schemas.goods import GoodsCreate, GoodsUpdate
+from app.services.attachment_service import AttachmentService
 
 logger = logging.getLogger(__name__)
 
 
 class GoodsService:
     @staticmethod
+    async def count_open_goods_by_user(db: AsyncSession, publisher_id: int) -> int:
+        """统计当前用户仍处于上架状态的商品数量。"""
+
+        stmt = (
+            select(func.count())
+            .select_from(Goods)
+            .where(
+                Goods.publisher_id == publisher_id,
+                Goods.status == GoodsStatus.ON_SALE,
+                Goods.is_deleted == False,
+            )
+        )
+        res = await db.execute(stmt)
+        return int(res.scalar_one() or 0)
+
+    @staticmethod
     async def _hydrate_goods_avatar(db: AsyncSession, goods_list: list) -> None:
         """委托统一头像灌水中心（AttachmentService.hydrate_owners_avatar）。"""
-        from app.services.attachment_service import AttachmentService
         await AttachmentService.hydrate_owners_avatar(db, goods_list)
+
+    @staticmethod
+    async def ensure_attachment_sort_order_column(db: AsyncSession) -> None:
+        """幂等补齐附件排序列。"""
+        try:
+            await AttachmentService.ensure_sort_order_column(db)
+            await db.commit()
+        except Exception:
+            await db.rollback()
+
+    @staticmethod
+    async def _execute_with_attachment_sort_retry(db: AsyncSession, executor):
+        """执行一次查询；若因 attachment.sort_order 缺列失败，则补齐列后重试一次。"""
+        try:
+            return await executor()
+        except OperationalError as exc:
+            if not AttachmentService._is_missing_sort_order_error(exc):
+                raise
+            await AttachmentService.ensure_sort_order_column_with_retry_boundary(db)
+            return await executor()
     @staticmethod
     async def create_goods(db: AsyncSession, publisher_id: int, obj_in: GoodsCreate) -> Goods:
         """Publish a new goods item."""
@@ -33,19 +69,36 @@ class GoodsService:
             template_data=obj_in.template_data or {},
             status=GoodsStatus.ON_SALE,
         )
+        # 组装联系方式 JSON
+        contact_parts = {}
+        if obj_in.phone: contact_parts["phone"] = obj_in.phone
+        if obj_in.wx: contact_parts["wx"] = obj_in.wx
+        if obj_in.qq: contact_parts["qq"] = obj_in.qq
+        if contact_parts:
+            goods.contact = contact_parts
+        # 截止时间处理
+        if obj_in.expire_time:
+            try:
+                parsed_expire = parse_datetime_to_beijing_naive(obj_in.expire_time)
+                if parsed_expire <= get_now_naive():
+                    raise BusinessHTTPException(code=settings.REQ_ERROR_CODE, msg="截止时间不能早于或等于当前时间")
+                goods.expire_time = parsed_expire
+            except BusinessHTTPException:
+                raise
+            except Exception as e:
+                logger.warning(f"截止时间解析失败 expire_time={obj_in.expire_time!r}: {e}")
+                raise BusinessHTTPException(code=settings.REQ_ERROR_CODE, msg="截止时间格式不正确")
         db.add(goods)
         await db.flush()
 
         if obj_in.attachment_ids:
-            stmt = (
-                update(Attachment)
-                .where(
-                    Attachment.attachment_id.in_(obj_in.attachment_ids),
-                    Attachment.creator_id == publisher_id,
-                )
-                .values(target_type="GOODS", target_id=goods.goods_id)
+            await AttachmentService.bind_attachments_to_target(
+                db=db,
+                attachment_ids=obj_in.attachment_ids,
+                target_type="GOODS",
+                target_id=goods.goods_id,
+                creator_id=publisher_id,
             )
-            await db.execute(stmt)
 
         await db.commit()
         
@@ -56,7 +109,7 @@ class GoodsService:
             await GoodsService._hydrate_goods_avatar(db, [goods])
         except Exception as e:
             # 完美保护单元测试的简陋 Mock 桩
-            logger.warning("\u26a0 [Goods Service] Failed to refresh goods relations during instantiation: %s", e, exc_info=True)
+            logger.warning("[Goods Service] Failed to refresh goods relations during instantiation: %s", e, exc_info=True)
             
         return goods
 
@@ -66,10 +119,10 @@ class GoodsService:
         stmt = (
             select(Goods)
             .where(Goods.goods_id == goods_id, Goods.is_deleted == False)
-            # 只 selectinload 真实存在的物理关系链，不碰未定义的 avatar
-            .options(selectinload(Goods.user), selectinload(Goods.attachments))
+            # 只 selectinload 必需的关系链，noload comments 防止联动加载评论
+            .options(selectinload(Goods.user), selectinload(Goods.attachments), noload(Goods.comments))
         )
-        res = await db.execute(stmt)
+        res = await GoodsService._execute_with_attachment_sort_retry(db, lambda: db.execute(stmt))
         goods = res.scalar_one_or_none()
         
         if goods:
@@ -86,9 +139,13 @@ class GoodsService:
         status: Optional[str] = None,
         page: int = 1,
         page_size: int = 20,
+        exclude_publisher_ids: Optional[list[int]] = None,
     ) -> Tuple[List[Goods], int]:
         """Marketplace lobby paginated query with filters."""
         stmt = select(Goods).where(Goods.is_deleted == False)
+        # 黑名单过滤：排除拉黑了当前用户的发布者
+        if exclude_publisher_ids:
+            stmt = stmt.where(Goods.publisher_id.notin_(exclude_publisher_ids))
         if status:
             stmt = stmt.where(Goods.status == GoodsStatus(status))
         if category_id:
@@ -97,16 +154,16 @@ class GoodsService:
             stmt = stmt.where(Goods.name.like(f"%{keyword}%"))
 
         count_stmt = select(func.count()).select_from(stmt.subquery())
-        count_res = await db.execute(count_stmt)
+        count_res = await GoodsService._execute_with_attachment_sort_retry(db, lambda: db.execute(count_stmt))
         total = int(count_res.scalar_one() or 0)
 
         stmt = (
-            stmt.options(selectinload(Goods.user), selectinload(Goods.attachments))
+            stmt.options(selectinload(Goods.user), selectinload(Goods.attachments), noload(Goods.comments))
             .order_by(Goods.create_time.desc())
             .offset((page - 1) * page_size)
             .limit(page_size)
         )
-        res = await db.execute(stmt)
+        res = await GoodsService._execute_with_attachment_sort_retry(db, lambda: db.execute(stmt))
         goods_list = list(res.scalars().all())
         
         # 列表批量灌水回填头像（O(1) 效率，完美绞杀 N+1 问题）
@@ -121,16 +178,16 @@ class GoodsService:
         """Get non-deleted goods published by a user."""
         stmt = select(Goods).where(Goods.publisher_id == user_id, Goods.is_deleted == False)
         count_stmt = select(func.count()).select_from(stmt.subquery())
-        count_res = await db.execute(count_stmt)
+        count_res = await GoodsService._execute_with_attachment_sort_retry(db, lambda: db.execute(count_stmt))
         total = int(count_res.scalar_one() or 0)
 
         stmt = (
-            stmt.options(selectinload(Goods.user), selectinload(Goods.attachments))
+            stmt.options(selectinload(Goods.user), selectinload(Goods.attachments), noload(Goods.comments))
             .order_by(Goods.create_time.desc())
             .offset((page - 1) * page_size)
             .limit(page_size)
         )
-        res = await db.execute(stmt)
+        res = await GoodsService._execute_with_attachment_sort_retry(db, lambda: db.execute(stmt))
         goods_list = list(res.scalars().all())
         
         # 用户商品列表批量灌水回填头像
@@ -153,19 +210,26 @@ class GoodsService:
                 setattr(goods, field, update_data[field])
 
         if obj_in.attachment_ids is not None:
-            await db.execute(
-                update(Attachment)
-                .where(Attachment.target_type == "GOODS", Attachment.target_id == goods.goods_id)
-                .values(target_id=None, target_type=None)
+            await AttachmentService.unbind_attachments_from_target(
+                db=db,
+                target_type="GOODS",
+                target_id=goods.goods_id,
             )
             if obj_in.attachment_ids:
-                await db.execute(
-                    update(Attachment)
-                    .where(Attachment.attachment_id.in_(obj_in.attachment_ids))
-                    .values(target_type="GOODS", target_id=goods.goods_id)
+                await AttachmentService.bind_attachments_to_target(
+                    db=db,
+                    attachment_ids=obj_in.attachment_ids,
+                    target_type="GOODS",
+                    target_id=goods.goods_id,
+                    creator_id=goods.publisher_id,
                 )
 
         await db.commit()
+        try:
+            await db.refresh(goods, ["user", "attachments"])
+            await GoodsService._hydrate_goods_avatar(db, [goods])
+        except Exception as e:
+            logger.warning("商品更新后刷新关联失败: %s", e, exc_info=True)
         return goods
 
     @staticmethod

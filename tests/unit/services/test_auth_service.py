@@ -299,6 +299,48 @@ async def test_email_verify_send_and_verify_matrix(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_send_email_verify_code_uses_thread_for_smtp(monkeypatch):
+    import app.services.auth_service as auth_module
+
+    class RedisStub:
+        def __init__(self):
+            self.store = {}
+            self.get = AsyncMock(side_effect=self._get)
+            self.set = AsyncMock(side_effect=self._set)
+            self.delete = AsyncMock(side_effect=self._delete)
+
+        async def _get(self, key):
+            return self.store.get(key)
+
+        async def _set(self, key, value, ex=None):
+            self.store[key] = value
+
+        async def _delete(self, key):
+            self.store.pop(key, None)
+
+    class EmailDB:
+        async def execute(self, stmt):
+            return FakeResult(items=[])
+
+    redis_stub = RedisStub()
+    monkeypatch.setattr("app.services.auth_service.redis", redis_stub)
+    monkeypatch.setattr("app.services.auth_service.send_email", lambda email, subject, body: True)
+
+    async def fake_to_thread(func, *args, **kwargs):
+        assert func.__name__ == "<lambda>"
+        assert args[0] == "thread@bjtu.edu.cn"
+        return func(*args, **kwargs)
+
+    to_thread_mock = AsyncMock(side_effect=fake_to_thread)
+    monkeypatch.setattr(auth_module, "asyncio", SimpleNamespace(to_thread=to_thread_mock), raising=False)
+
+    result = await AuthService.send_email_verify_code(EmailDB(), 1, "thread@bjtu.edu.cn")
+
+    assert result["detail"] == "验证码已发送到你的邮箱，请在5分钟内验证"
+    to_thread_mock.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_persist_token_and_wx_config_missing_paths(monkeypatch):
     redis_stub = SimpleNamespace(
         get=AsyncMock(return_value=None),

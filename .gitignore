@@ -5,7 +5,6 @@ __pycache__/
 
 # Virtualenv
 .venv/
-
 # Pytest
 .pytest_cache/
 test_reports/

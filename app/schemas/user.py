@@ -61,6 +61,7 @@ class UserProfileResponse(BaseModel):
     email: str | None = None
     phonenumber: str | None = None
     user_type: str | None = None
+    bio: str | None = None
     credit_score: int
     is_verified: bool
     is_active: bool
@@ -91,6 +92,7 @@ class UserPublicResponse(BaseModel):
     user_name: str | None = None
     avatar: str | None = None
     sex: str | None = None
+    bio: str | None = None
     credit_score: int
     is_verified: bool
     user_type: str | None = None
@@ -112,6 +114,7 @@ class UserSelfUpdateRequest(BaseModel):
     """修改本人资料，仅允许修改特定字段。不能修改 user_id、user_uuid、email、phonenumber、wechat_openid。"""
     user_name: str | None = Field(default=None, max_length=255, description="用户名")
     avatar_id: int | None = Field(default=None, description="用户头像附件ID")
+    bio: str | None = Field(default=None, max_length=255, description="个人简介")
     sex: str | None = Field(default=None, description="性别：男、女、未知")
 
     @field_validator('sex', mode='before')
@@ -239,5 +242,32 @@ class HistoryListResponse(BaseModel):
     list: list[HistoryItem]
 
 
+class UserUnreadCountsResponse(BaseModel):
+    """用户全局未读数聚合响应。"""
+
+    chat_unread_count: int = Field(default=0, description="私信未读总数")
+    system_unread_count: int = Field(default=0, description="系统新申请未读数")
+    total_unread_count: int = Field(default=0, description="全量未读总数")
+
+
+class UserOpenQuotaResponse(BaseModel):
+    """当前登录用户某一业务类型的可开启额度响应。"""
+
+    limit: int = Field(default=0, description="该类型总额度")
+    used: int = Field(default=0, description="该类型当前已使用额度")
+    remaining: int = Field(default=0, description="该类型当前剩余额度")
+
+
 # 别名：用于 API 响应中的用户信息
 UserRead = UserPublicResponse
+
+# 手机号绑定相关
+class PhoneSendCodeRequest(BaseModel):
+    """手机号验证码发送请求。"""
+    phone: str = Field(..., min_length=11, max_length=11, pattern=r"^1[3-9]\d{9}$", description="11位手机号")
+
+
+class PhoneBindRequest(BaseModel):
+    """手机号绑定请求（校验验证码后写入）。"""
+    phone: str = Field(..., min_length=11, max_length=11, pattern=r"^1[3-9]\d{9}$", description="11位手机号")
+    code: str = Field(..., min_length=6, max_length=6, pattern=r"^\d{6}$", description="6位数字验证码")

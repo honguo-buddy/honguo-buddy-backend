@@ -4,7 +4,7 @@ import pytest
 from httpx import AsyncClient
 
 from app.api import get_current_user
-from app.models import Attachment, AttachmentTargetType, Post, Category, PostStatus, Direction, UrgencyLevel, Comment, TargetType
+from app.models import Attachment, AttachmentTargetType, Post, Category, PostStatus, Direction, UrgencyLevel, Comment, TargetType, User, UserBlacklist
 from app.core import settings
 from tests.helpers import assert_api_error
 
@@ -84,6 +84,65 @@ async def test_create_comment_with_invalid_target_type_returns_error(
     assert resp.status_code == 200
     message = assert_api_error(resp.json(), code=settings.REQ_ERROR_CODE)
     assert "无效的目标类型" in message["msg"]
+
+
+@pytest.mark.asyncio
+async def test_create_comment_rejects_blacklisted_user(
+    client: AsyncClient,
+    db_session,
+    test_user,
+    test_user_token,
+    fake_redis,
+):
+    """被发布者拉黑的用户不能对该发布者的帖子发表评论。"""
+    await fake_redis.set(f"token:{test_user_token}", str(test_user.user_id))
+    await fake_redis.set(f"user_token:{test_user.user_id}", test_user_token)
+
+    blocker = User(
+        user_id=90201,
+        user_uuid=b"comment-blocker",
+        user_name="comment_blocker",
+        sex="未知",
+        is_active=True,
+        is_deleted=False,
+        is_admin=False,
+        wechat_openid="comment_blocker_openid",
+    )
+    category = Category(category_id=90202, name="评论拉黑分类", config_json={})
+    db_session.add_all([blocker, category])
+    await db_session.flush()
+
+    post = Post(
+        post_id=90203,
+        publisher_id=blocker.user_id,
+        category_id=category.category_id,
+        title="拉黑评论测试帖子",
+        description="用于验证拉黑后不能评论",
+        price=1,
+        template_data={"max_accepters": 1},
+        direction=Direction.SELL,
+        urgency=UrgencyLevel.NORMAL,
+        status=PostStatus.OPEN,
+    )
+    blacklist_entry = UserBlacklist(user_id=blocker.user_id, target_id=test_user.user_id)
+    db_session.add_all([post, blacklist_entry])
+    await db_session.flush()
+
+    resp = await client.post(
+        "/comments",
+        json={
+            "target_type": "POST",
+            "target_id": post.post_id,
+            "parent_id": None,
+            "content": "被拉黑后尝试评论",
+        },
+        headers={"Authorization": f"Bearer {test_user_token}"},
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["code"] == settings.REQ_ERROR_CODE
+    assert "拉黑" in body["message"]["msg"]
 
 
 @pytest.mark.asyncio
@@ -537,3 +596,74 @@ async def test_delete_comment_rejects_unrelated_user(
     assert resp.status_code == 200
     message = assert_api_error(resp.json(), code=settings.INSUFFICIENT_AUTHORITY_CODE)
     assert "无权删除他人评论" in message["msg"]
+
+
+# ========== 黑名单评论过滤集成测试 ==========
+
+@pytest.mark.asyncio
+async def test_blocking_hides_comments_from_list(
+    client: AsyncClient,
+    test_user,
+    test_user_token,
+    fake_redis,
+    db_session,
+):
+    """拉黑后，被拉黑者的评论不出现在评论列表中"""
+    from app.models import (
+        Category, Comment, Direction, Post, PostStatus, SexEnum,
+        TargetType, UrgencyLevel, User, UserBlacklist, UserType,
+    )
+
+    # 创建被拉黑用户
+    blocked_user = User(
+        user_id=5001, user_uuid=b"blockedcmt000001", user_name="blocked_commenter",
+        sex=SexEnum.UNKNOWN, user_type=UserType.USER,
+        is_active=True, is_deleted=False, credit_score=100,
+        wechat_openid="blocked_cmt_openid_5001",
+    )
+    db_session.add(blocked_user)
+    await db_session.flush()
+
+    # test_user(1001) 拉黑 blocked_user(5001)
+    entry = UserBlacklist(user_id=test_user.user_id, target_id=blocked_user.user_id)
+    db_session.add(entry)
+    await db_session.flush()
+
+    # 创建分类和帖子
+    cat = Category(category_id=1, name="test_cat", config_json={})
+    db_session.add(cat)
+    await db_session.flush()
+
+    post = Post(
+        post_id=8001, publisher_id=test_user.user_id, category_id=cat.category_id,
+        title="test post for comments", direction=Direction.SELL,
+        urgency=UrgencyLevel.NORMAL, status=PostStatus.OPEN,
+        template_data={"max_accepters": 1},
+    )
+    db_session.add(post)
+    await db_session.flush()
+
+    # 被拉黑用户在帖子下发表评论
+    comment = Comment(
+        user_id=blocked_user.user_id,
+        target_type=TargetType.POST,
+        target_id=post.post_id,
+        parent_id=None,
+        content="被拉黑者的评论",
+    )
+    db_session.add(comment)
+    await db_session.flush()
+
+    await fake_redis.set(f"token:{test_user_token}", str(test_user.user_id))
+    await fake_redis.set(f"user_token:{test_user.user_id}", test_user_token)
+
+    resp = await client.get(
+        f"/comments/POST/{post.post_id}?page=1&page_size=20",
+        headers={"Authorization": f"Bearer {test_user_token}"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["code"] == 0
+    comment_ids = [c["comment_id"] for c in body["message"]["items"]]
+    assert comment.comment_id not in comment_ids
+

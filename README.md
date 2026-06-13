@@ -79,6 +79,13 @@ SMTP_USER=example@qq.com
 SMTP_PASSWORD=qq_mail_auth_code
 ```
 
+业务动态配置说明：
+
+- 订单、信用分、历史记录上限、活跃帖子上限等可调业务参数已从 `app/core/config.py` 的硬编码迁移至数据库表 `sys_config`。
+- 服务启动时会自动将默认业务配置落库并装载到内存缓存。
+- 多实例下通过 Redis 频道 `sys_config_refresh_channel` 广播刷新事件，实现热更新同步。
+- 管理员可通过 `PATCH /admin/configs/{config_key}` 在线修改这类业务参数，无需重启服务。
+
 ## 二、项目架构 (Project Structure)
 
 项目遵循职责分离，推荐按以下方式理解：
@@ -336,6 +343,335 @@ DATA_GET_FAILED: 301
 - code: 105 - Token 失效。
 - code: 301 - Redis 操作失败导致登出失败。
 
+
+#### 4.1.6 管理端发送邮箱验证码 (POST: /auth/admin/send-code)
+
+用途: 向管理员邮箱发送6位数字登录验证码（免Token鉴权开放端点）。仅对数据库中存在且 `is_admin=True` 的活跃用户发送；若邮箱不存在或非管理员，返回统一模糊错误提示以阻断管理员邮箱枚举攻击。
+
+请求头: 无。
+
+请求示例:
+
+```json
+{
+    "email": "admin@bjtu.edu.cn"
+}
+```
+
+成功响应:
+
+```json
+{
+    "code": 0,
+    "message": {
+        "detail": "验证码已发送到管理员邮箱，请在5分钟内完成登录",
+        "email_masked": "a***@bjtu.edu.cn"
+    }
+}
+```
+
+常见错误:
+
+- code: 102 - 认证失败，非系统授权管理员（模糊提示，不泄露邮箱存在性）。
+- code: 99  - 验证码请求过于频繁，请60秒后再试。
+
+---
+
+#### 4.1.7 管理端邮箱验证码登入 (POST: /auth/admin/login)
+
+用途: 通过邮箱+6位数字验证码完成管理端免密登入（免Token鉴权开放端点）。验证码一次性核销防重放攻击，校验通过后签发含 `is_admin=True` 载荷的高权限 JWT Token，返回结构对齐 `/auth/wxLogin` 规范。
+
+请求头: 无。
+
+请求示例:
+
+```json
+{
+    "email": "admin@bjtu.edu.cn",
+    "code": "482915"
+}
+```
+
+成功响应:
+
+```json
+{
+    "code": 0,
+    "message": {
+        "token": "<jwt_token>",
+        "userId": 1,
+        "user_name": "管理员",
+        "is_admin": true,
+        "isNewUser": false
+    }
+}
+```
+
+常见错误:
+
+- code: 104 - 验证码错误或已过期。
+- code: 104 - 验证码输入错误。
+- code: 102 - 认证失败，非系统授权管理员（二次验证 is_admin 失败）。
+
+---
+
+
+#### 4.1.8 提交意见反馈 (POST: /auth/feedback)
+
+用途: 收集用户对系统的反馈建议（支持匿名提交）。登录用户自动关联 user_id，未登录以匿名方式落库。content 最少10字，feedback_type 可选 BUG / FEATURE / OTHER。
+
+请求头: Authorization: Bearer <token>（可选，未登录也可提交）。
+
+请求示例:
+
+```json
+{
+    "content": "搜索功能在输入中文时偶尔出现乱码，建议排查编码问题",
+    "feedback_type": "BUG",
+    "contact_info": "wechat: user123"
+}
+```
+
+成功响应:
+
+```json
+{
+    "code": 0,
+    "message": {
+        "detail": "感谢您的反馈，我们会尽快处理"
+    }
+}
+```
+
+常见错误:
+
+- code: 99  - content 少于10字或请求体格式不合法。
+
+---
+
+### 4.1A ADMIN-CONFIG 管理端动态配置模块
+
+#### 4.1A.1 获取全部业务动态配置 (GET: /admin/configs)
+
+用途: 仅管理员可查看当前全部可热更新业务配置字段及其当前值。
+
+请求头: Authorization: Bearer <token>。
+
+说明：
+- 仅返回已经纳入动态配置中心的业务项。
+- 若某个默认业务配置尚未被写入 `sys_config` 表，接口仍会按系统默认值返回，避免后台管理页出现字段缺失。
+
+请求示例:
+
+```json
+{}
+```
+
+成功响应:
+
+```json
+{
+    "code": 0,
+    "message": [
+        {
+            "config_key": "HISTORY_MAX_SIZE",
+            "config_value": "100",
+            "config_type": "int",
+            "description": "历史记录最大条数"
+        },
+        {
+            "config_key": "MAX_OPEN_BUY_POSTS_PER_USER",
+            "config_value": "18",
+            "config_type": "int",
+            "description": "用户同时开启的委托帖子上限"
+        },
+        {
+            "config_key": "MAX_OPEN_SELL_POSTS_PER_USER",
+            "config_value": "18",
+            "config_type": "int",
+            "description": "用户同时开启的服务帖子上限"
+        },
+        {
+            "config_key": "MAX_OPEN_GOODS_PER_USER",
+            "config_value": "18",
+            "config_type": "int",
+            "description": "用户同时开启的二手商品上限"
+        }
+    ]
+}
+```
+
+常见错误:
+
+- code: 102 - 非管理员无权查看。
+
+---
+
+#### 4.1A.2 获取单个业务配置详情 (GET: /admin/configs/{config_key})
+
+用途: 仅管理员可按配置键查询单个业务动态配置的当前值、类型与说明。
+
+请求头: Authorization: Bearer <token>。
+
+请求示例:
+
+```json
+{}
+```
+
+成功响应:
+
+```json
+{
+    "code": 0,
+    "message": {
+        "config_key": "MAX_OPEN_BUY_POSTS_PER_USER",
+        "config_value": "18",
+        "config_type": "int",
+        "description": "用户同时开启的委托帖子上限"
+    }
+}
+```
+
+常见错误:
+
+- code: 102 - 非管理员无权查看。
+- code: 99 - 配置项不存在或不允许热更新。
+
+---
+
+#### 4.1A.3 热更新业务配置 (PATCH: /admin/configs/{config_key})
+
+用途: 仅管理员可在线修改业务动态配置，并立即广播到 Redis 触发所有实例刷新内存缓存。
+
+请求头: Authorization: Bearer <token>。
+
+说明：
+- 仅允许修改已经纳入动态配置中心的业务项。
+- 当前支持的配置键包括：
+  - `USER_INITIAL_CREDIT_SCORE`
+  - `ORDER_COMPLETE_CREDIT`
+  - `ORDER_AUTO_CONFIRM_HOURS`
+  - `ORDER_ACCEPT_COOLDOWN_SECONDS`
+  - `ORDER_ACCEPT_CANCEL_DAILY_LIMIT`
+  - `REVIEW_DOUBLE_BLIND_DAYS`
+  - `HISTORY_TTL_SECONDS`
+  - `HISTORY_MAX_SIZE`
+  - `MAX_OPEN_BUY_POSTS_PER_USER`
+  - `MAX_OPEN_SELL_POSTS_PER_USER`
+  - `MAX_OPEN_GOODS_PER_USER`
+  - `LIGHTNING_CANCEL_LIMIT_SECONDS`
+  - `LIGHTNING_CANCEL_DAILY_LIMIT`
+
+请求示例:
+
+```json
+{
+    "config_value": "18"
+}
+```
+
+成功响应:
+
+```json
+{
+    "code": 0,
+    "message": {
+    "config_key": "MAX_OPEN_BUY_POSTS_PER_USER",
+    "config_value": "18",
+    "config_type": "int",
+    "description": "用户同时开启的委托帖子上限"
+    }
+}
+```
+
+常见错误:
+
+- code: 102 - 非管理员无权操作。
+- code: 99 - 配置项不存在，或配置值与配置类型不匹配。
+
+---
+
+### 4.1B SEARCH 全局搜索模块
+
+#### 4.1B.1 全局聚合搜索 (GET: /search/global)
+
+用途: 聚合搜索委托、服务与商品，支持分类 Tab、多维指标排序、时间范围过滤。公开端点可不登录访问；若携带 Bearer Token，后端会自动排除双方黑名单相关内容。
+
+请求头: Authorization: Bearer <token>（可选）。
+
+说明：
+- `keyword` 可选；为空字符串、全空格或完全不传时，接口进入大厅兜底模式，不追加任何模糊搜索条件，只按 `tab`、`sort_by`、`time_range`、分页返回内容。
+- `keyword` 非空时，后端会先按空白符切分为多个词根；所有词根都必须命中，但每个词根可在标题、描述或 `template_data` JSON 内部 Value 中任一命中。
+- JSON 搜索使用数据库 `json_search(json_doc, 'one', pattern)` 对 Value 做滑动匹配，不会因为 JSON Key 包含关键词而误命中。
+- `tab` 可选：`ALL`、`BUY_POST`、`SELL_POST`、`GOODS`，默认 `ALL`。
+- `sort_by` 可选：`DEFAULT`、`FAVORITE`、`COMMENT`、`VIEW`，默认 `DEFAULT`。
+- `time_range` 可选：`ALL`、`1D`、`7D`、`180D`，默认 `ALL`。
+- `page` 默认 `1`，`page_size` 默认 `20`，最大 `100`。
+
+请求示例:
+
+```json
+{
+    "keyword": "北门 近邻宝",
+    "tab": "ALL",
+    "sort_by": "VIEW",
+    "time_range": "7D",
+    "page": 1,
+    "page_size": 20
+}
+```
+
+成功响应:
+
+```json
+{
+    "code": 0,
+    "message": {
+        "total": 2,
+        "page": 1,
+        "page_size": 20,
+        "list": [
+            {
+                "id": 1001,
+                "item_type": "BUY_POST",
+                "title": "求代取快递",
+                "description": "北门近邻宝取件",
+                "price": 5.0,
+                "status": "OPEN",
+                "create_time": "2026-06-11T12:00:00",
+                "template_data": {
+                    "pickup_address": "北门近邻宝",
+                    "pieces": "2"
+                },
+                "hit_tips": "在【取件地址】中匹配到: 北门近邻宝",
+                "view_count": 120,
+                "favorite_count": 8,
+                "comment_count": 3,
+                "publisher": {
+                    "user_id": 2001,
+                    "user_uuid": "6f7d2f9c-4f5f-4de5-a2b2-6f8d6e4ce100",
+                    "user_name": "校园用户",
+                    "avatar": "/static/avatar/user_2001.webp",
+                    "sex": "未知",
+                    "bio": null,
+                    "credit_score": 100,
+                    "is_verified": true,
+                    "user_type": "user"
+                }
+            }
+        ]
+    }
+}
+```
+
+常见错误:
+
+- code: 99 - 请求参数校验失败，例如分页参数越界、枚举值非法。
+- code: 301 - 全局搜索失败。
+
+---
+
 ### 4.2 USER 用户模块
 
 #### 4.2.1 获取当前用户信息 (GET: /users/info)
@@ -394,6 +730,7 @@ DATA_GET_FAILED: 301
         "avatar": "/static/avatar/avatar_1001_1680000000.png",
         "avatar_id": 123,
         "sex": "男",
+        "bio": "个人简介",
         "email": "test@example.com",
         "phonenumber": "13800000000",
         "user_type": "user",
@@ -422,7 +759,7 @@ DATA_GET_FAILED: 301
 
 说明：
 - 请求体字段均为可选，用户可只提交部分字段进行局部更新。
-- `user_name`、`avatar_id`、`sex` 都是可选字段。
+- `user_name`、`avatar_id`、`bio`、`sex` 都是可选字段。
 
 请求头: Authorization: Bearer <token>。
 
@@ -432,9 +769,9 @@ DATA_GET_FAILED: 301
 {
     "user_name": "新昵称",
     "avatar_id": 123,
+    "bio": "我的个人简介",
     "sex": "女"
 }
-```
 
 成功响应:
 
@@ -447,6 +784,7 @@ DATA_GET_FAILED: 301
         "user_name": "新昵称",
         "avatar": "/static/avatar/avatar_1001_1680000000.png",
         "avatar_id": 123,
+        "bio": "我的个人简介",
         "sex": "女",
         "email": "test@example.com",
         "phonenumber": "13800000000",
@@ -459,7 +797,6 @@ DATA_GET_FAILED: 301
         "last_login_time": 1700000000,
         "wechat_unionid": null
     }
-}
 ```
 
 常见错误:
@@ -498,6 +835,7 @@ DATA_GET_FAILED: 301
         "user_name": "公开用户",
         "avatar": "/static/avatar/avatar_1002_1680000000.png",
         "sex": "女",
+        "bio": "这个人很神秘，但留下了一句简介",
         "credit_score": 50,
         "is_verified": true,
         "user_type": "user"
@@ -1039,11 +1377,432 @@ DATA_GET_FAILED: 301
 
 - code: 103 - 用户不存在。
 
+
+#### 4.2.17 发送手机号绑定验证码 (POST: /users/me/phone/send-code)
+
+用途: 向指定手机号发送6位数字短信验证码，用于后续绑定手机号。内置60秒防刷节流，验证码5分钟有效。
+
+请求头: Authorization: Bearer <token>（必须登录）。
+
+请求示例:
+
+```json
+{
+    "phone": "13800138000"
+}
+```
+
+成功响应:
+
+```json
+{
+    "code": 0,
+    "message": {
+        "detail": "验证码已发送"
+    }
+}
+```
+
+常见错误:
+
+- code: 99  - 手机号格式不合法或发送过于频繁。
+- code: 106 - 短信服务未配置或发送失败。
+
+---
+
+#### 4.2.18 校验验证码并绑定手机号 (POST: /users/me/phone/bind)
+
+用途: 校验短信验证码，通过后将手机号写入当前用户的 phonenumber 字段。
+
+请求头: Authorization: Bearer <token>（必须登录）。
+
+请求示例:
+
+```json
+{
+    "phone": "13800138000",
+    "code": "482915"
+}
+```
+
+成功响应:
+
+```json
+{
+    "code": 0,
+    "message": {
+        "detail": "手机号绑定成功",
+        "phone": "13800138000"
+    }
+}
+```
+
+常见错误:
+
+- code: 106 - 验证码错误、过期或尝试次数过多。
+- code: 103 - 用户不存在。
+
+---
+
+#### 4.2.19 获取我的联系方式列表 (GET: /users/me/contacts)
+
+用途: 拉取当前用户配置的所有联系方式（手机号/微信/QQ）。
+
+请求头: Authorization: Bearer <token>（必须登录）。
+
+请求示例:
+
+```
+GET /users/me/contacts
+```
+
+（无需请求体）
+
+成功响应:
+
+```json
+{
+    "code": 0,
+    "message": {
+        "list": [
+            {
+                "contact_id": 1,
+                "user_id": 4,
+                "contact_type": "WECHAT",
+                "contact_value": "wxid_abc123",
+                "is_public": true
+            }
+        ]
+    }
+}
+```
+
+---
+
+#### 4.2.20 新增或覆盖联系方式 (POST: /users/me/contacts)
+
+用途: 追加或覆盖某种联系方式。同一类型（PHONE/WECHAT/QQ）只能有一条记录，重复提交自动覆盖旧值。
+
+请求头: Authorization: Bearer <token>（必须登录）。
+
+请求示例:
+
+```json
+{
+    "contact_type": "WECHAT",
+    "contact_value": "wxid_abc123",
+    "is_public": true
+}
+```
+
+成功响应:
+
+```json
+{
+    "code": 0,
+    "message": {
+        "contact_id": 1,
+        "user_id": 4,
+        "contact_type": "WECHAT",
+        "contact_value": "wxid_abc123",
+        "is_public": true
+    }
+}
+```
+
+常见错误:
+
+- code: 99  - contact_type 或 contact_value 为空。
+
+---
+
+#### 4.2.21 删除联系方式 (DELETE: /users/me/contacts/{contact_id})
+
+用途: 定点删除某个联系方式渠道。仅允许删除本人条目。
+
+请求头: Authorization: Bearer <token>（必须登录）。
+
+请求示例:
+
+```
+DELETE /users/me/contacts/1
+```
+
+（无需请求体）
+
+成功响应:
+
+```json
+{
+    "code": 0,
+    "message": {
+        "detail": "联系方式已删除"
+    }
+}
+```
+
+常见错误:
+
+- code: 106 - 联系方式不存在或无权操作。
+
+---
+
+#### 4.2.22 拉黑用户 (POST: /users/me/blacklist)
+
+用途: 将目标用户加入黑名单。不能拉黑自己，重复拉黑返回错误。
+
+请求头: Authorization: Bearer <token>（必须登录）。
+
+请求示例:
+
+```json
+{
+    "target_id": 5
+}
+```
+
+成功响应:
+
+```json
+{
+    "code": 0,
+    "message": {
+        "detail": "已拉黑",
+        "target_id": 5
+    }
+}
+```
+
+常见错误:
+
+- code: 99  - 不能拉黑自己或已在黑名单中。
+- code: 103 - 目标用户不存在。
+
+---
+
+#### 4.2.23 解除拉黑 (DELETE: /users/me/blacklist/{target_id})
+
+用途: 将指定用户移出黑名单。
+
+请求头: Authorization: Bearer <token>（必须登录）。
+
+请求示例:
+
+```
+DELETE /users/me/blacklist/5
+```
+
+（无需请求体）
+
+成功响应:
+
+```json
+{
+    "code": 0,
+    "message": {
+        "detail": "已解除拉黑",
+        "target_id": 5
+    }
+}
+```
+
+常见错误:
+
+- code: 106 - 该用户不在黑名单中。
+
+---
+
+#### 4.2.24 获取黑名单列表 (GET: /users/me/blacklist)
+
+用途: 分页拉取当前用户的黑名单列表，内含被拉黑用户的 user_name 与头像。
+
+请求头: Authorization: Bearer <token>（必须登录）。
+
+请求示例:
+
+```
+GET /users/me/blacklist?page=1&page_size=20
+```
+
+（无需请求体）
+
+成功响应:
+
+```json
+{
+    "code": 0,
+    "message": {
+        "total": 1,
+        "page": 1,
+        "page_size": 20,
+        "list": [
+            {
+                "blacklist_id": 1,
+                "target_id": 5,
+                "target_name": "李四",
+                "target_avatar": "/static/avatar/user_5.png",
+                "create_time": "2026-06-08T12:00:00"
+            }
+        ]
+    }
+}
+```
+
+---
+
+#### 4.2.25 黑名单生效范围
+
+当用户 A 拉黑用户 B 后，全平台生效如下约束：
+
+**[双向可见性隔离]**
+- A 无法查看 B 的个人主页（GET /users/{user_id}）、声誉画像（GET /users/{user_id}/profile）及评价列表（GET /users/{user_id}/reviews）
+- B 同样无法查看 A 的上述页面
+
+**[内容大厅过滤]**
+- A 在帖子大厅（GET /posts）和商品大厅（GET /goods）中看不到 B 发布的帖子与商品，B 也看不到 A 的
+- A 在评论列表（GET /comments/{target_type}/{target_id}、GET /comments/{comment_id}/replies）中看不到 B 的评论，B 也看不到 A 的
+
+**[私信双向阻断]**
+- A 无法向 B 发起会话（POST /chats/sessions/init），提示 code=99 "你已被对方拉黑"
+- A 无法向现有会话中的 B 发送消息（POST /chats/messages），提示 code=99 "你已被对方拉黑"
+- 双方会话列表中隐藏与拉黑对象相关的会话
+
+---
+
+#### 4.2.26 获取我的全局未读数 (GET: /users/me/unread-counts)
+
+用途: 获取当前登录用户的全局未读数聚合，包含私信未读总数、系统新申请未读数，以及两者求和后的总未读数。
+
+请求头: Authorization: Bearer <token>。
+
+请求示例:
+
+```json
+{}
+```
+
+成功响应:
+
+```json
+{
+    "code": 0,
+    "message": {
+        "chat_unread_count": 2,
+        "system_unread_count": 1,
+        "total_unread_count": 3
+    }
+}
+```
+
+说明：
+- `chat_unread_count` 按当前用户所有会话中的未读私信总数聚合计算。
+- `system_unread_count` 按当前用户作为帖子发布者、且尚未在申请列表中查阅的 `PENDING` 申请数聚合计算。
+- `total_unread_count` 为上述两项之和。
+
+常见错误:
+
+- code: 105 - Token 失效或缺失。
+
+---
+
+#### 4.2.27 获取我的委托帖剩余额度 (GET: /users/me/open-quota/buy-posts)
+
+用途: 获取当前登录用户在委托帖子（`direction=BUY`）维度的可开启剩余额度。
+
+请求头: Authorization: Bearer <token>。
+
+请求示例:
+
+```json
+{}
+```
+
+成功响应:
+
+```json
+{
+    "code": 0,
+    "message": {
+        "limit": 10,
+        "used": 2,
+        "remaining": 8
+    }
+}
+```
+
+常见错误:
+
+- code: 105 - Token 失效或缺失。
+
+---
+
+#### 4.2.28 获取我的服务帖剩余额度 (GET: /users/me/open-quota/sell-posts)
+
+用途: 获取当前登录用户在服务帖子（`direction=SELL`）维度的可开启剩余额度。
+
+请求头: Authorization: Bearer <token>。
+
+请求示例:
+
+```json
+{}
+```
+
+成功响应:
+
+```json
+{
+    "code": 0,
+    "message": {
+        "limit": 10,
+        "used": 1,
+        "remaining": 9
+    }
+}
+```
+
+常见错误:
+
+- code: 105 - Token 失效或缺失。
+
+---
+
+#### 4.2.29 获取我的商品剩余额度 (GET: /users/me/open-quota/goods)
+
+用途: 获取当前登录用户在二手商品维度的可开启剩余额度。
+
+请求头: Authorization: Bearer <token>。
+
+请求示例:
+
+```json
+{}
+```
+
+成功响应:
+
+```json
+{
+    "code": 0,
+    "message": {
+        "limit": 10,
+        "used": 3,
+        "remaining": 7
+    }
+}
+```
+
+常见错误:
+
+- code: 105 - Token 失效或缺失。
+
+---
+
 ### 4.3 附件上传模块
 
 #### 4.3.1 上传附件 (POST: /attachments/upload)
 
-用途: 上传图片附件并返回附件 ID 与可访问 URL。若 `target_type=USER`，系统会自动回填该附件到对应用户的 `avatar_id`。
+用途: 上传图片附件并返回附件 ID 与可访问 URL。若 `target_type=USER`，系统会自动回填该附件到对应用户的 `avatar_id`。所有上传图片都会在落盘前按目标类型压缩、缩放并统一转换为 `.webp`。
 
 请求头: Authorization: Bearer <token>。
 
@@ -1052,6 +1811,11 @@ DATA_GET_FAILED: 301
 - `file`：文件字段。
 - `target_type`：可选，上传附件类型。
 - `target_id`：可选，关联目标 ID。
+- 单文件大小上限由后端统一配置控制，当前默认不超过 `10MB`；原图会先进入后端压缩流程，再统一转为 `.webp` 落盘。
+- 图像处理规则：
+- `USER`：居中裁剪为 `200x200`，压缩质量 `80`
+- `POST` / `GOODS`：最大宽度压到 `1080px`，等比缩放，压缩质量 `75`
+- `COMMENT` / `CHAT` / 其他：最大宽度压到 `800px`，等比缩放，压缩质量 `70`
 
 请求示例（multipart/form-data）:
 
@@ -1070,7 +1834,7 @@ DATA_GET_FAILED: 301
     "code": 0,
     "message": {
         "id": 123,
-        "url": "/static/avatar/avatar_123.png"
+        "url": "/static/avatar/user_1001_123456789.webp"
     }
 }
 ```
@@ -1078,7 +1842,7 @@ DATA_GET_FAILED: 301
 常见错误:
 
 - code: 105 - Token 失效或缺失。
-- code: 99 - 上传文件格式不合法或请求体缺失。
+- code: 99 - 上传文件不是受支持的图片，或请求体缺失。
 - code: 301 - 文件保存失败或数据库写入失败。
 
 ### 4.4 Category 模板分类模块
@@ -1098,6 +1862,7 @@ DATA_GET_FAILED: 301
 {
     "name": "二手电子",
     "item_type": "GOODS",
+    "direction": "SELL",
     "icon": "/static/category/electronics.png",
     "config_json": {
         "fields": [
@@ -1112,6 +1877,7 @@ DATA_GET_FAILED: 301
 
 - `icon` 可选，可不传。
 - `item_type` 必填或有默认（`POST`），可选值：`POST` 或 `GOODS`。
+- `direction` 可选，默认 `SELL`。`item_type=GOODS` 时强制 `SELL`，传 `BUY` 会报错。`item_type=POST` 时可选择 `SELL` 或 `BUY`。
 - `config_json` 必填，且不能为空对象。
 
 成功响应:
@@ -1124,6 +1890,7 @@ DATA_GET_FAILED: 301
         "name": "二手电子",
         "icon": "/static/category/electronics.png",
         "item_type": "GOODS",
+        "direction": "SELL",
         "config_json": {"fields": [{"key": "brand", "label": "品牌", "type": "string", "required": true}, {"key": "condition", "label": "成色", "type": "select", "required": true}]},
         "create_time": "2025-09-01T12:00:00",
         "update_time": "2025-09-01T12:00:00"
@@ -1142,6 +1909,7 @@ DATA_GET_FAILED: 301
 查询参数：
 
 - `type`（可选）：按业务类型过滤，取值 `POST` 或 `GOODS`，示例：`GET /categories?type=POST`。
+- `direction`（可选）：按交易方向过滤，取值 `SELL` 或 `BUY`，示例：`GET /categories?direction=BUY`。
 
 用途：获取模板分类列表，供前端展示分类选择。
 
@@ -1164,6 +1932,7 @@ DATA_GET_FAILED: 301
             "name": "代跑服务",
             "icon": "/static/category/run.png",
             "item_type": "POST",
+            "direction": "BUY",
             "config_json": {"fields": []},
             "create_time": "2025-09-01T12:00:00",
             "update_time": "2025-09-01T12:00:00"
@@ -1280,6 +2049,8 @@ DATA_GET_FAILED: 301
 - `title` 为必填字段。
 - `description`、`price`、`category_id`、`template_filters`、`attachment_ids` 均为可选字段。
 - `direction` 默认为 `SELL`，`urgency` 默认为 `NORMAL`，`max_accepters` 默认为 `1`。
+- `expire_time` 可选，截止时间。支持格式: `"HH:MM"` / `"HH:MM:SS"` (默认今天)、`"YYYY-MM-DD HH:MM:SS"`、`"YYYY-MM-DD"`、`"YYYY/MM/DD HH:MM:SS"` 等。不能早于或等于当前时间。
+- 每位用户同时最多开启 `MAX_OPEN_BUY_POSTS_PER_USER` 个活跃委托帖、`MAX_OPEN_SELL_POSTS_PER_USER` 个活跃服务帖、`MAX_OPEN_GOODS_PER_USER` 个活跃商品。上述值均已改为数据库动态配置，默认初始化为 `10`，可由管理员热更新。
 
 请求头: Authorization: Bearer <token>。
 
@@ -1295,7 +2066,8 @@ DATA_GET_FAILED: 301
     "max_accepters": 1,
     "category_id": 3,
     "template_filters": {"pickup_address": "教学楼A楼"},
-    "attachment_ids": [123]
+    "attachment_ids": [123],
+    "expire_time": "2026-06-10T18:00:00"
 }
 ```
 
@@ -1330,7 +2102,9 @@ DATA_GET_FAILED: 301
         },
         "publisher_id": 1001,
         "current_accepters": 0,
+        "applicant_count": 0,
         "create_time": "2025-09-01T12:00:00",
+        "expire_time": "2026-06-10T18:00:00",
         "attachment_urls": []
     }
 }
@@ -1339,12 +2113,14 @@ DATA_GET_FAILED: 301
 常见错误:
 
 - code: 105 - Token 失效或缺失。
-- code: 99 - 请求体校验失败。
+- code: 99  - 请求体校验失败。
+- code: 301 - 活跃委托帖或活跃服务帖已达对应上限。
+- code: 99  - 截止时间不能早于或等于当前时间。
 - code: 301 - 发布帖子失败。
 
 #### 4.5.2 获取帖子列表 (GET: /posts)
 
-用途: 获取帖子列表，支持关键词、模板/分类ID、状态、价格、时间等筛选。返回的每个卡片均携带 Redis 实时灌水计数器（iew_count、avorite_count、comment_count）。
+用途: 获取帖子列表，支持关键词、模板/分类ID、状态、价格、时间等筛选，新增 `template_segment_1`/`template_segment_2` 对 `template_data` JSON 全文模糊匹配。返回的每个卡片均携带 Redis 实时灌水计数器（iew_count、avorite_count、comment_count）。
 
 请求示例:
 
@@ -1353,6 +2129,8 @@ DATA_GET_FAILED: 301
     "keyword": "外卖",
     "category_id": 9201,
     "status": "OPEN",
+    "template_segment_1": "\"收件地址\": \"嘉园宿舍楼\"",
+    "template_segment_2": "\"取件地址\": \"北港外面\"",
     "page": 1,
     "page_size": 20
 }
@@ -1536,16 +2314,15 @@ DATA_GET_FAILED: 301
 
 #### 4.5.5 帖子详情 (GET: /posts/{post_id})
 
-用途: 获取帖子详情，包含前 N 条评论，并返回模板/分类 ID。
+用途: 获取帖子详情（主资产元数据 + 发布者简影 + 实时指标灌水）。评论列表已拆分为独立接口 `GET /comments/POST/{post_id}`，前端请并行分流调用。
 
 请求示例:
 
-```json
-{
-    "post_id": 1001,
-    "comments_limit": 5
-}
 ```
+GET /posts/1001
+```
+
+（无需请求体；不再接受 `comments_limit` 参数）
 
 成功响应:
 
@@ -1580,15 +2357,10 @@ DATA_GET_FAILED: 301
         "favorite_count": 32,
         "comment_count": 14,
         "create_time": "2025-09-01T12:00:00",
+        "expire_time": "2026-06-10T18:00:00",
         "attachment_urls": ["/static/avatar/avatar_1001_1680000000.png"],
-        "comments": [
-            {
-                "id": 2001,
-                "username": "评论者",
-                "avatar": "/static/avatar/avatar_2002.png",
-                "content": "我想要这本书",
-                "time": "2025-09-02T08:00:00"
-            }
+        "attachments": [
+            {"id": 101, "url": "/static/avatar/avatar_1001_1680000000.png"}
         ]
     }
 }
@@ -1596,7 +2368,8 @@ DATA_GET_FAILED: 301
 
 说明：
 - 已登录用户访问帖子详情时会自动将浏览记录异步写入 Redis 历史足迹（`user:history:{user_id}`），供 4.2.11 历史浏览足迹接口使用。未登录用户不会记录。
-- 返回的 `comments` 仅包含最近若干条热评，按创建时间倒序排列，由 `comments_limit` 控制条数（默认 5 条）。
+- **重要变更**：`comments` 字段已从此接口移除。评论列表请使用独立评论游标分页接口 `GET /comments/POST/{post_id}` 并行拉取，以获得更优的加载性能和分页体验。
+- `attachment_urls` 为兼容旧前端保留；`attachments` 为新字段，返回每张图的 `id + url`，前端编辑帖子时应优先使用 `attachments[].id` 回填到 `attachment_ids`。
 
 常见错误:
 
@@ -1608,6 +2381,8 @@ DATA_GET_FAILED: 301
 用途: 帖子拥有者或管理员可对帖子进行局部更新，状态为 `OPEN` 时允许修改。若当前帖子存在待处理申请单（PENDING），普通发布者禁止修改，只有管理员可以继续更新。
 
 说明：请求体字段均为可选，可只提交需要修改的字段。
+- `attachment_ids` 若传入，则按替换语义处理：先解绑当前帖子旧附件，再绑定新附件；传空数组表示清空当前帖子全部图片。
+- `attachment_ids` 的数组顺序会被持久化保存，并作为详情/后续编辑返回顺序；第 1 张即封面图。
 
 请求头: Authorization: Bearer <token>。
 
@@ -1649,7 +2424,8 @@ DATA_GET_FAILED: 301
         "publisher_id": 1001,
         "current_accepters": 0,
         "create_time": "2025-09-01T12:00:00",
-        "attachment_urls": []
+        "attachment_urls": [],
+        "attachments": []
     }
 }
 ```
@@ -1753,6 +2529,7 @@ DATA_GET_FAILED: 301
 - SELL 方向帖子为征集制（广撒网进池子），申请后直接加入沟通池；ccepted 为 alse，message 提示"已成功加入沟通池，火速去和帖主私信聊聊吧"。
 - SELL 方向的 current_accepters 永远返回 0（PENDING 不计入占坑），前端应使用 pplicant_count（大厅列表/详情）展示排队人数。
 - 若帖子处于 SUSPENDED（暂停招募）状态，后端会返回 99 并提示“楼主已暂停招募新人”。
+- 若帖子已过截止时间（expire_time <= 当前时间），即使状态仍为 OPEN，后端也会返回 99 并提示“该帖子已到期截止，无法发起新的申请”。
 - `/accept` 响应新增 `applicant_count` 字段，实时返回当前排队申请总人数供前端即时刷新。
 
 成功响应（BUY 方向）:
@@ -1793,7 +2570,7 @@ DATA_GET_FAILED: 301
 
 #### 4.5.9 查看接单申请列表 (GET: /posts/{post_id}/applications)
 
-用途: 帖子发布者查看当前帖子下的申请列表，用于同意/拒绝接单。仅帖子拥有者可访问。
+用途: 帖子发布者查看当前帖子下的申请列表，用于同意/拒绝接单。仅帖子拥有者可访问。查看成功后，后端会将该帖子下所有 `PENDING` 且 `is_seen_by_seller = 0` 的申请批量标记为已查阅，用于清空系统未读计数。
 
 请求头: Authorization: Bearer <token>。
 
@@ -1842,7 +2619,6 @@ DATA_GET_FAILED: 301
 - code: 102 - 仅帖子拥有者可查看申请列表。
 - code: 103 - 帖子不存在。
 
-
 #### 4.5.10 帖子公告栏读写 (POST/GET: /posts/{post_id}/bulletin)
 
 用途: 发帖人读写帖子置顶公告栏，公告内容寄生存储于 Post.template_data.bulletin。
@@ -1885,6 +2661,38 @@ DATA_GET_FAILED: 301
 
 - code: 102 - 非发帖人无权修改公告。
 - code: 103 - 帖子不存在。
+
+#### 4.5.10.1 获取帖子联系方式 (GET: /posts/{post_id}/contact)
+
+用途: 鉴权获取帖子发布者的联系方式（phone / wx / qq）。仅帖子发布者本人或已申请该帖子的用户可查看。
+
+请求头: Authorization: Bearer <token>。
+
+请求示例:
+
+```
+GET /posts/1001/contact
+```
+
+成功响应:
+
+```json
+{
+    "code": 0,
+    "message": {
+        "phone": "13800138000",
+        "wx": "wxid_test",
+        "qq": "12345678"
+    }
+}
+```
+
+常见错误:
+
+- code: 103 - 帖子不存在或已删除。
+- code: 301 - 您需要先申请该委托，才能查看车主的联系方式。
+
+---
 
 #### 4.5.11 暂停/恢复招募 (POST: /posts/{post_id}/suspend 与 POST: /posts/{post_id}/resume)
 
@@ -2354,7 +3162,8 @@ JSON
     "target_id": 1001,
     "parent_id": null,          
     "content": "这是一个评论内容",
-    "attachment_ids": [123]
+    "attachment_ids": [123],
+    "expire_time": "2026-06-10T18:00:00"
 }
 ```
 
@@ -2740,6 +3549,7 @@ LIMIT :size
 - `condition`: 必填，成色等级：`"全新"` / `"准新/99新"` / `"常用/无明显瑕疵"` / `"陈旧/明显瑕疵"`
 - `template_data`: 可选，由分类驱动的扩展字段
 - `attachment_ids`: 可选，已上传的附件 ID 列表
+- `expire_time`: 可选，截止时间 (同帖子格式，不能早于或等于当前时间)
 
 成功响应：
 
@@ -2754,7 +3564,11 @@ LIMIT :size
         "condition": "准新/99新",
         "status": "上架中",
         "create_time": "2026-05-30T12:00:00",
+        "expire_time": "2026-06-15T18:00:00",
         "attachment_urls": ["/static/attachments/img-10.jpg"],
+        "attachments": [
+            {"id": 201, "url": "/static/attachments/img-10.jpg"}
+        ],
         "publisher": {"user_id": 1001, "user_name": "张三", "avatar": "/static/avatar/av-1.jpg"},
         "view_count": 0,
         "favorite_count": 0,
@@ -2765,12 +3579,20 @@ LIMIT :size
 
 常见错误：
 
-- code: 99 - 请求参数校验失败（如缺少 category_id 或 name）。
+- code: 99 - 请求参数校验失败（如缺少 category_id 或 name）/ 截止时间不能早于或等于当前时间。
+- code: 301 - 当前发布的活跃商品已达上限。
 - code: 105 - Token 无效。
+
+说明：
+- `attachment_urls` 为兼容旧前端保留；`attachments` 为新字段，返回每张图的 `id + url`，前端编辑商品时应优先使用 `attachments[].id` 回填到 `attachment_ids`。
+- `attachments` 的返回顺序与当前商品的持久化附件顺序一致；第 1 张即封面图。
 
 #### 4.9.2 商品大厅列表 (GET: /goods)
 
 用途：分页查询商品大厅，支持关键词、分类、状态筛选。返回卡片均携带 Redis 实时灌水计数器。
+
+说明：
+- 返回项包含 `template_data`，用于透传分类驱动的扩展属性 JSON。
 
 请求头：无（公开接口，已登录用户将自动记录浏览历史脚印至 Redis 集群 `user:history:{user_id}` ZSET）
 
@@ -2781,6 +3603,8 @@ LIMIT :size
     "keyword": "MacBook",
     "category_id": 1,
     "status": "上架中",
+    "template_segment_1": "取件地址",
+    "template_segment_2": "南门",
     "page": 1,
     "page_size": 20
 }
@@ -2836,6 +3660,8 @@ LIMIT :size
 
 ```json
 {
+    "template_segment_1": "取件地址",
+    "template_segment_2": "南门",
     "page": 1,
     "page_size": 20
 }
@@ -2849,7 +3675,7 @@ LIMIT :size
 
 #### 4.9.4 商品详情 (GET: /goods/{goods_id})
 
-用途：获取单个商品完整详情，自动触发浏览计数自增（Redis），并注入实时计数器到卡片。
+用途：获取单个商品完整详情（主资产元数据 + 发布者简影 + 附件 URL + 实时指标灌水），自动触发浏览计数自增（Redis）。评论列表请使用独立接口 `GET /comments/GOODS/{goods_id}` 并行拉取。
 
 请求头：无（公开接口，已登录用户将自动记录浏览历史脚印至 Redis 集群 `user:history:{user_id}` ZSET）
 
@@ -2867,9 +3693,9 @@ LIMIT :size
         "condition": "准新/99新",
         "status": "上架中",
         "create_time": "2026-05-30T12:00:00",
+        "expire_time": "2026-06-15T18:00:00",
         "attachment_urls": ["/static/attachments/img-10.jpg"],
         "publisher": {"user_id": 1001, "user_name": "张三", "avatar": "/static/avatar/av-1.jpg"},
-        "comments": [],
         "view_count": 129,
         "favorite_count": 3,
         "comment_count": 0
@@ -2884,6 +3710,11 @@ LIMIT :size
 #### 4.9.5 更新商品 (PATCH: /goods/{goods_id})
 
 用途：局部更新商品字段（名称、价格、描述、成色、状态、附件等）。可执行上架 ⇄ 下架状态流转。仅商品发布者可操作。
+
+说明：
+- `attachment_ids` 为替换附件列表；提交后会先解绑当前商品旧附件，再绑定新附件。
+- `attachment_ids` 的数组顺序会被持久化保存，并作为详情/后续编辑返回顺序；第 1 张即封面图。
+- 成功响应包含最新的 `template_data`、`attachment_urls` 与 `attachments`。
 
 请求头：Authorization: Bearer <token>（必须登录）
 
@@ -2936,9 +3767,130 @@ LIMIT :size
 - code: 102 - 非发布者无权删除。
 - code: 103 - 商品不存在。
 
-#### 4.9.7 快捷下单购买商品 (POST: /goods/{goods_id}/buy)
+#### 4.9.6.1 获取商品联系方式 (GET: /goods/{goods_id}/contact)
 
-用途：买家一键下单购买商品。商品立即从「上架中」变更为「已下架」，同步创建 ONGOING 订单，并异步推送微信通知至卖家。
+用途: 鉴权获取商品发布者的联系方式（phone / wx / qq）。仅卖家本人或已申请该商品的用户可查看。
+
+请求头: Authorization: Bearer <token>。
+
+请求示例:
+
+```
+GET /goods/5001/contact
+```
+
+成功响应:
+
+```json
+{
+    "code": 0,
+    "message": {
+        "phone": "13800138000",
+        "wx": "wxid_test",
+        "qq": "12345678"
+    }
+}
+```
+
+常见错误:
+
+- code: 103 - 商品不存在或已删除。
+- code: 301 - 您需要先申请该商品，才能查看车主的联系方式。
+
+---
+
+#### 4.9.7 商品申请 (POST: /goods/{goods_id}/accept)
+
+用途：对商品发起申请，仅创建 PENDING 订单，不锁单；用于让买卖双方先建立联系。仅登录用户可发起。
+
+请求头：Authorization: Bearer <token>（必须登录）
+
+请求示例：
+
+```
+POST /goods/5001/accept
+```
+
+（无需请求体）
+
+成功响应：
+
+```json
+{
+    "code": 0,
+    "message": {
+        "order_id": 8001,
+        "goods_id": 5001,
+        "status": "PENDING",
+        "message": "申请已提交，快去和卖家私信沟通吧"
+    }
+}
+```
+
+常见错误：
+
+- code: 99  - 不能申请自己的商品 / 商品当前不可购买 / 商品已到期下架 / 商品已售出 / 已存在申请
+- code: 103 - 商品不存在或已删除
+- code: 105 - Token 无效
+
+---
+
+#### 4.9.7.1 查看商品申请列表 (GET: /goods/{goods_id}/applications)
+
+用途：商品发布者查看当前商品下的申请列表，用于统一查看谁对商品感兴趣。仅商品拥有者可访问。查看成功后，后端会将该商品下所有 `PENDING` 且 `is_seen_by_seller = 0` 的申请批量标记为已查阅。
+
+请求头：Authorization: Bearer <token>（必须登录，且必须为商品拥有者）
+
+请求示例：
+
+```json
+{
+  "goods_id": 5001
+}
+```
+
+成功响应：
+
+```json
+{
+  "code": 0,
+  "message": {
+    "applications": [
+      {
+        "application_id": 8001,
+        "goods_id": 5001,
+        "applicant": {
+          "user_id": 2001,
+          "user_uuid": "89c7c8cface3450ab822b658913b8054",
+          "user_name": "wyq",
+          "avatar": "/static/avatar/user_2001.webp",
+          "sex": "男",
+          "bio": "想了解一下这个商品",
+          "credit_score": 60,
+          "is_verified": true,
+          "user_type": "user",
+          "completed_order_count": 2
+        },
+        "note": null,
+        "status": "PENDING",
+        "created_at": "2026-06-17T16:00:00"
+      }
+    ]
+  }
+}
+```
+
+常见错误：
+
+- code: 102 - 仅商品拥有者可查看申请列表。
+- code: 106 - 商品不存在。
+- code: 105 - Token 无效。
+
+---
+
+#### 4.9.8 商品确认推进 (POST: /goods/{goods_id}/buy)
+
+用途：当当前用户已存在该商品的 PENDING 申请时，推进为 ONGOING，并将其他同商品的 PENDING 申请拒绝；同时将商品标记为已下架，用于后续线下联系与交付。
 
 请求头：Authorization: Bearer <token>（必须登录）
 
@@ -2958,20 +3910,20 @@ POST /goods/5001/buy
     "message": {
         "order_id": 8001,
         "goods_id": 5001,
-        "status": "进行中"
+        "status": "ONGOING"
     }
 }
 ```
 
 常见错误：
 
-- code: 99  - 不能购买自己发布的商品 / 商品当前不可购买 / 商品已售出 / 商品已被锁定
+- code: 99  - 请先申请该商品 / 商品当前不可购买 / 商品已售出 / 商品已到期下架
 - code: 103 - 商品不存在或已删除
 - code: 105 - Token 无效
 
 ---
 
-#### 4.9.8 卖家下架商品 (POST: /goods/{goods_id}/delist)
+#### 4.9.9 卖家下架商品 (POST: /goods/{goods_id}/delist)
 
 用途：卖家主动下架商品（ON_SALE → OFF_SHELF），下架后大厅不再展示。仅商品发布者可操作。
 
@@ -3006,7 +3958,7 @@ POST /goods/5001/delist
 
 ---
 
-#### 4.9.9 卖家重新上架商品 (POST: /goods/{goods_id}/relist)
+#### 4.9.10 卖家重新上架商品 (POST: /goods/{goods_id}/relist)
 
 用途：卖家将已下架商品重新上架（OFF_SHELF → ON_SALE），恢复大厅曝光。仅商品发布者可操作。
 

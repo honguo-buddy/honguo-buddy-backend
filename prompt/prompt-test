@@ -62,3 +62,4 @@ async def test_post_update_permissions_matrix(client, db_session, test_user, tes
 - 【全局注册项测试】新增 scheduler job / router / middleware 等全局注册项时，必须搜索所有依赖注册顺序或数量的测试，同步更新断言（如 captured dict → list）。
 - 【Schema 灌水字段】新增 hydrate 灌水逻辑后，必须同步检查 Pydantic Schema 是否定义了对应 counter 字段，否则 model_validate 静默丢弃灌入值导致前端永远显示 0。
 - 【Depends 注入一致性】同一模块内所有路由函数的 Redis 依赖必须统一使用 Depends(get_redis)，禁止部分用 Depends 部分用模块级 import，避免测试 monkey-patch 覆盖遗漏。
+- 【Schema-Service-Route 三层对齐】Pydantic Request Schema 新增字段后，必须同步检查：Route 是否将该字段传给 Service、Service 方法签名是否接收、Service 内部是否写入 ORM 更新字典。否则会出现 Schema 定义完毕但值被静默丢弃的假成功 Bug（参见 user.py 中 bio 字段新增后路由层和服务层均未处理，导致客户端提交 bio 后返回 code=0 但实际未写入数据库）。

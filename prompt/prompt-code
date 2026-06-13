@@ -622,6 +622,14 @@ OrderService.approve_order 和 reject_order 需要校验 post.publisher_id。
 
 四十九、 严禁在异步高频循环内部重复生灭 HTTP 客户端，必须强制复用长连接池 (HTTP Client Connection Pool Reuse)
 
+六十九、 业务动态配置不得继续停留在 config.py 常量层，必须落库并支持热更新 (Business Config Must Move from Static Settings to DB-backed Dynamic Config)
+
+【问题】虽然曾经把业务魔法数字统一收敛进 `config.py`，但诸如信用分初值、自动完结小时数、历史记录 TTL、活跃帖子上限等参数仍然需要改代码、重启服务才能生效。在多实例部署下，这类“伪配置”既不利于运营调参，也容易让不同节点出现配置漂移。
+
+【解决】1) 对纯业务参数建立 `sys_config` 表持久化存储，字段至少包含 `config_key` / `config_value` / `config_type` / `description`；2) 启动时若表为空，必须自动落入默认配置种子，再由 `DynamicConfigManager.load_all()` 一次性装载进进程内存；3) 运行期读取必须只走 `DynamicConfigManager.get()` 的内存字典，严禁在高频业务路径里现查数据库；4) 管理员修改配置后，必须先更新 MySQL，再通过 Redis 频道广播刷新信号，让所有实例重新装载本地缓存；5) 现有业务代码若已经大量使用 `settings.X`，优先提供兼容代理层，避免一次性全仓大改。
+
+【铁律】业务参数分两类：基础设施配置（数据库、Redis、AK/SK、密钥）继续留在 `.env + settings`；可运营调参的业务常数必须迁移到数据库动态配置中心。任何新增“运营可能要求在线修改”的业务参数，都不得再直接硬编码进 `config.py`。
+
 【问题】微信通知服务的 _get_access_token 与 send_subscribe_message 内部分别使用 async with httpx.AsyncClient() 创建短连接，每次调用即生即灭。高并发批量通知场景下操作系统 TCP 端口被 TIME_WAIT 填满，引发套接字耗尽假死。
 
 【解决】1) 在模块级别定义 _httpx_client: Optional[httpx.AsyncClient] 全局连接池句柄；2) 通过 _get_httpx_client() 懒初始化并全局复用；3) 所有 HTTP 调用统一走此长连接池。铁律：任何需要复用 HTTP 的服务模块，必须在模块级维护单例连接池，严禁在方法体内反复构造销毁 AsyncClient。
@@ -652,3 +660,296 @@ await db.commit()
 
 # ✅ 正确：委托 Service 层
 order = await OrderService.create_order(db, item_type="GOODS", item_id=goods_id, initiator_id=current_user.user_id)
+
+五十三、 高频大厅详情页严禁内嵌无边界衍生资产列表，必须执行多接口流式解耦 (Detail Page Must Not Embed Unbounded Sub-Asset Lists)
+
+【问题】主帖详情接口 get_post_detail 内嵌了 comments（评论列表）字段，通过 selectinload(Post.comments) 预加载 + SELECT 查询，当帖子下有大量评论时会导致 N+1 慢查询、多表联查死锁，将接口 TTFB 拖慢至秒级。
+
+【解决】1) 从 PostDetailRead Schema 中彻底移除 comments 字段；2) 从 PostService.get_post_detail 中移除 selectinload(Post.comments) 预加载；3) 从路由层卸载整个评论查询块和 comments_limit 参数；4) 前端评论树展现必须走独立的评论游标分页接口 GET /comments/{target_type}/{target_id}。铁律：主资产详情页只负责反哺主资产元数据和发布者简影，任何体积不可控、数量无边界延伸的衍生资产列表必须拆分为独立子系统路由异步平铺流式加载。
+
+五十四、 读链路生命周期内部严禁夹带同步阻塞式数据库 UPDATE 行锁写盘 (No Synchronous DB Writes in Read Path)
+
+【问题】早期浏览计数实现在 GET 详情链路上同步执行 MySQL UPDATE goods_metrics SET view_count = view_count + 1 语句，高并发撞击下行锁排队导致连接池饥饿卡死。
+
+【解决】1) 浏览计数全部切换为 Redis 纯内存 INCR/HINCRBY 命令（incr_post_view / incr_goods_view 等）；2) MetricsService 的 hydrate 系列方法采用 Read-Through 双端合流模式：Redis hit 直接回灌，cache miss 才查 MySQL 并 HSET 回填；3) MySQL 物理持久化通过后台定时批处理 _flush_metrics_job 低频批量执行。铁律：任何 GET 读链路不得同步执行带行级排他锁的数据库物理写盘更新，高频写指标必须全面切换为 Redis 内存盾牌拦截。
+
+
+五十五、 模型层严禁全局 lazy="selectin"，服务层按需动态预加载（Lean Models + Eager Loading on Demand）
+
+【问题】在 User、Post、Goods、Order 等模型的关系定义上全局设置 lazy="selectin"，导致一次简单的主帖详情查询触发了 22+ 条 SQL 的 selectin 级联核爆（User → Post → Order → Review → Comment 全链条），单接口 TTFB 从 200ms 膨胀至 14 秒。详情页加载 publisher 时，13 个 User 关系全部触发批量 SELECT，然后 Post.orders、Post.comments、Order.reviews 等逐层级联，一发不可收拾。
+
+【解决】1) 模型层保持"冷酷"——所有 relationship() 不得携带 lazy="selectin" 或 lazy="eager" 等全局预加载属性，恢复默认懒加载（lazy="select"）；2) 服务层"按需加载"——在具体的 Service 查询方法中，根据该接口实际需要访问的关系链，通过 .options(selectinload(Post.user)) 或 .options(joinedload(Post.user)) 动态显式附加预加载；3) 加载范围严格收束——仅加载 Schema 序列化所需的直接关系（如 user、attachments），禁止连带加载无关关系链；4) 高流量鉴权依赖（get_current_user / get_current_user_optional）从 Redis 缓存命中时直接返回 SimpleNamespace，绕开 ORM，若 cache miss 回退 MySQL 也必须保持无预加载。
+
+【铁律】模型定义文件（app/models/*.py）中所有 relationship() 禁止使用 lazy="selectin" 或 lazy="eager"；服务层查询语句中若需要访问关联对象属性（如 post.user.user_name、goods.publisher.avatar_id），必须在该查询的 .options() 中显式声明 selectinload 或 joinedload，否则在异步上下文中将触发 MissingGreenlet 崩溃。
+
+五十六、 移除懒加载后必须全量排查所有模型文件并修复服务层级联查询 (Post-Lazy-Removal Full Audit: All Models + Service Chain Fix)
+
+【问题】仅移除 User 模型的 lazy="selectin" 但遗漏 Post、Order、Goods、UserFollow 等模型仍保留全局预加载属性时，单次 GET /posts/{id} 依然触发 20+ 条级联 SQL 爆炸（Post.orders → Order.reviews/comments → 全链拉取），hydrate_avatar 的 SQL 执行时间被数据库连接池排队卡至 4500ms，事件循环被异步 ORM 的 sync 装配逻辑卡死 3.84 秒。
+
+【解决】1) 使用 rg/Select-String 全量扫描 app/models/*.py 中所有 relationship() 的 lazy 参数，确保零遗漏；2) 移除 lazy="selectin" 后，逐一检查每个服务层查询方法中通过 .options() 显式声明所需 selectinload/joinedload 是否完整覆盖 Schema 序列化路径；3) 清理冗余预加载：如 get_post_detail 在详情 Schema（PostDetailRead）已不包含 orders 字段后，仍带着 selectinload(Post.orders) 造成无谓的全量订单拉取，必须同步移除；4) noload() 在 lazy="select" 默认模式下不再必要，但保留也不产生副作用，可按需清理。
+
+【铁律】每次模型关系定义变更后，必须运行 rg "lazy=" 确认全仓模型文件无残留；服务层查询的 .options() 必须与对应 Schema 字段保持 1:1 精确对齐，不缺（MissingGreenlet 崩溃）不溢（浪费级联查询）。
+
+
+五十七、 管理员免密邮箱验证码登入实现规范 (Admin Email OTP Login Implementation Pattern)
+
+【问题】管理端 Web 后台需要独立的免微信扫码的邮箱验证码登入通道，且必须满足：1) 模糊错误提示防管理员邮箱枚举；2) 验证码一次性核销防重放；3) 签发高权限 JWT Token；4) 邮件投递不阻塞主事件循环。
+
+【解决】1) Schema 层：AdminCodeSendRequest（email: EmailStr）、AdminLoginRequest（email: EmailStr + code: 6位数字正则约束）；2) Service 层：send_admin_login_code 校验 is_admin 后通过 BackgroundTasks.add_task 异步投递邮件，Redis 原子写入 code（TTL 300s）+ lock（TTL 60s）；verify_admin_login_code 先校验证码正确性再 delete 核销（阻断重放），二次验证 is_admin 状态后签发含 {"sub", "is_admin", "user_type"} 载荷的 JWT Token；3) 路由层：POST /auth/admin/send-code 和 POST /auth/admin/login 均为免 Token 鉴权开放端点，异常时统一抛出 AuthHTTPException/BusinessHTTPException 而非原生 HTTPException。
+
+【铁律】发送验证码时若邮箱不存在或非管理员，必须返回统一模糊错误（如 code=102 "认证失败，非系统授权管理员"），坚决阻断黑客探测真实管理员邮箱；验证码核销必须在 Token 签发前先 delete Redis key，防止单码多登重放攻击。
+
+
+
+五十八、 Schema 新增字段必须全链路贯穿：Schema → Route → Service → ORM（Full-Stack Field Sync Mandate）
+
+【问题】在 UserSelfUpdateRequest Schema 中新增了 bio 字段，User 模型也添加了 bio 列，但路由层 PATCH /users/me 调用 UserService.update_user_profile() 时未传递 bio 参数，服务层 update_user_profile() 也未声明 bio 形参且未将其写入 update_data 字典。结果：客户端发送 {"bio": "我是管理员"} 后接口返回 code=0 假成功，响应体中 "bio": null，数据库也未持久化——bio 被静默丢弃。
+
+【解决】1) Schema 层新增字段后，必须向下逐层审计：路由层是否将该字段传递给 Service，Service 方法签名是否接收该字段，Service 内部是否将其写入 ORM 更新字典；2) 倡导使用 model_dump(exclude_unset=True) 动态循环 setattr 而非硬编码字段列表——后者极易在 Schema 变更时遗漏；3) 修改后必须针对该字段单独发起一次 curl/Postman 验证，确认请求值在响应体中原样返回。
+
+【铁律】每次在 Pydantic Request Schema 中新增或删除字段后，必须立即 grep 该字段名在 routes/ 和 services/ 中的所有出现位置，确认该字段已贯穿 Route→Service→ORM 的全链路，严禁出现"Schema 定义了但服务层不处理"的静默丢弃 Bug。
+
+
+
+五十九、 发帖方向与分类方向强一致性校验：从路由层到服务层双重卡位 (Direction Consistency Enforcement: Route + Service Dual Guard)
+
+【问题】客户端创建帖子时传 category_id 指向 SELL 分类但 direction=BUY，接口成功落库未报错。排查发现两个隐患：(1) 服务层使用 select(Category).where() + scalar_one_or_none() 可能因 ORM 会话缓存返回过期数据；(2) 路由层包裹了 try/except Exception 做了二次包装，导致服务层抛出的 BusinessHTTPException 被吞并改写为通用"发布失败"提示，丧失了具体拦截语义。
+
+【解决】1) 服务层方向对账使用 await db.get(Category, category_id) 替代 select/where 查询——db.get 直接从数据库主键命中，不经过 identity map 缓存，确保拿到的是最新物理值；2) 比对前统一转字符串字面量：cat_dir_str = category_obj.direction.value if hasattr(...) else str(...)，与 post_dir_str 做纯字符串 != 比较，彻底斩断 Enum 与 String 类型错配可能性；3) 路由层不再用裸 except Exception 包裹 create_post 调用并改写异常——若服务层已抛出规范的 BusinessHTTPException（如"方向不一致"），应直接向上透传给全局异常处理器渲染，仅在真正的非预期异常时才兜底。
+
+【铁律】跨模型字段一致性校验（如 Post.direction vs Category.direction）必须：(a) 使用 await db.get() 而非 select/where 避免会话缓存污染；(b) 比较前统一转换为纯字符串字面量；(c) 校验失败抛出 BusinessHTTPException(code=301) 并由路由层无损透传，禁止路由层以宽泛的 try/except Exception 二次包装后吞没具体错误语义。
+
+
+
+六十、 Redis 缓存重建时严禁对可能为 int/datetime/None 的字段盲调类型方法 (Cache Rebuild Type Safety: Never Blindly Call Type-Specific Methods)
+
+【问题】在 GET /me 和 PATCH /me 两个路由中，用 `get_user_with_avatar_url` 返回的 dict 重建 Redis 缓存时，对 `last_login_time` 字段盲调 `.isoformat()`。但该字段在 ORM DateTime 列返回、JSON 序列化反序列化、或不同 API 调用链中可能以 `datetime`、`int`(Unix timestamp)、`None` 三种形态出现——对 int 调 `.isoformat()` 直接 AttributeError，且外层 `try/except Exception` 静默吞错，导致缓存永远写不进去，每次请求都回源 DB。
+
+【解决】对 `last_login_time` 的序列化采用防御写法：`value.isoformat() if hasattr(value, "isoformat") else value`——仅在值为 datetime 对象时才调 isoformat，int/None 原样通过。JSON 序列化时配合 `json.dumps(..., default=str)` 兜底，确保最终写入 Redis 的字符串自洽。
+
+【铁律】凡是来自 `_build_user_payload` 等工具函数返回的 dict，其值类型不可假设。对任何需要 `.isoformat()` / `.value` / `.hex()` 等类型专属方法的字段，必须先 `hasattr(obj, method_name)` 做鸭子类型守卫，不可盲调。缓存写入 block 的 except 日志必须打印异常详情 `exc_info=True`，禁止裸吞。
+
+
+SixtyOne Contact Auth Use initiator_id not buyer_id
+
+[Problem] GET /posts/{post_id}/contact checked Order.buyer_id == current_user.user_id. But the system resolves participants per direction: SELL post makes buyer_id=initiator_id, BUY post makes buyer_id=publisher_id and seller_id=initiator_id. So for BUY posts, the applicant becomes seller_id while buyer_id is the publisher, causing the contact check to always fail for BUY post applicants.
+
+[Solution] Use Order.initiator_id == current_user.user_id. The initiator_id is always the user who created the order (applied), regardless of post direction. One condition covers all scenarios.
+
+[Rule] When querying Order for multi-role authorization (buyer/seller/initiator), always cross-reference the _resolve_order_participants method to understand how SELL vs BUY direction maps roles. Never assume buyer always equals applicant.
+
+
+SixtyTwo Never leave route function body empty
+
+[Problem] GET /posts/{post_id}/contact route function had decorator and existence check but no return statement. Python implicitly returned None, which FastAPI tried to validate through ResponseModel, causing ResponseValidationError: input: None.
+
+[Solution] Every FastAPI route with response_model must explicitly return ResponseModel(...) or raise a business exception on every code path. Never let a function naturally end without a return.
+
+[Rule] After writing any route function, verify: (a) success path returns a value matching response_model, (b) all error paths raise standard exceptions, (c) no code path is left without return. Test with one curl call before committing.
+
+
+
+六十一、 联系方式鉴权查询的 Order 参与者判定：必须用 initiator_id 而非 buyer_id（Order Participant Auth: Use initiator_id to Cover Both Post Directions）
+
+【问题】GET /posts/{post_id}/contact 接口中，非楼主用户查看联系方式的权限判定用了 Order.buyer_id == current_user.user_id。但 _resolve_order_participants 的方向分流逻辑为：SELL 帖 buyer_id=initiator_id、BUY 帖 buyer_id=publisher_id 且 seller_id=initiator_id。对于 BUY 帖子，申请人成为 seller_id，buyer_id 是楼主——导致 BUY 帖申请者永远通不过 buyer_id 检查。
+
+【解决】将判权条件从 Order.buyer_id 改为 Order.initiator_id == current_user.user_id。initiator_id 恒等于发起申请的用户 ID，不受帖子 SELL/BUY 方向影响，一条条件覆盖全部场景。
+
+【铁律】涉及 Order 表的多角色判权（buyer/seller/initiator）时，必须先对照 _resolve_order_participants 的 (SELL/BUY) 方向分流逻辑，确认当前业务场景下目标用户落在哪个角色字段。严禁假设 buyer 始终是申请人——在 BUY 方向下 buyer 恰好是发帖楼主。
+
+
+六十二、 路由函数体严禁留空——隐式 None 炸穿 Pydantic ResponseModel 校验（Never Leave Route Function Body Empty）
+
+【问题】GET /posts/{post_id}/contact 路由在写完 @router 装饰器和 post 存在性校验后未补全业务逻辑就直接收束函数体。Python 隐式返回 None，FastAPI 将其塞入 ResponseModel 校验链路，触发 ResponseValidationError: Input should be a valid dictionary or object to extract fields from, input: None。
+
+【解决】任何带 response_model 的 FastAPI 路由函数，所有分支路径上必须显式 return ResponseModel(...) 或抛出规范业务异常（BusinessHTTPException / ResourceHTTPException / AuthHTTPException），严禁函数自然流尽而隐式 return None。
+
+【铁律】写完路由函数后，逐条检查：(a) 正常成功路径有 response_model 匹配的显式 return；(b) 所有异常路径抛出规范异常类；(c) 不存在无 return 的代码路径。提交前至少用 curl 对接口发一次合法请求验证 HTTP 200 且响应体可被 Pydantic 正常反序列化。
+
+
+
+SixtyThree expire_time full-stack audit: Schema exists but serializers drop it
+
+[Problem] expire_time was defined in PostCreate/GoodsCreate schemas and ORM models, service layer parsed it correctly, but all four serialization points (_build_post_read, _build_post_dict, PostDetailRead constructor, _build_goods_dict) omitted expire_time, causing it to always return null. Additionally, goods_service still had except Exception: pass silently swallowing parse errors.
+
+[Solution] 1) Added expire_time to all four serializers using getattr(obj, "expire_time", None); 2) Replaced silent pass with logger.warning in goods_service; 3) Added past-time validation in both create methods: if parsed_expire <= get_now_naive(), raise "expire_time cannot be earlier than or equal to current time".
+
+[Rule] After adding any new ORM column, grep the field name across all _build_*_dict, _build_*_read, and XxxDetailRead(...) constructors in api/ to ensure count matches schema declarations. Never use bare except Exception: pass near parse/convert logic.
+
+
+
+SixtyFour User profile Redis cache must be invalidated and rebuilt on EVERY user-modifying endpoint
+
+[Problem] After fixing PATCH /users/me cache refresh, audit revealed 5 more endpoints that modify user fields (email, phone, is_deleted, last_login) but never refresh the Redis user:profile:me cache, causing stale data.
+
+[Solution] 1) Created shared _refresh_user_profile_cache(uid, db) helper in user.py that invalidates 3 keys and rebuilds from fresh DB data; 2) Applied it to: PATCH /me, POST /me/phone/bind, PUT /{user_id} (admin); 3) Added cache invalidation (delete only) to: DELETE /me, DELETE /{user_id} (admin); 4) Fixed auth.py: POST /email/verify-code (email bind) and POST /wxLogin-equivalent swagger_login (last_login update) to invalidate cache.
+
+[Rule] Any endpoint that modifies a field present in the cached user profile dict must either call _refresh_user_profile_cache or at minimum delete the 3 Redis keys (user:profile:cache:{uid}, user:profile:me:{uid}, user:profile:public:{uid}). Audit all @router.put/patch/post/delete in api/ for user-modifying side effects.
+
+
+
+SixtyFive Blacklist full-stack block: profile viewing + message sending + content filtering
+
+[Problem] Blacklist operations (add/remove) existed but had no enforcement across the platform. Blacklisted users could still view blocker profiles, send messages, and their content appeared in public lists.
+
+[Solution] Added three-tier enforcement across 11 endpoints:
+
+Tier 1 - Block profile viewing: GET /users/{user_id}, /users/{user_id}/profile, /users/{user_id}/reviews, /posts/user/{user_id} -> check if blocker (path user) blacklisted current_user, raise BusinessHTTPException(code=102)
+
+Tier 2 - Block message sending: POST /chats/sessions/init, POST /chats/messages -> check if receiver blacklisted sender, raise BusinessHTTPException(code=99)
+
+Tier 3 - Hide content in lists: GET /posts, /goods, /comments/{type}/{id}, /comments/{id}/replies, /chats/sessions -> inject exclude_publisher_ids/exclude_user_ids/exclude_peer_ids filter to exclude blacklisted users'' content
+
+Added BlacklistService.is_blocked(db, blocker_id, current_user_id) and BlacklistService.get_blocker_ids(db, current_user_id) helper methods.
+
+[Rule] After implementing a social feature like blacklist/follow/favorite, immediately audit all public-facing GET endpoints and all POST interaction endpoints to ensure the social relationship is enforced. Use get_blocker_ids for bulk filtering in list queries instead of per-item is_blocked checks.
+
+SixtySix Blacklist content filtering requires bidirectional exclusion (blocker + blocked)
+
+[Problem] The Tier-3 content filtering in list endpoints only used get_blocker_ids() (users who blocked me), but not get_blocked_target_ids() (users I blocked). This meant when user A blacklisted user B, A could still see B''s posts/goods/comments in public lists.
+
+[Solution] 1) Added BlacklistService.get_blocked_target_ids(db, current_user_id) to return target_ids where user_id == current_user_id; 2) Updated all list endpoints (posts, goods, comments root+replies, chat sessions) to merge both blocker_ids and blocked_target_ids into a single exclude list via list(set(blocker_ids + blocked_target_ids)).
+
+[Rule] When filtering content based on social relationships, always consider BOTH directions: who blocked me AND who I blocked. The exclude list must be the union of both sets. Also note that the user_blacklist table uses (user_id, target_id) as composite PK where user_id is the blocker (who initiated the block) and target_id is the blocked (who got blocked). get_blocker_ids(): SELECT user_id WHERE target_id = me (who blocked me); get_blocked_target_ids(): SELECT target_id WHERE user_id = me (who I blocked).
+
+
+
+SixtySeven Attachment image upload must validate real image bytes and normalize output format
+
+[Problem] Upload pipelines that only trust filename extensions will accept fake images, and saving original PNG/JPEG/BMP bytes directly causes oversized static files, inconsistent suffixes, and slow page loads. A second issue is that CPU-bound Pillow transforms can block the event loop if done inline inside async routes.
+
+[Solution] 1) In AttachmentService.upload, read the raw bytes first and validate with Pillow Image.open(...).load() instead of trusting the original suffix; 2) Run Pillow resize/crop/WebP encode logic inside asyncio.to_thread(...) so the async request path is not blocked by CPU work; 3) Normalize all saved image filenames and stored attachment URLs to `.webp`; 4) Keep target_type-specific transform rules centralized in helper methods so tests can verify actual output dimensions and format.
+
+[Rule] Any future image upload or avatar replacement flow must validate the binary content itself, not just the filename or content-type header. All user-facing image assets should be normalized at upload time to a single optimized format, and tests must assert the generated bytes really open as an image with the expected dimensions.
+
+
+
+SixtyEight Thread-pool image processing must keep AsyncSession and ORM assets out of worker threads
+
+[Problem] After introducing threaded Pillow processing, the highest-risk regression is accidentally letting AsyncSession, ORM entities, or request-scoped state cross into worker threads. That can produce intermittent test hangs, deadlocks, transaction pollution, and hard-to-reproduce Event Loop / DB driver crashes.
+
+[Solution] 1) Define a dedicated synchronous helper such as _sync_compress_image(image_bytes: bytes, target_type: str) -> bytes; 2) Call it from the async flow with loop.run_in_executor(...) or an equivalent executor API, passing only immutable primitive inputs; 3) Keep db.add(), db.flush(), db.commit(), and all ORM field mutation strictly on the main coroutine path after the worker returns processed bytes.
+
+[Rule] Worker-thread helpers used by FastAPI services must be pure functions whenever possible. Never pass AsyncSession, ORM model instances, Redis clients, or request objects into run_in_executor/to_thread. The worker may only do CPU-bound transforms and return plain data to the async caller.
+
+
+
+SixtyNine Async service paths must isolate synchronous network I/O and mask raw exceptions
+
+[Problem] High-risk async service methods directly called blocking SMTP and Alibaba SMS SDK functions. A single slow provider call could occupy the FastAPI event loop. At the same time, global unknown exception handling and SMS SDK except branches returned raw `str(exc)` to the frontend, leaking driver/provider internals.
+
+[Solution] 1) In `async def` service paths, wrap unavoidable synchronous network calls with `asyncio.to_thread(...)`; 2) Set provider-level hard timeouts such as SMTP `timeout=0.5` and SMS `RuntimeOptions(connect_timeout=500, read_timeout=500)`; 3) Keep full exception details only in backend logs with `exc_info=True`; 4) Return a stable, sanitized frontend message for unexpected exceptions.
+
+[Rule] Any async route or service must never call `smtplib`, synchronous third-party SDKs, `requests`, or other blocking network I/O inline. If no async client exists, isolate the exact sync call in a worker thread and pass only primitive arguments. Unknown exception responses must never contain `str(exc)`, SQL driver messages, credentials, provider stack details, or local paths.
+
+
+
+Seventy Comment and interaction writes must enforce blacklist before persistence
+
+[Problem] Blacklist filtering covered public list reads, but comment creation still only checked whether the target Post/Goods existed. A blocked user could bypass list hiding and directly post a comment against the blocker resource by calling `POST /comments`.
+
+[Solution] After loading the target entity and before `db.add()`, resolve the target owner via `publisher_id`, then run bidirectional blacklist checks: owner blocked current user and current user blocked owner. If either side exists, raise `BusinessHTTPException` and stop persistence.
+
+[Rule] Every interaction write endpoint such as comment, message, order application, purchase, follow-like actions must enforce social relationship guards after target existence validation and before database mutation. Read-side filtering is not sufficient; write-side guard clauses are mandatory.
+
+
+
+SeventyOne Bidirectional blacklist filters must pass the merged exclusion list
+
+[Problem] `/chats/sessions` correctly queried both `get_blocker_ids()` and `get_blocked_target_ids()`, but then passed only `blocker_ids` into `ChatService.list_sessions(...)`. This made sessions from users I blocked remain visible, despite the code appearing to have computed the bidirectional exclusion list.
+
+[Solution] Build `exclude_peer_ids = list(set(blocker_ids + blocked_target_ids))` and pass that exact merged list to the service call. Add integration tests for both directions: users who blocked me and users I blocked.
+
+[Rule] When code computes a security filter union, verify the final downstream call receives the union variable, not one of the source lists. Tests must cover both social relationship directions because one-way tests cannot catch wrong-variable pass-through bugs.
+
+
+
+SeventyTwo Invalid expire_time input must fail closed before persistence
+
+[Problem] Post/Goods creation parsed `expire_time` inside `try/except`, logged parse failures, then continued to `db.add()` and committed records with `expire_time=None`. Invalid client input therefore silently downgraded a time-locked item into a never-expiring item.
+
+[Solution] Keep past-time validation as `BusinessHTTPException`, and convert parse failures into `BusinessHTTPException(code=settings.REQ_ERROR_CODE, msg="截止时间格式不正确")` before any database mutation.
+
+[Rule] Time-lock fields are security/business boundary fields. Invalid time input must fail closed and stop persistence. Never log-and-continue around `expire_time` parsing in create/update flows.
+
+
+
+SeventyThree JSON template filters must avoid database-specific `.astext`
+
+[Problem] `PostService.list_posts` used `Post.template_data[key].astext.ilike(...)`, which is not available on the current MySQL SQLAlchemy expression and crashes before query execution.
+
+[Solution] For portable fuzzy matching, cast the full JSON field to `String` and apply SQLAlchemy `.like(...)` parameter binding for the key and value fragments. This matches the existing template segment filtering style and avoids database-specific JSON operators.
+
+[Rule] List-query filters that touch JSON columns must use SQLAlchemy portable expressions unless a dialect-specific branch is explicitly tested. Do not use `.astext` for MySQL-backed paths.
+
+
+
+SeventyFour Low-risk hardening must still be test-locked
+
+[Problem] Low-risk issues such as function-local imports, hard-coded CORS origins, and unclosed module-level HTTP clients do not always produce immediate business failures, but they degrade startup visibility, static analysis quality, deployment safety, and long-running resource hygiene.
+
+[Solution] 1) Move scheduler/job and route imports to file top-level through package entry points; 2) expose CORS origins as `settings.CORS_ALLOW_ORIGINS` instead of hard-coding route middleware arguments; 3) provide a service-level close method for module-level `httpx.AsyncClient` instances and call it from application shutdown; 4) add AST/source-level regression tests for these low-risk architectural rules.
+
+[Rule] Treat low-risk audit findings as enforceable architecture contracts, not optional cleanup. Any module-level long-lived client must have a shutdown close path, and any new CORS origin must be configured through settings rather than direct code edits.
+
+
+
+SeventyFive Public profile cache rebuild must use the same payload shape as the service return value
+
+[Problem] `GET /users/{user_id}` used `UserService.get_user_public_with_avatar_url()` which already returns a `dict`, but the route rebuilt `user:profile:public:{user_id}` with `getattr(user_data, ...)`. Because `dict` has no such attributes, Redis was backfilled with `user_name=None`, `avatar=None`, `sex=None`, and missing `bio`. The first DB-backed response looked partially correct, but every later cache hit returned a mostly null public profile, while admins looked normal because they bypassed the public cache path.
+
+[Solution] 1) Keep `UserService._build_user_payload(..., public=True)` aligned with `UserPublicResponse`, including `bio`; 2) when rebuilding a public profile cache from a service-returned `dict`, use `user_data.get(...)` instead of `getattr(...)`; 3) add regression tests that call `/users/{id}` twice and assert cache-hit payload equals the initial DB payload.
+
+[Rule] Before caching any service result, confirm the concrete return type of that service (`dict`, ORM entity, Pydantic model). Cache serialization code must match that exact shape. Never mix `getattr()` with a `dict` payload in read-through cache rebuild paths.
+
+
+
+SeventySix Attachment rebinding and list/read schemas must stay in sync
+
+[Problem] `GET /goods` raw dict building already carried `template_data`, but `GoodsRead` did not declare that field, so Pydantic silently dropped it from every card response. At the same time, `GoodsService.update_goods()` used a raw `update(Attachment)...values(...)` rebinding path instead of the shared `AttachmentService.bind_attachments_to_target()`, which bypassed creator/soft-delete guardrails and made image replacement behavior drift away from `Post` and other modules.
+
+[Solution] 1) Whenever a route/service assembles response dicts manually, immediately cross-check the target schema fields so dynamic payloads like `template_data` are not lost at serialization time; 2) all attachment create/update rebinding flows must reuse `AttachmentService.bind_attachments_to_target()` instead of open-coded SQL updates; 3) when an update API documents `attachment_ids` as a replacement list, explicitly unbind the old target attachments first, then call the shared bind helper for the new list.
+
+[Rule] Response payload shape, schema contract, and attachment-binding service path must be reviewed together. If one endpoint returns `attachment_urls`/`template_data`, its list schema must declare them. Any module that binds attachments must go through the shared guard-checked helper, not duplicate SQL mutation logic.
+
+SeventyEight Post and Goods attachment replacement semantics must stay identical
+
+[Problem] `Goods` update had already moved to “replace attachment_ids” semantics, but `Post` update still only appended/rebound new IDs and never unbound the old ones. This caused stale images to remain attached after edit, and `attachment_ids: []` could not clear images at all. A second drift point appeared when one module tried to null out both `target_id` and enum `target_type`, which is unsafe for a non-null enum column.
+
+[Solution] 1) Centralize detachment into `AttachmentService.unbind_attachments_from_target()`; 2) for both `PATCH /posts/{post_id}` and `PATCH /goods/{goods_id}`, treat `attachment_ids` as full replacement input: if field is present, unbind old attachments first, then bind new IDs if the list is non-empty; 3) preserve `target_type` and only clear `target_id` during unbind so the enum column contract stays valid; 4) add unit tests for both “replace with new list” and “clear with empty list” branches.
+
+[Rule] Any business entity that exposes `attachment_ids` in an update schema must explicitly define whether it is append or replace semantics. If the API returns `attachment_urls`, update behavior must be tested for three branches together: field omitted, non-empty replacement list, and empty list clearing all attachments.
+
+
+
+SeventySeven Multipart upload limits must be aligned across framework parser and business validator
+
+[Problem] `AttachmentService.upload()` enforced a 5MB file limit, but FastAPI/Starlette multipart parsing hit its own default `Request.form(max_part_size=1MB)` boundary first. Result: many image uploads failed before entering service logic, surfacing as upstream "entity too large" style errors instead of the project’s unified business response.
+
+[Solution] 1) Move upload size constants into `settings`; 2) explicitly parse `/attachments/upload` with `request.form(max_part_size=...)` using a limit that is higher than the business file-size limit, so larger originals can still enter the compression pipeline; 3) catch multipart size exceptions and convert them into the project’s unified `BusinessHTTPException`, with the user-facing size message derived from `settings.ATTACHMENT_MAX_FILE_SIZE`; 4) keep the service-layer byte-length check as the second defensive boundary.
+
+[Rule] Any file-upload endpoint must audit all size gates in order: reverse proxy, ASGI server/framework parser, and business validator. Never assume the service-layer `len(file.read())` guard is the first boundary. Multipart parser limits and business file-size limits must be configured from the same source of truth.
+
+SeventyNine Detail APIs must preserve attachment identity, not only attachment URLs
+
+[Problem] `POST /attachments/upload` already returned `{id, url}`, but `GET /posts/{post_id}` and `GET /goods/{goods_id}` later collapsed persisted attachments into plain `attachment_urls: string[]`. Once the numeric IDs were lost, the frontend could not keep only part of the old images during edit, because update APIs consume `attachment_ids`, not URLs.
+
+[Solution] 1) Keep legacy `attachment_urls` for compatibility; 2) add a parallel `attachments` field on detail/read schemas and payload builders, where each item is `{id, url}`; 3) ensure route-level response assembly reads from ORM `attachments` relation without dropping `attachment_id`; 4) add schema and detail-endpoint tests to assert both `attachment_urls` and `attachments` are returned together.
+
+[Rule] Any workflow that uploads first and edits later must preserve object identity end-to-end. If an update API consumes `*_ids`, every corresponding detail/read API must expose those IDs back to the frontend alongside display fields, otherwise partial retention and selective deletion become impossible.
+
+Eighty Attachment replacement must also persist display order
+
+[Problem] Supporting `attachment_ids` replacement is not enough when the frontend also needs “first image is cover” semantics. If the backend only rebinds attachments without storing order, later detail/PATCH responses may return the right set of images but in unstable DB order, so users cannot reliably reorder covers across repeated edits.
+
+[Solution] 1) Add a persistent `sort_order` field on `attachment`; 2) when binding `attachment_ids`, write both target linkage and the exact list order into `sort_order`; 3) when unbinding, clear both `target_id` and reset `sort_order`; 4) define `Post.attachments` / `Goods.attachments` relationships with `order_by=Attachment.sort_order.asc(), Attachment.attachment_id.asc()` so all read paths naturally return the persisted order; 5) add tests for “PATCH returns attachments in submitted order” and verify first element becomes cover.
+
+[Rule] Any attachment-edit API that claims “array order decides cover” must persist order at the database level. In-memory sorting or incidental primary-key order is not acceptable, because repeated edit/detail cycles must round-trip the same order losslessly.
+
+EightyOne Nested attachment brief schemas must enable from_attributes when route code validates ORM entities directly
+
+[Problem] `GET /goods/{goods_id}` and `PATCH /goods/{goods_id}` first called `GoodsDetailRead.model_validate(goods)` / `GoodsRead.model_validate(updated)` on ORM entities. After adding `attachments: [{id, url}]`, the nested list still pointed at ORM `Attachment` objects, but `GoodsAttachmentBriefRead` did not enable `from_attributes`, so Pydantic raised `ValidationError` on `attachments.0`. The same risk exists for any lightweight nested schema later reused on ORM validation paths.
+
+[Solution] 1) For every nested response item schema that may receive ORM instances (such as `AttachmentBriefRead`, `GoodsAttachmentBriefRead`), explicitly enable `from_attributes=True`; 2) when a route both validates an ORM object and later overwrites part of the payload manually, still make the nested schema ORM-safe to avoid transient validation crashes; 3) add integration coverage for both detail and patch responses once a nested field is introduced.
+
+[Rule] Whenever a response schema contains nested child schemas and the route/service uses `model_validate(orm_obj)`, audit every nested child for `from_attributes=True`. Do not assume the parent model’s `from_attributes` will automatically make nested ORM lists valid.

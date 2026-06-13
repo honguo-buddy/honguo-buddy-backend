@@ -14,12 +14,12 @@
 import logging
 from typing import List, Optional, Tuple
 
-from sqlalchemy import and_, select, func, or_
+from sqlalchemy import and_, cast, func, or_, select, String
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import noload, selectinload
 
-from app.core import BusinessHTTPException, ResourceHTTPException, parse_datetime_to_beijing_naive, settings
-# 🚀 核心追补导入：将 Attachment 和 User 模型一并引入
+from app.core import BusinessHTTPException, ResourceHTTPException, get_now_naive, parse_datetime_to_beijing_naive, settings
 from app.models import (
     Category, Direction, Post, PostStatus, UrgencyLevel, 
     Order, ItemType, OrderStatus, Attachment, User
@@ -34,9 +34,30 @@ class PostService:
     """任务（Post）业务服务层。"""
 
     @staticmethod
+    async def count_open_posts_by_direction(
+        db: AsyncSession,
+        publisher_id: int,
+        direction: Direction,
+    ) -> int:
+        """统计当前用户某方向仍处于可开启状态的帖子数量。"""
+
+        valid_statuses = [PostStatus.OPEN, PostStatus.IN_PROGRESS]
+        stmt = (
+            select(func.count())
+            .select_from(Post)
+            .where(
+                Post.publisher_id == publisher_id,
+                Post.direction == direction,
+                Post.status.in_(valid_statuses),
+                Post.is_deleted == False,
+            )
+        )
+        res = await db.execute(stmt)
+        return int(res.scalar_one() or 0)
+
+    @staticmethod
     async def _hydrate_posts_avatar(db: AsyncSession, posts: list) -> None:
         """委托统一头像灌水中心（AttachmentService.hydrate_owners_avatar）。"""
-        from app.services.attachment_service import AttachmentService
         await AttachmentService.hydrate_owners_avatar(db, posts)
     @staticmethod
     async def _resolve_default_category_id(db: AsyncSession) -> int:
@@ -51,6 +72,26 @@ class PostService:
         if default_category_id is None:
             raise ResourceHTTPException(code=settings.DATA_GET_FAILED_CODE, msg="暂无可用分类")
         return int(default_category_id)
+
+    @staticmethod
+    async def ensure_attachment_sort_order_column(db: AsyncSession) -> None:
+        """幂等补齐附件排序列。"""
+        try:
+            await AttachmentService.ensure_sort_order_column(db)
+            await db.commit()
+        except Exception:
+            await db.rollback()
+
+    @staticmethod
+    async def _execute_with_attachment_sort_retry(db: AsyncSession, executor):
+        """执行一次查询；若因 attachment.sort_order 缺列失败，则补齐列后重试一次。"""
+        try:
+            return await executor()
+        except OperationalError as exc:
+            if not AttachmentService._is_missing_sort_order_error(exc):
+                raise
+            await AttachmentService.ensure_sort_order_column_with_retry_boundary(db)
+            return await executor()
 
     @staticmethod
     async def _get_post_for_update(db: AsyncSession, post_id: int) -> Post:
@@ -73,11 +114,8 @@ class PostService:
         template_data = post_create.template_filters.copy() if post_create.template_filters else {}
         template_data["max_accepters"] = post_create.max_accepters
         
-        # 验证并转换 direction 和 urgency
-        try:
-            direction = Direction(post_create.direction)
-        except ValueError:
-            direction = Direction.SELL
+        # 转换 direction（Schema 层已做 uppercase 归一化，此处安全直传）
+        direction = Direction(post_create.direction)
         
         try:
             urgency = UrgencyLevel(post_create.urgency)
@@ -87,6 +125,18 @@ class PostService:
         category_id = post_create.category_id
         if category_id is None:
             category_id = await PostService._resolve_default_category_id(db)
+
+        # 方向对账：db.get 直接主键命中，回避 select/where 缓存污染
+        if category_id is not None:
+            category_obj = await db.get(Category, category_id)
+            if category_obj is None:
+                raise BusinessHTTPException(code=settings.DATA_GET_FAILED_CODE, msg="所选分类不存在")
+            # 统一转字符串字面量比对，粉碎 Enum/str 类型错配
+            cat_dir_str = category_obj.direction.value if hasattr(category_obj.direction, "value") else str(category_obj.direction)
+            post_dir_str = direction.value if hasattr(direction, "value") else str(direction)
+            if cat_dir_str != post_dir_str:
+                raise BusinessHTTPException(code=settings.DATA_GET_FAILED_CODE, msg="帖子发布方向与所述分类的配置方向不一致")
+
         
         # 创建 Post 对象
         post = Post(
@@ -100,6 +150,25 @@ class PostService:
             category_id=category_id,
             status=PostStatus.OPEN,
         )
+        # 组装联系方式 JSON
+        contact_parts = {}
+        if post_create.phone: contact_parts["phone"] = post_create.phone
+        if post_create.wx: contact_parts["wx"] = post_create.wx
+        if post_create.qq: contact_parts["qq"] = post_create.qq
+        if contact_parts:
+            post.contact = contact_parts
+        # 截止时间处理
+        if post_create.expire_time:
+            try:
+                parsed_expire = parse_datetime_to_beijing_naive(post_create.expire_time)
+                if parsed_expire <= get_now_naive():
+                    raise BusinessHTTPException(code=settings.REQ_ERROR_CODE, msg="截止时间不能早于或等于当前时间")
+                post.expire_time = parsed_expire
+            except BusinessHTTPException:
+                raise
+            except Exception as e:
+                logger.warning(f"截止时间解析失败 expire_time={post_create.expire_time!r}: {e}")
+                raise BusinessHTTPException(code=settings.REQ_ERROR_CODE, msg="截止时间格式不正确")
         db.add(post)
         await db.flush()
         await db.refresh(post)
@@ -115,7 +184,7 @@ class PostService:
                     creator_id=publisher_id,
                 )
             except Exception as e:
-                logger.warning(f"绑定附件 {attachment_ids} 到帖子 {post.post_id} 失败: {e}")
+                logger.warning(f"绑定附件 {attachment_ids} 到帖子 {post.post_id} 失败: {e}", exc_info=True)
         
         await db.commit()
         
@@ -180,8 +249,13 @@ class PostService:
 
         await db.flush()
 
-        if payload.attachment_ids:
-            try:
+        if payload.attachment_ids is not None:
+            await AttachmentService.unbind_attachments_from_target(
+                db=db,
+                target_type="POST",
+                target_id=post.post_id,
+            )
+            if payload.attachment_ids:
                 await AttachmentService.bind_attachments_to_target(
                     db=db,
                     attachment_ids=payload.attachment_ids,
@@ -189,8 +263,6 @@ class PostService:
                     target_id=post.post_id,
                     creator_id=operator_id,
                 )
-            except Exception as e:
-                logger.warning(f"绑定附件 {payload.attachment_ids} 到帖子 {post.post_id} 失败: {e}")
 
         await db.commit()
         
@@ -201,8 +273,8 @@ class PostService:
         except Exception:
             try:
                 await db.refresh(post)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("Swallowed exception in post_service: %s", e, exc_info=True)
                 
         return post
 
@@ -260,7 +332,7 @@ class PostService:
                     conditions.append(Post.status.in_(parsed_statuses))
 
         count_stmt = select(func.count()).select_from(Post).where(and_(*conditions))
-        count_res = await db.execute(count_stmt)
+        count_res = await PostService._execute_with_attachment_sort_retry(db, lambda: db.execute(count_stmt))
         total = int(count_res.scalar_one() or 0)
 
         stmt = (
@@ -271,7 +343,7 @@ class PostService:
             .offset((page - 1) * page_size)
             .limit(page_size)
         )
-        res = await db.execute(stmt)
+        res = await PostService._execute_with_attachment_sort_retry(db, lambda: db.execute(stmt))
         posts_list = list(res.scalars().all())
         
         # 为该用户下发布的帖子列表批量灌入头像相对路径
@@ -313,7 +385,7 @@ class PostService:
                 conditions.append(Post.status.in_(requested))
 
         count_stmt = select(func.count()).select_from(Post).where(and_(*conditions))
-        count_res = await db.execute(count_stmt)
+        count_res = await PostService._execute_with_attachment_sort_retry(db, lambda: db.execute(count_stmt))
         total = int(count_res.scalar_one() or 0)
 
         stmt = (
@@ -324,7 +396,7 @@ class PostService:
             .offset((page - 1) * page_size)
             .limit(page_size)
         )
-        res = await db.execute(stmt)
+        res = await PostService._execute_with_attachment_sort_retry(db, lambda: db.execute(stmt))
         posts_list = list(res.scalars().all())
         
         # 为公开用户帖子主页执行批量头像动态灌水
@@ -345,11 +417,17 @@ class PostService:
         create_time_end: Optional[str] = None,
         status: Optional[str] = None,
         template_filters: Optional[dict] = None,
+        template_segment_1: Optional[str] = None,
+        template_segment_2: Optional[str] = None,
         page: int = 1,
         page_size: int = 20,
+        exclude_publisher_ids: Optional[list[int]] = None,
     ) -> Tuple[List[Post], int]:
         """查询帖子列表，支持多条件过滤和分页。"""
         conditions = [Post.is_deleted == False]
+        # 黑名单过滤：排除拉黑了当前用户的发布者
+        if exclude_publisher_ids:
+            conditions.append(Post.publisher_id.notin_(exclude_publisher_ids))
         if category_id is not None:
             conditions.append(Post.category_id == category_id)
         
@@ -402,15 +480,20 @@ class PostService:
                 logger.warning(f"无效的 create_time_end 格式: {create_time_end}")
         
         if template_filters and isinstance(template_filters, dict):
+            template_text = cast(Post.template_data, String)
             for key, value in template_filters.items():
                 if value is not None:
-                    if isinstance(value, str):
-                        conditions.append(Post.template_data[key].astext.ilike(f"%{value}%"))
-                    else:
-                        conditions.append(Post.template_data[key] == value)
+                    conditions.append(template_text.like(f'%"{key}"%'))
+                    conditions.append(template_text.like(f"%{value}%"))
+        
+        # template_data 全文字段安全模糊匹配（通过 cast + param binding 防注入）
+        if template_segment_1:
+            conditions.append(cast(Post.template_data, String).like(f"%{template_segment_1}%"))
+        if template_segment_2:
+            conditions.append(cast(Post.template_data, String).like(f"%{template_segment_2}%"))
         
         cnt_stmt = select(func.count()).select_from(Post).where(and_(*conditions))
-        cnt_res = await db.execute(cnt_stmt)
+        cnt_res = await PostService._execute_with_attachment_sort_retry(db, lambda: db.execute(cnt_stmt))
         total = int(cnt_res.scalar_one() or 0)
         
         offset = (page - 1) * page_size
@@ -428,7 +511,7 @@ class PostService:
             .offset(offset)
             .limit(page_size)
         )
-        res = await db.execute(stmt)
+        res = await PostService._execute_with_attachment_sort_retry(db, lambda: db.execute(stmt))
         posts_list = list(res.scalars().all())
         
         # 悬赏委托大厅列表，在出关一瞬间执行高性能批量数据合流灌水
@@ -438,13 +521,12 @@ class PostService:
 
     @staticmethod
     async def get_post_detail(db: AsyncSession, post_id: int) -> Post:
-        """获取帖子详情，包含发布者、附件、评论、订单关联。"""
+        """获取帖子详情，包含发布者、附件、订单关联。"""
         stmt = (
             select(Post)
             .options(
                 selectinload(Post.user),
                 selectinload(Post.attachments),
-                selectinload(Post.comments),
                 selectinload(Post.orders),
             )
             .where(
@@ -454,7 +536,7 @@ class PostService:
                 )
             )
         )
-        res = await db.execute(stmt)
+        res = await PostService._execute_with_attachment_sort_retry(db, lambda: db.execute(stmt))
         post = res.scalars().first()
         
         if not post:

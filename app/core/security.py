@@ -2,6 +2,7 @@ from passlib.context import CryptContext
 from jose import jwt, JWTError
 from datetime import timedelta
 from fastapi import Request
+import logging
 import smtplib
 from email.mime.text import MIMEText
 from email.header import Header
@@ -9,6 +10,7 @@ from app.core.datetime_utils import get_now, get_now_naive
 from app.core.config import settings
 from app.db import redis
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated=["auto"])
+logger = logging.getLogger(__name__)
 
 
 
@@ -58,12 +60,12 @@ def send_email(to_email: str, subject: str, body: str):
     msg['To'] = to_email
     msg['Subject'] = Header(subject, 'utf-8')
     try:
-        with smtplib.SMTP_SSL(settings.SMTP_SERVER, settings.SMTP_PORT) as server:
+        with smtplib.SMTP_SSL(settings.SMTP_SERVER, settings.SMTP_PORT, timeout=0.5) as server:
             server.login(settings.SMTP_USER, settings.SMTP_PASSWORD)
             server.sendmail(settings.EMAIL_FROM, [to_email], msg.as_string())
         return True
-    except Exception as e:
-        print(f"邮件发送失败: {e}")
+    except Exception:
+        logger.warning("邮件发送失败", exc_info=True)
         return False
     
 async def get_user_id_from_request(request: Request) -> int | None:

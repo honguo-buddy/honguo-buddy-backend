@@ -50,6 +50,29 @@ class _FakeRedisPipe:
                 results.append(val if val else {})
         return results
 
+
+class _FakePubSub:
+    """FakeRedis 订阅器。"""
+
+    def __init__(self, parent) -> None:
+        self._parent = parent
+        self._channels: set[str] = set()
+
+    async def subscribe(self, *channels):
+        for channel in channels:
+            self._channels.add(str(channel))
+
+    async def unsubscribe(self, *channels):
+        for channel in channels:
+            self._channels.discard(str(channel))
+
+    async def listen(self):
+        while False:
+            yield {}
+
+    async def aclose(self):
+        return None
+
 class FakeRedis:
     """测试用 Redis 替身。"""
 
@@ -196,6 +219,13 @@ class FakeRedis:
         """返回一个支持批量命令收集和批量执行的 Pipe 对象。"""
         pipe = _FakeRedisPipe(self)
         return pipe
+
+    async def publish(self, channel: str, message):
+        self._data[f"_pub:{channel}"] = str(message)
+        return 1
+
+    def pubsub(self):
+        return _FakePubSub(self)
 
     async def zremrangebyscore(self, key: str, min_val, max_val):
         zset = self._zsets.get(key, {})

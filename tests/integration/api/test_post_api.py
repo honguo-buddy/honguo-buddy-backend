@@ -1,9 +1,11 @@
 """Post API 集成测试套件（使用真实 MySQL 通过 Testcontainers）。"""
 
+import io
 from uuid import uuid4
 
 import pytest
 from httpx import AsyncClient
+from PIL import Image
 
 from app.core import create_access_token, settings
 from app.models import Attachment, AttachmentTargetType, Category, Direction, ItemType, Order, OrderStatus, OrderTriggerType, Post, PostStatus, SexEnum, UrgencyLevel, User, UserType
@@ -62,6 +64,14 @@ async def _bind_user_token(fake_redis, user: User) -> str:
 	await fake_redis.set(f"token:{token}", str(user.user_id))
 	await fake_redis.set(f"user_token:{user.user_id}", token)
 	return token
+
+
+def build_upload_image_bytes(size=(320, 240), fmt="PNG") -> bytes:
+	image = Image.new("RGBA", size, (40, 80, 160, 255))
+	buffer = io.BytesIO()
+	image.save(buffer, format=fmt)
+	image.close()
+	return buffer.getvalue()
 
 
 @pytest.mark.asyncio
@@ -192,6 +202,116 @@ async def test_create_post_rejects_negative_price(
 
 
 @pytest.mark.asyncio
+async def test_create_buy_post_rejects_when_buy_quota_exhausted(
+	client: AsyncClient,
+	db_session,
+	test_user,
+	test_user_token,
+	fake_redis,
+):
+	"""BUY 帖子达到独立上限后应拒绝继续创建。"""
+	from app.core import DynamicConfigManager, settings
+
+	await fake_redis.set(f"token:{test_user_token}", str(test_user.user_id))
+	await fake_redis.set(f"user_token:{test_user.user_id}", test_user_token)
+
+	DynamicConfigManager()._cache["MAX_OPEN_BUY_POSTS_PER_USER"] = 1
+
+	category = Category(category_id=118, name="buy额度分类", config_json={}, direction="BUY")
+	db_session.add(category)
+	await db_session.flush()
+
+	existing_post = Post(
+		post_id=2118,
+		publisher_id=test_user.user_id,
+		category_id=category.category_id,
+		title="已占用BUY额度",
+		description="已存在的求助单",
+		price=10.0,
+		template_data={"max_accepters": 1},
+		direction=Direction.BUY,
+		urgency=UrgencyLevel.NORMAL,
+		status=PostStatus.OPEN,
+	)
+	db_session.add(existing_post)
+	await db_session.flush()
+
+	resp = await client.post(
+		"/posts/",
+		headers={"Authorization": f"Bearer {test_user_token}"},
+		json={
+			"title": "再次创建BUY帖子",
+			"description": "应被额度拦截",
+			"price": 9.9,
+			"direction": "BUY",
+			"urgency": "NORMAL",
+			"max_accepters": 1,
+			"category_id": category.category_id,
+		},
+	)
+
+	assert resp.status_code == 200
+	message = assert_api_error(resp.json(), code=settings.DATA_GET_FAILED_CODE)
+	assert "当前发布的活跃委托已达上限" in message["msg"]
+	DynamicConfigManager()._cache.pop("MAX_OPEN_BUY_POSTS_PER_USER", None)
+
+
+@pytest.mark.asyncio
+async def test_create_sell_post_rejects_when_sell_quota_exhausted(
+	client: AsyncClient,
+	db_session,
+	test_user,
+	test_user_token,
+	fake_redis,
+):
+	"""SELL 帖子达到独立上限后应拒绝继续创建。"""
+	from app.core import DynamicConfigManager, settings
+
+	await fake_redis.set(f"token:{test_user_token}", str(test_user.user_id))
+	await fake_redis.set(f"user_token:{test_user.user_id}", test_user_token)
+
+	DynamicConfigManager()._cache["MAX_OPEN_SELL_POSTS_PER_USER"] = 1
+
+	category = Category(category_id=119, name="sell额度分类", config_json={}, direction="SELL")
+	db_session.add(category)
+	await db_session.flush()
+
+	existing_post = Post(
+		post_id=2119,
+		publisher_id=test_user.user_id,
+		category_id=category.category_id,
+		title="已占用SELL额度",
+		description="已存在的服务帖",
+		price=10.0,
+		template_data={"max_accepters": 1},
+		direction=Direction.SELL,
+		urgency=UrgencyLevel.NORMAL,
+		status=PostStatus.OPEN,
+	)
+	db_session.add(existing_post)
+	await db_session.flush()
+
+	resp = await client.post(
+		"/posts/",
+		headers={"Authorization": f"Bearer {test_user_token}"},
+		json={
+			"title": "再次创建SELL帖子",
+			"description": "应被额度拦截",
+			"price": 12.3,
+			"direction": "SELL",
+			"urgency": "NORMAL",
+			"max_accepters": 1,
+			"category_id": category.category_id,
+		},
+	)
+
+	assert resp.status_code == 200
+	message = assert_api_error(resp.json(), code=settings.DATA_GET_FAILED_CODE)
+	assert "当前发布的活跃服务已达上限" in message["msg"]
+	DynamicConfigManager()._cache.pop("MAX_OPEN_SELL_POSTS_PER_USER", None)
+
+
+@pytest.mark.asyncio
 async def test_list_posts_has_direction_and_urgency(
 	client: AsyncClient,
 	db_session,
@@ -287,6 +407,52 @@ async def test_get_post_detail_has_direction_and_urgency(
 	assert "urgency" in detail, "详情中缺少 urgency 字段"
 	assert detail["direction"] == "BUY", "direction 字段值应为 BUY"
 	assert detail["urgency"] == "URGENT", "urgency 字段值应为 URGENT"
+
+
+@pytest.mark.asyncio
+async def test_get_post_detail_returns_attachment_briefs(
+	client: AsyncClient,
+	db_session,
+	test_user,
+	test_user_token,
+	fake_redis,
+):
+	await fake_redis.set(f"token:{test_user_token}", str(test_user.user_id))
+
+	category = Category(category_id=112, name="详情附件分类", config_json={})
+	db_session.add(category)
+	await db_session.flush()
+
+	post = Post(
+		post_id=2012,
+		publisher_id=test_user.user_id,
+		category_id=category.category_id,
+		title="带附件详情",
+		description="详情返回附件id",
+		price=16.0,
+		template_data={"max_accepters": 1},
+		direction=Direction.SELL,
+		urgency=UrgencyLevel.NORMAL,
+		status=PostStatus.OPEN,
+	)
+	db_session.add(post)
+	await db_session.flush()
+
+	attachment = Attachment(
+		attachment_id=7112,
+		target_type=AttachmentTargetType.POST,
+		target_id=post.post_id,
+		url="/static/post/detail.webp",
+		creator_id=test_user.user_id,
+	)
+	db_session.add(attachment)
+	await db_session.flush()
+
+	resp = await client.get(f"/posts/{post.post_id}", headers={"Authorization": f"Bearer {test_user_token}"})
+	assert resp.status_code == 200
+	msg = assert_api_success(resp.json())
+	assert msg["attachment_urls"] == ["/static/post/detail.webp"]
+	assert msg["attachments"] == [{"id": 7112, "url": "/static/post/detail.webp"}]
 
 
 @pytest.mark.asyncio
@@ -448,6 +614,196 @@ async def test_update_post_returns_full_post_info(
 	assert message["max_accepters"] == 2
 	assert message["current_accepters"] == 0
 	assert message["attachment_urls"] == []
+
+
+@pytest.mark.asyncio
+async def test_update_post_replaces_attachments_and_returns_urls(
+	client: AsyncClient,
+	db_session,
+	test_user,
+	test_user_token,
+	fake_redis,
+):
+	await fake_redis.set(f"token:{test_user_token}", str(test_user.user_id))
+	await fake_redis.set(f"user_token:{test_user.user_id}", test_user_token)
+
+	category = Category(category_id=106, name="帖子更新附件分类", config_json={})
+	db_session.add(category)
+	await db_session.flush()
+
+	post = Post(
+		post_id=2006,
+		publisher_id=test_user.user_id,
+		category_id=category.category_id,
+		title="旧帖子",
+		description="旧附件待替换",
+		price=18.0,
+		template_data={"max_accepters": 1},
+		direction=Direction.SELL,
+		urgency=UrgencyLevel.NORMAL,
+		status=PostStatus.OPEN,
+	)
+	db_session.add(post)
+	await db_session.flush()
+
+	old_attachment = Attachment(
+		attachment_id=7101,
+		target_type=AttachmentTargetType.POST,
+		target_id=post.post_id,
+		url="/static/post/old.webp",
+		creator_id=test_user.user_id,
+	)
+	db_session.add(old_attachment)
+	await db_session.flush()
+
+	upload_resp = await client.post(
+		"/attachments/upload",
+		headers={"Authorization": f"Bearer {test_user_token}"},
+		data={"target_type": "POST"},
+		files={"file": ("post.png", build_upload_image_bytes((640, 360)), "image/png")},
+	)
+	assert upload_resp.status_code == 200
+	upload_msg = assert_api_success(upload_resp.json())
+	new_attachment_id = upload_msg["id"]
+
+	resp = await client.patch(
+		f"/posts/{post.post_id}",
+		headers={"Authorization": f"Bearer {test_user_token}"},
+		json={"attachment_ids": [new_attachment_id]},
+	)
+	assert resp.status_code == 200
+	msg = assert_api_success(resp.json())
+	assert len(msg["attachment_urls"]) == 1
+	assert msg["attachment_urls"][0].endswith(".webp")
+	assert msg["attachments"] == [{"id": new_attachment_id, "url": msg["attachment_urls"][0]}]
+
+	await db_session.refresh(old_attachment)
+	assert old_attachment.target_id is None
+
+	new_attachment = await db_session.get(Attachment, new_attachment_id)
+	assert new_attachment is not None
+	assert new_attachment.target_type == AttachmentTargetType.POST
+	assert new_attachment.target_id == post.post_id
+	assert new_attachment.sort_order == 0
+
+
+@pytest.mark.asyncio
+async def test_update_post_allows_clearing_attachments(
+	client: AsyncClient,
+	db_session,
+	test_user,
+	test_user_token,
+	fake_redis,
+):
+	await fake_redis.set(f"token:{test_user_token}", str(test_user.user_id))
+	await fake_redis.set(f"user_token:{test_user.user_id}", test_user_token)
+
+	category = Category(category_id=109, name="帖子清空附件分类", config_json={})
+	db_session.add(category)
+	await db_session.flush()
+
+	post = Post(
+		post_id=2009,
+		publisher_id=test_user.user_id,
+		category_id=category.category_id,
+		title="清图帖子",
+		description="附件将被清空",
+		price=20.0,
+		template_data={"max_accepters": 1},
+		direction=Direction.SELL,
+		urgency=UrgencyLevel.NORMAL,
+		status=PostStatus.OPEN,
+	)
+	db_session.add(post)
+	await db_session.flush()
+
+	old_attachment = Attachment(
+		attachment_id=7102,
+		target_type=AttachmentTargetType.POST,
+		target_id=post.post_id,
+		url="/static/post/existing.webp",
+		creator_id=test_user.user_id,
+	)
+	db_session.add(old_attachment)
+	await db_session.flush()
+
+	resp = await client.patch(
+		f"/posts/{post.post_id}",
+		headers={"Authorization": f"Bearer {test_user_token}"},
+		json={"attachment_ids": []},
+	)
+	assert resp.status_code == 200
+	msg = assert_api_success(resp.json())
+	assert msg["attachment_urls"] == []
+	assert msg["attachments"] == []
+
+	await db_session.refresh(old_attachment)
+	assert old_attachment.target_id is None
+
+
+@pytest.mark.asyncio
+async def test_update_post_returns_attachments_in_submitted_order(
+	client: AsyncClient,
+	db_session,
+	test_user,
+	test_user_token,
+	fake_redis,
+):
+	await fake_redis.set(f"token:{test_user_token}", str(test_user.user_id))
+	await fake_redis.set(f"user_token:{test_user.user_id}", test_user_token)
+
+	category = Category(category_id=113, name="帖子排序分类", config_json={})
+	db_session.add(category)
+	await db_session.flush()
+
+	post = Post(
+		post_id=2013,
+		publisher_id=test_user.user_id,
+		category_id=category.category_id,
+		title="排序帖子",
+		description="顺序即封面",
+		price=20.0,
+		template_data={"max_accepters": 1},
+		direction=Direction.SELL,
+		urgency=UrgencyLevel.NORMAL,
+		status=PostStatus.OPEN,
+	)
+	db_session.add(post)
+	await db_session.flush()
+
+	first = Attachment(
+		attachment_id=7113,
+		target_type=AttachmentTargetType.USER,
+		target_id=test_user.user_id,
+		url="/static/post/first.webp",
+		creator_id=test_user.user_id,
+	)
+	second = Attachment(
+		attachment_id=7114,
+		target_type=AttachmentTargetType.USER,
+		target_id=test_user.user_id,
+		url="/static/post/second.webp",
+		creator_id=test_user.user_id,
+	)
+	db_session.add_all([first, second])
+	await db_session.flush()
+
+	resp = await client.patch(
+		f"/posts/{post.post_id}",
+		headers={"Authorization": f"Bearer {test_user_token}"},
+		json={"attachment_ids": [7114, 7113]},
+	)
+	assert resp.status_code == 200
+	msg = assert_api_success(resp.json())
+	assert msg["attachments"] == [
+		{"id": 7114, "url": "/static/post/second.webp"},
+		{"id": 7113, "url": "/static/post/first.webp"},
+	]
+
+	await db_session.refresh(first)
+	await db_session.refresh(second)
+	assert first.sort_order == 1
+	assert second.sort_order == 0
 
 
 @pytest.mark.asyncio
@@ -764,6 +1120,75 @@ async def test_post_applications_returns_owner_view_with_completed_count(
 	assert application["applicant"]["completed_order_count"] == 2
 	assert application["note"] is None
 	assert application["created_at"]
+
+	pending_order = await db_session.get(Order, application["application_id"])
+	assert pending_order is not None
+	assert pending_order.is_seen_by_seller is True
+
+
+@pytest.mark.asyncio
+async def test_post_applications_marks_pending_orders_seen_for_unread_counts(
+	client: AsyncClient,
+	db_session,
+	test_user,
+	test_user_token,
+	fake_redis,
+):
+	"""测试查看申请列表后会将该帖子下待处理申请标记为卖家已查阅。"""
+	await fake_redis.set(f"token:{test_user_token}", str(test_user.user_id))
+	await fake_redis.set(f"user_token:{test_user.user_id}", test_user_token)
+
+	category = Category(category_id=112, name="申请已读分类", config_json={})
+	db_session.add(category)
+	await db_session.flush()
+
+	applicant = await _create_user_with_avatar(
+		db_session,
+		user_id=3012,
+		user_name="已读申请人",
+		openid="openid-applicant-seen",
+		avatar_url="/static/avatar/applicant_seen.png",
+	)
+	applicant_token = await _bind_user_token(fake_redis, applicant)
+
+	post = Post(
+		post_id=3400,
+		publisher_id=test_user.user_id,
+		category_id=category.category_id,
+		title="待标记已读的 BUY 帖子",
+		description="用于申请已读测试",
+		price=16.0,
+		template_data={"max_accepters": 2},
+		direction=Direction.BUY,
+		urgency=UrgencyLevel.NORMAL,
+		status=PostStatus.OPEN,
+	)
+	db_session.add(post)
+	await db_session.flush()
+
+	apply_resp = await client.post(
+		f"/posts/{post.post_id}/accept",
+		headers={"Authorization": f"Bearer {applicant_token}"},
+	)
+	assert apply_resp.status_code == 200
+	apply_body = apply_resp.json()
+	assert apply_body["code"] == settings.SUCCESS_CODE
+	order_id = apply_body["message"]["order_id"]
+
+	order_before = await db_session.get(Order, order_id)
+	assert order_before is not None
+	assert order_before.is_seen_by_seller is False
+
+	resp = await client.get(
+		f"/posts/{post.post_id}/applications",
+		headers={"Authorization": f"Bearer {test_user_token}"},
+	)
+	assert resp.status_code == 200
+	assert resp.json()["code"] == settings.SUCCESS_CODE
+
+	order_after = await db_session.get(Order, order_id)
+	assert order_after is not None
+	assert order_after.is_seen_by_seller is True
 
 
 @pytest.mark.asyncio

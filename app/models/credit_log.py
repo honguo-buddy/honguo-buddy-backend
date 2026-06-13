@@ -14,4 +14,4 @@ class CreditLog(Base):
     reason = Column(String(255), nullable=False, comment="变动原因")
     create_time = Column(DateTime, default=beijing_now_for_model, nullable=False, comment="创建时间")
 
-    user = relationship("User", back_populates="credit_logs", lazy="selectin")
+    user = relationship("User", back_populates="credit_logs")

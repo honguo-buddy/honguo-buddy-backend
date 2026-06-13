@@ -5,7 +5,7 @@ from httpx import AsyncClient
 from sqlalchemy import select
 
 from app.core import settings
-from app.models import Attachment, AttachmentTargetType, Category, ChatMessage, ChatSession, Direction, Post, PostStatus, UrgencyLevel
+from app.models import Attachment, AttachmentTargetType, Category, ChatMessage, ChatSession, Direction, Post, PostStatus, UrgencyLevel, UserBlacklist
 from tests.helpers import assert_api_error
 
 
@@ -244,3 +244,154 @@ async def test_chat_read_returns_unread_count(client: AsyncClient, db_session, t
         )
     )
     assert len(unread_rows.scalars().all()) == 0
+
+# ========== 黑名单聊天拦截集成测试 ==========
+
+@pytest.mark.asyncio
+async def test_blocked_user_cannot_init_session(
+    client: AsyncClient,
+    db_session,
+    test_user,
+    test_admin_user,
+    test_user_token,
+    fake_redis,
+):
+    """被拉黑者无法发起会话 -> code=99"""
+    # admin(1002) 拉黑 test_user(1001)
+    entry = UserBlacklist(user_id=test_admin_user.user_id, target_id=test_user.user_id)
+    db_session.add(entry)
+    await db_session.flush()
+
+    await fake_redis.set(f"token:{test_user_token}", str(test_user.user_id))
+
+    resp = await client.post(
+        "/chats/sessions/init",
+        json={"peer_id": test_admin_user.user_id},
+        headers={"Authorization": f"Bearer {test_user_token}"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["code"] == 99
+    assert "被对方拉黑" in body["message"]["msg"]
+
+
+@pytest.mark.asyncio
+async def test_blocked_user_cannot_send_message(
+    client: AsyncClient,
+    db_session,
+    test_user,
+    test_admin_user,
+    test_user_token,
+    test_admin_token,
+    fake_redis,
+):
+    """被拉黑者无法发送消息 -> code=99"""
+    await fake_redis.set(f"token:{test_user_token}", str(test_user.user_id))
+    await fake_redis.set(f"token:{test_admin_token}", str(test_admin_user.user_id))
+
+    # 先创建正常的会话（admin 发起）
+    category = Category(category_id=9210, name="chat_test_cat", config_json={})
+    db_session.add(category)
+    post = Post(
+        post_id=9211, publisher_id=test_admin_user.user_id,
+        category_id=9210, title="test post", direction=Direction.SELL,
+        urgency=UrgencyLevel.NORMAL, status=PostStatus.OPEN,
+        template_data={"max_accepters": 1},
+    )
+    db_session.add(post)
+    await db_session.flush()
+
+    session = ChatSession(
+        session_id=9212, user_one_id=test_admin_user.user_id,
+        user_two_id=test_user.user_id,
+    )
+    db_session.add(session)
+    await db_session.flush()
+
+    # admin 拉黑 test_user
+    entry = UserBlacklist(user_id=test_admin_user.user_id, target_id=test_user.user_id)
+    db_session.add(entry)
+    await db_session.flush()
+
+    # test_user 尝试发消息 -> 应被拦截
+    resp = await client.post(
+        "/chats/messages",
+        json={"session_id": 9212, "content": "hello"},
+        headers={"Authorization": f"Bearer {test_user_token}"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["code"] == 99
+    assert "被对方拉黑" in body["message"]["msg"]
+
+
+@pytest.mark.asyncio
+async def test_blocked_user_session_not_in_list(
+    client: AsyncClient,
+    db_session,
+    test_user,
+    test_admin_user,
+    test_user_token,
+    test_admin_token,
+    fake_redis,
+):
+    """拉黑者的会话不在被拉黑者的会话列表中"""
+    await fake_redis.set(f"token:{test_user_token}", str(test_user.user_id))
+    await fake_redis.set(f"token:{test_admin_token}", str(test_admin_user.user_id))
+
+    # 创建一个双方会话
+    session = ChatSession(
+        session_id=9213, user_one_id=test_admin_user.user_id,
+        user_two_id=test_user.user_id,
+    )
+    db_session.add(session)
+    await db_session.flush()
+
+    # admin 拉黑 test_user
+    entry = UserBlacklist(user_id=test_admin_user.user_id, target_id=test_user.user_id)
+    db_session.add(entry)
+    await db_session.flush()
+
+    # test_user 查看会话列表 -> admin 的会话不应出现
+    resp = await client.get(
+        "/chats/sessions",
+        headers={"Authorization": f"Bearer {test_user_token}"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["code"] == 0
+    session_ids = [s["session_id"] for s in body["message"]["items"]]
+    assert 9213 not in session_ids
+
+
+@pytest.mark.asyncio
+async def test_current_user_blocked_peer_session_not_in_list(
+    client: AsyncClient,
+    db_session,
+    test_user,
+    test_admin_user,
+    test_user_token,
+    fake_redis,
+):
+    """当前用户主动拉黑对方后，对方会话不应出现在当前用户会话列表中。"""
+    await fake_redis.set(f"token:{test_user_token}", str(test_user.user_id))
+
+    session = ChatSession(
+        session_id=9214,
+        user_one_id=test_user.user_id,
+        user_two_id=test_admin_user.user_id,
+    )
+    blacklist_entry = UserBlacklist(user_id=test_user.user_id, target_id=test_admin_user.user_id)
+    db_session.add_all([session, blacklist_entry])
+    await db_session.flush()
+
+    resp = await client.get(
+        "/chats/sessions",
+        headers={"Authorization": f"Bearer {test_user_token}"},
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["code"] == 0
+    session_ids = [s["session_id"] for s in body["message"]["items"]]
+    assert 9214 not in session_ids

@@ -1,7 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
-from app.schemas.post import PostCreate, PostUpdate
+from app.schemas.post import AttachmentBriefRead, PostCreate, PostDetailRead, PostUpdate
 
 
 def test_post_create_accepts_valid_template_filters():
@@ -38,3 +38,20 @@ def test_post_update_rejects_non_dict_template_filters():
         PostUpdate.validate_template_filters("bad")
 
     assert "template_filters 必须是对象" in str(exc_info.value)
+
+
+def test_post_detail_supports_attachment_briefs():
+    schema = PostDetailRead(
+        post_id=1,
+        title="详情",
+        direction="SELL",
+        urgency="NORMAL",
+        status="OPEN",
+        max_accepters=1,
+        publisher_id=1,
+        create_time="2026-06-16T10:00:00",
+        attachment_urls=["/static/post/a.webp"],
+        attachments=[AttachmentBriefRead(id=101, url="/static/post/a.webp")],
+    )
+
+    assert schema.attachments[0].id == 101

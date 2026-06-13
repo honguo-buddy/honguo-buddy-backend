@@ -17,6 +17,7 @@ from sqlalchemy.orm import selectinload
 from app.core import AuthHTTPException, BusinessHTTPException, ResourceHTTPException, settings
 from app.models import AttachmentTargetType, Comment, Goods, Post, User, TargetType
 from app.services.attachment_service import AttachmentService
+from app.services.blacklist_service import BlacklistService
 from app.services.metrics_service import MetricsService
 from app.db import redis as app_redis
 logger = logging.getLogger(__name__)
@@ -74,6 +75,16 @@ class CommentService:
                 code=settings.DATA_GET_FAILED_CODE,
                 msg="目标帖子或商品不存在或已被删除",
             )
+
+        target_owner_id = getattr(target_obj, "publisher_id", None)
+        if target_owner_id and target_owner_id != user_id:
+            blocked_by_owner = await BlacklistService.is_blocked(db, target_owner_id, user_id)
+            blocked_owner = await BlacklistService.is_blocked(db, user_id, target_owner_id)
+            if blocked_by_owner or blocked_owner:
+                raise BusinessHTTPException(
+                    code=settings.REQ_ERROR_CODE,
+                    msg="存在拉黑关系，无法发表评论",
+                )
         
         # 如果有parent_id，验证父评论是否存在且未被删除
         if parent_id is not None:
@@ -118,15 +129,15 @@ class CommentService:
         if current_target_type == "POST":
             try:
                 await MetricsService.incr_post_comment(app_redis, new_comment.target_id, delta=1)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("Swallowed exception in comment_service: %s", e, exc_info=True)
                 
         elif current_target_type == "GOODS":
             try:
                 # 精准轰击商品专属的评论自增引擎，彻底打通集市计数闭环！
                 await MetricsService.incr_goods_comment(app_redis, new_comment.target_id, delta=1)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("Swallowed exception in comment_service: %s", e, exc_info=True)
         
         return new_comment
 
@@ -174,8 +185,8 @@ class CommentService:
         if getattr(comment.target_type, 'value', comment.target_type) == "POST":
             try:
                 await MetricsService.incr_post_comment(app_redis, comment.target_id, delta=-1)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("Swallowed exception in comment_service: %s", e, exc_info=True)
         
         # 如果有子回复，需要清洗它们的内容以保持树状结构完整
         # 但不删除子回复记录本身
@@ -197,6 +208,7 @@ class CommentService:
         target_id: int,
         cursor: Optional[int] = None,
         size: int = 20,
+        exclude_user_ids: Optional[list[int]] = None,
     ) -> Tuple[List[Comment], Optional[int]]:
         """获取目标的根评论列表（游标分页）。
         
@@ -225,6 +237,9 @@ class CommentService:
             Comment.parent_id.is_(None),
             Comment.is_deleted == False,
         ]
+        # 黑名单过滤：排除拉黑了当前用户的评论发布者
+        if exclude_user_ids:
+            where_conditions.append(Comment.user_id.notin_(exclude_user_ids))
         
         # 游标分页：获取 cursor 之前的评论（降序）
         if cursor is not None:
@@ -258,6 +273,7 @@ class CommentService:
         comment_id: int,
         cursor: Optional[int] = None,
         size: int = 20,
+        exclude_user_ids: Optional[list[int]] = None,
     ) -> Tuple[List[Comment], Optional[int]]:
         """获取单条根评论下的所有回复（按时间正序）。
         
@@ -286,6 +302,9 @@ class CommentService:
             Comment.parent_id == comment_id,
             Comment.is_deleted == False,
         ]
+        # 黑名单过滤：排除拉黑了当前用户的评论发布者
+        if exclude_user_ids:
+            where_conditions.append(Comment.user_id.notin_(exclude_user_ids))
         
         # 游标分页：获取 cursor 之后的评论（正序，按create_time或comment_id）
         if cursor is not None:
@@ -442,4 +461,3 @@ class CommentService:
     @staticmethod
     async def get_comment_attachment_urls_map(db: AsyncSession, comment_ids: List[int]) -> dict[int, list[str]]:
         return await AttachmentService.get_urls_by_target(db, AttachmentTargetType.COMMENT.value, comment_ids)
-

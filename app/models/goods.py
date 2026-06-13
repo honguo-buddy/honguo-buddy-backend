@@ -46,6 +46,9 @@ class Goods(Base):
         comment="商品业务状态（上架中/已下架/已售出）",
     )
     
+    expire_time = Column(DateTime, nullable=True, comment="过期时间")
+    contact = Column(JSON, nullable=True, comment="联系方式JSON: {phone, wx, qq}")
+    
     is_deleted = Column(Boolean, default=False, nullable=False, comment="是否软删除（作为底层物理防御）")
     create_time = Column(DateTime, default=beijing_now_for_model, nullable=False, comment="创建时间")
     update_time = Column(DateTime, default=beijing_now_for_model, onupdate=beijing_now_for_model, nullable=False, comment="更新时间")
@@ -53,21 +56,20 @@ class Goods(Base):
 # ------------------------------------------------------------------
     # 像素级严格对齐的 ORM 关系映射大盘（完美防御多态组件）
     # ------------------------------------------------------------------
-    user = relationship("User", back_populates="goods", lazy="selectin")
+    user = relationship("User", back_populates="goods")
     
     @property
     def publisher(self):
         """无缝映射给 Pydantic 响应 Schema 中的 publisher 字段"""
         return self.user
     
-    category = relationship("Category", back_populates="goods", lazy="selectin")
+    category = relationship("Category", back_populates="goods")
     
     # 订单多态关系对齐：锁定项语义为 'GOODS'，开启只读视图，拒绝交叉污染
     orders = relationship(
         "Order",
         primaryjoin="and_(foreign(Order.item_id) == Goods.goods_id, Order.item_type == 'GOODS')",
         viewonly=True,
-        lazy="selectin",
     )
     
     # 评论多态关系对齐：锁定盖楼目标为 'GOODS'
@@ -75,14 +77,13 @@ class Goods(Base):
         "Comment",
         primaryjoin="and_(foreign(Comment.target_id) == Goods.goods_id, Comment.target_type == 'GOODS')",
         viewonly=True,
-        lazy="selectin",
     )
 
     # 级联附件红线对齐：商品软删/硬删时，其关联的多态媒体附件执行全自动全生命周期‘孤儿清理机制’
     attachments = relationship(
         "Attachment",
         primaryjoin="and_(foreign(Attachment.target_id) == Goods.goods_id, Attachment.target_type == 'GOODS')",
-        lazy="selectin",
+        order_by="Attachment.sort_order.asc(), Attachment.attachment_id.asc()",
         overlaps="attachments",
         cascade="all, delete-orphan",
     )

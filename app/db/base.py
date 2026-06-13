@@ -7,7 +7,7 @@ from app.core import settings
 #异步引擎连接数据库(echo表输出日志)
 engine = create_async_engine(
     settings.DATABASE_URL,
-    echo=True,
+    echo=settings.DEBUG,
     pool_pre_ping=False,        # 封死 aiomysql.ping() 签名报错
     pool_recycle=3600,          # 连接回收时间（秒），避免使用超时的连接
     pool_size=10,               # 连接池大小
@@ -47,6 +47,7 @@ from app.models import (  # noqa: E402,F401
     User,
     UserAccessLog,
     UserType,
+    SysConfig,
     parse_user_type,
 )
 

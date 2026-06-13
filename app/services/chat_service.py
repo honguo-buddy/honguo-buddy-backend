@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import timedelta
 from typing import Optional, Sequence
 
-from sqlalchemy import and_, case, func, or_, select, update
+from sqlalchemy import and_, case, func, not_, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import BusinessHTTPException, ResourceHTTPException, get_now_naive, settings
@@ -70,7 +70,7 @@ class ChatService:
         return session
 
     @staticmethod
-    async def list_sessions(db: AsyncSession, current_user_id: int) -> list[ChatSession]:
+    async def list_sessions(db: AsyncSession, current_user_id: int, exclude_peer_ids: list[int] | None = None) -> list[ChatSession]:
         unread_subquery = (
             select(
                 ChatMessage.session_id.label("session_id"),
@@ -106,7 +106,32 @@ class ChatService:
             session.unread_count = int(unread_count or 0)  # type: ignore[attr-defined]
             session.peer_id = session.user_two_id if session.user_one_id == current_user_id else session.user_one_id  # type: ignore[attr-defined]
             sessions.append(session)
+        # 黑名单过滤：排除会话对方拉黑了当前用户的会话
+        if exclude_peer_ids:
+            sessions = [s for s in sessions if s.peer_id not in exclude_peer_ids]
         return sessions
+
+    @staticmethod
+    async def get_total_unread_count(db: AsyncSession, current_user_id: int) -> int:
+        """聚合当前用户所有私信会话中的未读消息总数。"""
+        session_ids_stmt = select(ChatSession.session_id).where(
+            or_(
+                ChatSession.user_one_id == current_user_id,
+                ChatSession.user_two_id == current_user_id,
+            )
+        )
+        session_ids_res = await db.execute(session_ids_stmt)
+        session_ids = [int(row[0]) for row in session_ids_res.all() if row[0] is not None]
+        if not session_ids:
+            return 0
+
+        unread_stmt = select(func.count()).select_from(ChatMessage).where(
+            ChatMessage.session_id.in_(session_ids),
+            ChatMessage.sender_id != current_user_id,
+            ChatMessage.is_read == False,
+        )
+        unread_res = await db.execute(unread_stmt)
+        return int(unread_res.scalar_one() or 0)
 
     @staticmethod
     async def _validate_session_membership(db: AsyncSession, session_id: int, current_user_id: int) -> ChatSession:
@@ -355,4 +380,3 @@ class ChatService:
             except Exception:
                 continue
         return {"sent_count": sent_count, "buyer_ids": buyer_ids}
-

@@ -937,7 +937,7 @@ async def test_register_scheduler_jobs_adds_double_blind_fallback():
             captured.append({"func": func, "trigger": trigger, "kwargs": kwargs})
 
     register_scheduler_jobs(FakeScheduler())
-    assert len(captured) == 2, f"Expected 2 scheduler jobs, got {len(captured)}"
+    assert len(captured) == 3, f"Expected 2 scheduler jobs, got {len(captured)}"
     job_ids = {j["kwargs"]["id"] for j in captured}
     assert "auto_release_expired_double_blind_reviews" in job_ids
     assert "flush_metrics_to_db" in job_ids

@@ -9,6 +9,8 @@ Schemas 模块 - 统一导出所有 Pydantic 请求/响应模型
 """
 
 from app.schemas.auth import (
+    AdminCodeSendRequest,
+    AdminLoginRequest,
     WxLoginRequest,
     EmailSendVerifyCodeRequest,
     EmailVerifyCodeRequest,
@@ -51,6 +53,8 @@ from app.schemas.user import (
     UserProfileResponse,
     UserPublicResponse,
     UserSelfUpdateRequest,
+    PhoneSendCodeRequest,
+    PhoneBindRequest,
     UserRead,
     UserFollowToggleRequest,
     UserFollowToggleResponse,
@@ -62,6 +66,8 @@ from app.schemas.user import (
     FavoriteListResponse,
     HistoryItem,
     HistoryListResponse,
+    UserOpenQuotaResponse,
+    UserUnreadCountsResponse,
 )
 from app.schemas.comment import (
     CommentCreateRequest,
@@ -87,6 +93,7 @@ from app.schemas.category import (
     CategoryRead,
 )
 from app.schemas.post import (
+    AttachmentBriefRead,
     PostCreate,
     PostUpdate,
     PostRead,
@@ -113,18 +120,48 @@ from app.schemas.order_review import (
 )
 
 
+from app.schemas.user_contact import (
+    ContactCreate,
+    ContactRead,
+    ContactListResponse,
+)
+from app.schemas.user_blacklist import (
+    BlacklistCreate,
+    BlacklistItem,
+    BlacklistListResponse,
+)
+from app.schemas.feedback import (
+    FeedbackCreate,
+)
 from app.schemas.goods import (
+    GoodsAttachmentBriefRead,
     GoodsBase,
     GoodsCreate,
+    GoodsApplicationApplicantRead,
+    GoodsApplicationItem,
+    GoodsApplicationListResponse,
     GoodsUpdate,
     GoodsPublisherSchema,
     GoodsRead,
     GoodsDetailRead,
     GoodsListResponse,
 )
+from app.schemas.sys_config import (
+    SysConfigRead,
+    SysConfigUpdateRequest,
+)
+from app.schemas.search import (
+    SearchTab,
+    SearchSort,
+    SearchTime,
+    GlobalSearchItem,
+    GlobalSearchResponse,
+)
 
 __all__ = [
     # auth
+    "AdminCodeSendRequest",
+    "AdminLoginRequest",
     "WxLoginRequest",
     "EmailSendVerifyCodeRequest",
     "EmailVerifyCodeRequest",
@@ -172,11 +209,14 @@ __all__ = [
     "FavoriteListResponse",
     "HistoryItem",
     "HistoryListResponse",
+    "UserOpenQuotaResponse",
+    "UserUnreadCountsResponse",
     # category
     "CategoryCreate",
     "CategoryUpdate",
     "CategoryRead",
     # post
+    "AttachmentBriefRead",
     "PostCreate",
     "PostUpdate",
     "PostRead",
@@ -198,11 +238,22 @@ __all__ = [
     "OrderReviewRead",
     "OrderReviewListResponse",
     # goods
+    "GoodsAttachmentBriefRead",
     "GoodsBase",
     "GoodsCreate",
+    "GoodsApplicationApplicantRead",
+    "GoodsApplicationItem",
+    "GoodsApplicationListResponse",
     "GoodsUpdate",
     "GoodsPublisherSchema",
     "GoodsRead",
     "GoodsDetailRead",
     "GoodsListResponse",
+    "SysConfigRead",
+    "SysConfigUpdateRequest",
+    "SearchTab",
+    "SearchSort",
+    "SearchTime",
+    "GlobalSearchItem",
+    "GlobalSearchResponse",
 ]

@@ -40,16 +40,18 @@ async def create_category_template(
 @router.get("/", response_model=ResponseModel[List[CategoryRead]])
 async def list_category_templates(
     item_type: Optional[str] = Query(None, alias="type", description="业务类型: POST/GOODS"),
+    direction: Optional[str] = Query(None, description="交易方向: SELL/BUY"),
     db: AsyncSession = Depends(get_db),
 ):
     """获取模板分类列表。对外开放（用于前端选择模板），支持按 `type`(POST/GOODS) 过滤。"""
-    categories = await CategoryService.list_categories(db, item_type)
+    categories = await CategoryService.list_categories(db, item_type, direction=direction)
     raw_items = [
         {
             "category_id": c.category_id,
             "name": c.name,
             "icon": c.icon,
             "item_type": c.item_type.value if getattr(c.item_type, 'value', None) else str(c.item_type),
+            "direction": c.direction if isinstance(c.direction, str) else (c.direction.value if hasattr(c.direction, "value") else str(c.direction)),
             "config_json": c.config_json,
             "create_time": c.create_time,
             "update_time": c.update_time,

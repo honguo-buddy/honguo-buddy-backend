@@ -37,6 +37,7 @@ from app.models import (
     User,
     UserAccessLog,
     UserType,
+    SysConfig,
     parse_user_type,
 )
 
@@ -70,5 +71,6 @@ __all__ = [
     "User",
     "UserAccessLog",
     "UserType",
+    "SysConfig",
     "parse_user_type",
 ]

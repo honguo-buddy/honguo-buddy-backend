@@ -23,9 +23,9 @@ class ChatMessage(Base):
     quote_message_id = Column(BigInteger, ForeignKey("chat_message.message_id"), nullable=True, index=True, comment="引用的消息ID")
     create_time = Column(DateTime, default=beijing_now_for_model, nullable=False, index=True)
 
-    session = relationship("ChatSession", back_populates="messages", lazy="selectin")
-    sender = relationship("User", foreign_keys=[sender_id], lazy="selectin")
-    quote_message = relationship("ChatMessage", remote_side=[message_id], lazy="selectin")
+    session = relationship("ChatSession", back_populates="messages")
+    sender = relationship("User", foreign_keys=[sender_id])
+    quote_message = relationship("ChatMessage", remote_side=[message_id])
 
     __table_args__ = (
         Index("idx_chat_message_session_create_time", "session_id", "create_time"),

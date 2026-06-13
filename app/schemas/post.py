@@ -1,9 +1,18 @@
 """Post 相关的请求和响应模型。"""
 
 from typing import Any, Dict, List, Optional
-from pydantic import BaseModel, Field, field_validator
+from pydantic import AliasChoices, BaseModel, Field, field_validator
 
 from app.schemas.user import UserRead
+
+
+class AttachmentBriefRead(BaseModel):
+    """轻量附件明细响应模型。"""
+
+    id: int = Field(validation_alias=AliasChoices("id", "attachment_id"), description="附件ID")
+    url: str = Field(description="附件URL")
+
+    model_config = {"from_attributes": True}
 
 
 class PostCreate(BaseModel):
@@ -21,6 +30,10 @@ class PostCreate(BaseModel):
         description="模板相关筛选字段（JSON），根据选择的模板而定（如 pickup_address、dropoff_address 等）"
     )
     attachment_ids: Optional[List[int]] = Field(default=None, description="附件 ID 列表，上传后可用于绑定到帖子")
+    expire_time: Optional[str] = Field(default=None, description="截止时间（ISO格式，如 2026-06-10T18:00:00）")
+    phone: Optional[str] = Field(default=None, max_length=25, description="联系电话")
+    wx: Optional[str] = Field(default=None, max_length=255, description="微信号")
+    qq: Optional[str] = Field(default=None, max_length=255, description="QQ号")
 
     @field_validator("template_filters")
     @classmethod
@@ -29,6 +42,18 @@ class PostCreate(BaseModel):
         if not isinstance(v, dict):
             raise ValueError("template_filters 必须是对象")
         return v
+
+    @field_validator("direction")
+    @classmethod
+    def validate_direction(cls, v: str) -> str:
+        """规范化并校验交易方向：必须为 SELL 或 BUY（大小写不敏感）。"""
+        if not v or not str(v).strip():
+            return "SELL"
+        text = str(v).strip().upper()
+        if text not in {"SELL", "BUY"}:
+            raise ValueError("direction 必须为 SELL 或 BUY")
+        return text
+
 
     model_config = {"from_attributes": True}
 
@@ -45,6 +70,10 @@ class PostUpdate(BaseModel):
     category_id: Optional[int] = Field(default=None, description="分类ID")
     template_filters: Optional[Dict[str, Any]] = Field(default=None, description="模板相关筛选字段（JSON）")
     attachment_ids: Optional[List[int]] = Field(default=None, description="附件 ID 列表，上传后可用于绑定到帖子")
+    expire_time: Optional[str] = Field(default=None, description="截止时间（ISO格式，如 2026-06-10T18:00:00）")
+    phone: Optional[str] = Field(default=None, max_length=25, description="联系电话")
+    wx: Optional[str] = Field(default=None, max_length=255, description="微信号")
+    qq: Optional[str] = Field(default=None, max_length=255, description="QQ号")
 
     @field_validator("template_filters")
     @classmethod
@@ -79,7 +108,9 @@ class PostRead(BaseModel):
     favorite_count: int = Field(default=0, description="收藏计数（Redis 灌水）")
     comment_count: int = Field(default=0, description="评论计数（Redis 灌水）")
     create_time: str
+    expire_time: Optional[str] = Field(default=None, description="截止时间")
     attachment_urls: List[str] = Field(default_factory=list, description="附件 URL 列表")
+    attachments: List[AttachmentBriefRead] = Field(default_factory=list, description="附件明细列表")
 
     model_config = {"from_attributes": True}
 
@@ -94,9 +125,13 @@ class PostList(BaseModel):
 
 
 class PostDetailRead(PostRead):
-    """任务详情响应模型（扩展了 PostRead）。"""
-    
-    comments: List[Dict[str, Any]] = Field(default_factory=list, description="评论列表")
+    """任务详情响应模型（扩展了 PostRead）。
+
+    注意：评论列表已从详情接口拆出，请使用独立评论游标分页接口
+    GET /comments/{target_type}/{target_id} 拉取。
+    """
+
+    pass
 
 
 class PostBatchAcceptRequest(BaseModel):
@@ -155,4 +190,3 @@ class PostApplicationListResponse(BaseModel):
 class PostBulletinUpdate(BaseModel):
     """帖子公告更新请求。bulletin 为 None 时不修改，为空字符串时清空公告。"""
     bulletin: Optional[str] = None
-

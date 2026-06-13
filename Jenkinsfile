@@ -24,17 +24,17 @@ pipeline {
         TEST_DATABASE_BOOTSTRAP_DB = "${params.TEST_DATABASE_BOOTSTRAP_DB ?: 'testdb_0'}"
 
         // --- 2. 固定配置 ---
-        EMAIL_FROM  = 'tianshu@wyqsama.cn'
+        EMAIL_FROM  = 'bang@honguo.store'
         SMTP_SERVER = 'smtpdm.aliyun.com'
         SMTP_PORT   = '465'
-        SMTP_USER   = 'tianshu@wyqsama.cn'
+        SMTP_USER   = 'bang@honguo.store'
         REDIS_PORT  = '6379'
         DEBUG       = 'true'
         DEBUG_SKIP_PASSWORD_CHECK = 'false'
         WX_APP_ID   = 'wx78bd4e0726460743'
-        ALI_ACCESS_KEY_ID = 'LTAI5t91CbPcGqHbygsqXXhd'
-        SMS_TEMPLATE_CODE = '100001'
-        SMS_SIGN_NAME     = '速通互联验证码'
+        ALI_ACCESS_KEY_ID = 'LTAI5t6TB4F6msHD8qnNzCGp'
+        SMS_TEMPLATE_CODE = 'SMS_329030094'
+        SMS_SIGN_NAME     = '青岛深度思维创意'
 
         // --- 3. 基础指令定义 ---
         GERRIT_BASE_CMD = "ssh -p 29418 jenkins@gerrit.lilingkun.com gerrit review ${env.GERRIT_PATCHSET_REVISION ?: ''}"
