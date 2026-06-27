@@ -95,49 +95,32 @@ class MetricsService:
         post_ids: list[int],
         id_key: str = "post_id",
     ) -> None:
-        """Read-Through cache: Redis hit first, MySQL fallback only for cache-miss keys, backfill Redis on miss.
-
-        Pipeline:
-        1. Batch HGETALL from Redis pipeline
-        2. Identify cache-hit (Redis has data) vs cache-miss (no Redis entry)
-        3. For cache-miss IDs only: single IN query against post_metrics table
-        4. Backfill cache-miss buckets into Redis via HSET pipeline
-        5. Merge live Redis increments with DB baselines, inject into item dicts
-        """
+        """批量灌注帖子指标：MySQL 基线 + Redis 增量，严禁把基线回填进 Redis 增量桶。"""
         if not items or not post_ids:
             return
 
-        # Step 1: Batch Redis HGETALL
         pipe = redis_client.pipeline()
         for pid in post_ids:
             pipe.hgetall(f"metrics:post:{pid}")
         redis_results = await pipe.execute()
 
         redis_map = {}
-        missed_ids = []
         for pid, raw in zip(post_ids, redis_results):
             if raw:
                 v = int(raw.get("view") or raw.get(b"view") or 0)
                 f = int(raw.get("favorite") or raw.get(b"favorite") or 0)
                 c = int(raw.get("comment") or raw.get(b"comment") or 0)
-                if v == 0 and f == 0 and c == 0:
-                    missed_ids.append(pid)
-                else:
-                    redis_map[pid] = {"view": v, "favorite": f, "comment": c}
-            else:
-                missed_ids.append(pid)
+                redis_map[pid] = {"view": v, "favorite": f, "comment": c}
 
-        # Step 2: MySQL fallback ONLY for cache-miss keys
         db_map = {}
-        if missed_ids:
+        if db is not None:
             try:
                 sql = text("""
                     SELECT post_id, view_count, favorite_count, comment_count
                     FROM post_metrics
                     WHERE post_id IN :pids
                 """).bindparams(bindparam("pids", expanding=True))
-                res = await db.execute(sql, {"pids": missed_ids})
-                backfill_pipe = redis_client.pipeline()
+                res = await db.execute(sql, {"pids": list(dict.fromkeys(post_ids))})
                 for row in res.mappings():
                     pid = row["post_id"]
                     db_map[pid] = {
@@ -145,17 +128,9 @@ class MetricsService:
                         "favorite": int(row["favorite_count"] or 0),
                         "comment": int(row["comment_count"] or 0),
                     }
-                    backfill_pipe.hset(f"metrics:post:{pid}", mapping={
-                        "view": str(db_map[pid]["view"]),
-                        "favorite": str(db_map[pid]["favorite"]),
-                        "comment": str(db_map[pid]["comment"]),
-                    })
-                if db_map:
-                    await backfill_pipe.execute()
             except Exception:
                 logger.exception("[Metrics Hydrate] Failed to fetch post metrics baseline from database")
 
-        # Step 3: Merge and inject
         for item in items:
             pid = item.get(id_key)
             if pid is None:
@@ -173,49 +148,32 @@ class MetricsService:
         items: list[dict[str, Any]],
         goods_ids: list[int],
     ) -> None:
-        """Read-Through cache: Redis hit first, MySQL fallback only for cache-miss keys, backfill Redis on miss.
-
-        Pipeline:
-        1. Batch HGETALL from Redis pipeline
-        2. Identify cache-hit vs cache-miss keys
-        3. For cache-miss IDs only: single IN query against goods_metrics table
-        4. Backfill cache-miss buckets into Redis via HSET pipeline
-        5. Merge Redis increments with DB baselines, inject into item dicts
-        """
+        """批量灌注商品指标：MySQL 基线 + Redis 增量，严禁把基线回填进 Redis 增量桶。"""
         if not items or not goods_ids:
             return
 
-        # Step 1: Batch Redis HGETALL
         pipe = redis_client.pipeline()
         for gid in goods_ids:
             pipe.hgetall(f"metrics:goods:{gid}")
         results = await pipe.execute()
 
         redis_map = {}
-        missed_ids = []
         for gid, raw in zip(goods_ids, results):
             if raw:
                 v = int(raw.get("view") or raw.get(b"view") or 0)
                 f = int(raw.get("favorite") or raw.get(b"favorite") or 0)
                 cm = int(raw.get("comment") or raw.get(b"comment") or 0)
-                if v == 0 and f == 0 and cm == 0:
-                    missed_ids.append(gid)
-                else:
-                    redis_map[gid] = {"view": v, "favorite": f, "comment": cm}
-            else:
-                missed_ids.append(gid)
+                redis_map[gid] = {"view": v, "favorite": f, "comment": cm}
 
-        # Step 2: MySQL fallback ONLY for cache-miss keys
         db_map = {}
-        if missed_ids:
+        if db is not None:
             try:
                 sql = text("""
                     SELECT goods_id, view_count, favorite_count, comment_count
                     FROM goods_metrics
                     WHERE goods_id IN :gids
                 """).bindparams(bindparam("gids", expanding=True))
-                res = await db.execute(sql, {"gids": missed_ids})
-                backfill_pipe = redis_client.pipeline()
+                res = await db.execute(sql, {"gids": list(dict.fromkeys(goods_ids))})
                 for row in res.mappings():
                     gid = row["goods_id"]
                     db_map[gid] = {
@@ -223,17 +181,9 @@ class MetricsService:
                         "favorite": int(row["favorite_count"] or 0),
                         "comment": int(row["comment_count"] or 0),
                     }
-                    backfill_pipe.hset(f"metrics:goods:{gid}", mapping={
-                        "view": str(db_map[gid]["view"]),
-                        "favorite": str(db_map[gid]["favorite"]),
-                        "comment": str(db_map[gid]["comment"]),
-                    })
-                if db_map:
-                    await backfill_pipe.execute()
             except Exception:
                 logger.exception("[Metrics Hydrate] Failed to fetch goods metrics baseline from database")
 
-        # Step 3: Merge and inject
         for item in items:
             gid = item.get("goods_id") or item.get("target_id")
             if gid is None:

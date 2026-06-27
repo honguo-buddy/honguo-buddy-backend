@@ -36,6 +36,11 @@ from app.core.dynamic_config import (
     DynamicConfigManager,
     watch_dynamic_config_refresh,
 )
+from app.core.redis_atomic import (
+    acquire_redis_lock,
+    release_redis_lock,
+    set_if_absent,
+)
 
 __all__ = [
     "Settings",
@@ -69,4 +74,7 @@ __all__ = [
     "DEFAULT_DYNAMIC_CONFIGS",
     "SYS_CONFIG_REFRESH_CHANNEL",
     "watch_dynamic_config_refresh",
+    "set_if_absent",
+    "acquire_redis_lock",
+    "release_redis_lock",
 ]

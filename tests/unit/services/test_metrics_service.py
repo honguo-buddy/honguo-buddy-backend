@@ -143,6 +143,106 @@ class FakeRedisForMetrics:
             return results
 
 
+class FakeMetricsQueryResult:
+    """指标服务测试专用查询结果对象。"""
+
+    def __init__(self, scalar_items=None, mapping_items=None):
+        self._scalar_items = list(scalar_items or [])
+        self._mapping_items = list(mapping_items or [])
+
+    def scalars(self):
+        return SimpleNamespace(all=lambda: list(self._scalar_items))
+
+    def mappings(self):
+        return list(self._mapping_items)
+
+
+class FakeMetricsRoundTripDB:
+    """模拟 metrics 查询与刷盘的轻量数据库对象。"""
+
+    def __init__(self, post_rows=None, goods_rows=None):
+        self.post_rows = dict(post_rows or {})
+        self.goods_rows = dict(goods_rows or {})
+        self.committed = False
+        self.rolled_back = False
+
+    async def execute(self, stmt, params=None):
+        stmt_str = str(stmt) if stmt is not None else ""
+        exec_params = params or {}
+
+        if "SELECT post_id, view_count, favorite_count, comment_count" in stmt_str and "FROM post_metrics" in stmt_str:
+            requested_post_ids = list(exec_params.get("pids", []))
+            rows = []
+            for post_id in requested_post_ids:
+                row = self.post_rows.get(post_id)
+                if row is None:
+                    continue
+                rows.append(
+                    {
+                        "post_id": post_id,
+                        "view_count": row.get("view_count", 0),
+                        "favorite_count": row.get("favorite_count", 0),
+                        "comment_count": row.get("comment_count", 0),
+                    }
+                )
+            return FakeMetricsQueryResult(mapping_items=rows)
+
+        if "SELECT goods_id, view_count, favorite_count, comment_count" in stmt_str and "FROM goods_metrics" in stmt_str:
+            requested_goods_ids = list(exec_params.get("gids", []))
+            rows = []
+            for goods_id in requested_goods_ids:
+                row = self.goods_rows.get(goods_id)
+                if row is None:
+                    continue
+                rows.append(
+                    {
+                        "goods_id": goods_id,
+                        "view_count": row.get("view_count", 0),
+                        "favorite_count": row.get("favorite_count", 0),
+                        "comment_count": row.get("comment_count", 0),
+                    }
+                )
+            return FakeMetricsQueryResult(mapping_items=rows)
+
+        if "FROM post" in stmt_str and "post_metrics" not in stmt_str:
+            return FakeMetricsQueryResult(scalar_items=list(self.post_rows.keys()))
+
+        if "FROM goods" in stmt_str and "goods_metrics" not in stmt_str:
+            return FakeMetricsQueryResult(scalar_items=list(self.goods_rows.keys()))
+
+        if "INSERT INTO post_metrics" in stmt_str:
+            for bind_item in list(exec_params or []):
+                post_id = bind_item["pid"]
+                current_row = self.post_rows.setdefault(
+                    post_id,
+                    {"view_count": 0, "favorite_count": 0, "comment_count": 0},
+                )
+                current_row["view_count"] = max(0, current_row["view_count"] + bind_item["view_count"])
+                current_row["favorite_count"] = max(0, current_row["favorite_count"] + bind_item["favorite_count"])
+                current_row["comment_count"] = max(0, current_row["comment_count"] + bind_item["comment_count"])
+            return FakeMetricsQueryResult()
+
+        if "INSERT INTO goods_metrics" in stmt_str:
+            for bind_item in list(exec_params or []):
+                goods_id = bind_item["gid"]
+                current_row = self.goods_rows.setdefault(
+                    goods_id,
+                    {"view_count": 0, "favorite_count": 0, "comment_count": 0},
+                )
+                current_row["view_count"] = max(0, current_row["view_count"] + bind_item["view_count"])
+                current_row["favorite_count"] = max(0, current_row["favorite_count"] + bind_item["favorite_count"])
+                current_row["comment_count"] = max(0, current_row["comment_count"] + bind_item["comment_count"])
+            return FakeMetricsQueryResult()
+
+        return FakeMetricsQueryResult()
+
+    async def commit(self):
+        self.committed = True
+
+    async def rollback(self):
+        self.rolled_back = True
+
+
 class TestMetricsService:
     async def test_incr_post_view_adds_to_redis(self):
         from app.services.metrics_service import MetricsService
@@ -414,70 +514,82 @@ class TestMetricsService:
     # ------------------------------------------------------------------
 
     async def test_flush_then_hydrate_round_trip(self):
-        """Read-Through: cache miss falls back to MySQL and backfills Redis;
-        with live Redis increments, merge is correct; after flush, Redis zeroed."""
+        """首次 hydrate 只读 MySQL 基线，不得把基线灌回 Redis 增量桶。"""
         from app.services.metrics_service import MetricsService
 
         redis_fake = FakeRedisForMetrics()
         post_id = 3001
         key = f"metrics:post:{post_id}"
+        db = FakeMetricsRoundTripDB(
+            post_rows={post_id: {"view_count": 100, "favorite_count": 5, "comment_count": 10}}
+        )
 
-        mysql_rows = {post_id: {"view_count": 100, "favorite_count": 5, "comment_count": 10}}
-
-        class FakeDBForRoundTrip:
-            def __init__(self):
-                self.committed = False
-                self.rolled_back = False
-            async def execute(self, stmt, params=None):
-                stmt_str = str(stmt) if stmt is not None else ""
-                class FR:
-                    def scalars(s):
-                        if "post_id" in stmt_str and "post_metrics" not in stmt_str:
-                            class ScalarAll:
-                                def all(ss):
-                                    return [post_id] if post_id in mysql_rows else []
-                            return ScalarAll()
-                        return s
-                    def all(s):
-                        return []
-                    def mappings(s):
-                        if post_id in mysql_rows:
-                            row = dict(mysql_rows[post_id])
-                            row["post_id"] = post_id
-                            return [row]
-                        return []
-                return FR()
-            async def commit(self):
-                self.committed = True
-            async def rollback(self):
-                self.rolled_back = True
-
-        db = FakeDBForRoundTrip()
-
-        # Phase 1: Cache miss (Redis empty) -> MySQL fallback + backfill
         items = [{"post_id": post_id}]
         await MetricsService.hydrate_posts_with_metrics(db, redis_fake, items, [post_id])
         assert items[0]["view_count"] == 100
         assert items[0]["favorite_count"] == 5
         assert items[0]["comment_count"] == 10
-        # Redis should now be backfilled with MySQL baseline
-        cached = await redis_fake.hgetall(key)
-        assert cached is not None
-        assert cached.get("view") == "100"
+        assert await redis_fake.hgetall(key) is None
 
-        # Phase 2: Add live Redis increments, hydrate again -> merge
-        redis_fake._hashes[key] = {"view": "110", "favorite": "7", "comment": "13"}
+        await MetricsService.incr_post_view(redis_fake, post_id)
         items2 = [{"post_id": post_id}]
         await MetricsService.hydrate_posts_with_metrics(db, redis_fake, items2, [post_id])
-        assert items2[0]["view_count"] == 110  # 100 base (cached) + 10 incr
-        assert items2[0]["favorite_count"] == 7
-        assert items2[0]["comment_count"] == 13
+        assert items2[0]["view_count"] == 101
+        assert items2[0]["favorite_count"] == 5
+        assert items2[0]["comment_count"] == 10
 
-        # Phase 3: Flush to MySQL, then hydrate (cache miss -> MySQL only)
         await redis_fake.sadd("metrics:active_posts_set", post_id)
         await MetricsService.flush_metrics_to_db(db, redis_fake)
+        assert db.post_rows[post_id]["view_count"] == 101
+        assert db.post_rows[post_id]["favorite_count"] == 5
+        assert db.post_rows[post_id]["comment_count"] == 10
+
         items3 = [{"post_id": post_id}]
         await MetricsService.hydrate_posts_with_metrics(db, redis_fake, items3, [post_id])
-        assert items3[0]["view_count"] == 100
+        assert items3[0]["view_count"] == 101
         assert items3[0]["favorite_count"] == 5
         assert items3[0]["comment_count"] == 10
+
+    async def test_hydrate_goods_does_not_backfill_mysql_baseline_into_redis_increment_bucket(self):
+        """商品 metrics 首次 hydrate 不得把 MySQL 基线写回 Redis 增量桶。"""
+        from app.services.metrics_service import MetricsService
+
+        redis_fake = FakeRedisForMetrics()
+        goods_id = 4001
+        db = FakeMetricsRoundTripDB(
+            goods_rows={goods_id: {"view_count": 20, "favorite_count": 3, "comment_count": 2}}
+        )
+
+        items = [{"goods_id": goods_id}]
+        await MetricsService.hydrate_goods_with_metrics(db, redis_fake, items, [goods_id])
+
+        assert items[0]["view_count"] == 20
+        assert items[0]["favorite_count"] == 3
+        assert items[0]["comment_count"] == 2
+        assert await redis_fake.hgetall(f"metrics:goods:{goods_id}") is None
+
+    async def test_flush_goods_after_hydrate_and_one_new_view_only_adds_one(self):
+        """商品 metrics 在 hydrate 后新增一次浏览，刷盘后只能 +1。"""
+        from app.services.metrics_service import MetricsService
+
+        redis_fake = FakeRedisForMetrics()
+        goods_id = 4002
+        db = FakeMetricsRoundTripDB(
+            goods_rows={goods_id: {"view_count": 50, "favorite_count": 8, "comment_count": 4}}
+        )
+
+        items = [{"goods_id": goods_id}]
+        await MetricsService.hydrate_goods_with_metrics(db, redis_fake, items, [goods_id])
+        assert items[0]["view_count"] == 50
+        assert await redis_fake.hgetall(f"metrics:goods:{goods_id}") is None
+
+        await MetricsService.incr_goods_view(redis_fake, goods_id)
+        items2 = [{"goods_id": goods_id}]
+        await MetricsService.hydrate_goods_with_metrics(db, redis_fake, items2, [goods_id])
+        assert items2[0]["view_count"] == 51
+
+        await redis_fake.sadd("metrics:active_goods_set", goods_id)
+        await MetricsService.flush_metrics_to_db(db, redis_fake)
+        assert db.goods_rows[goods_id]["view_count"] == 51
+        assert db.goods_rows[goods_id]["favorite_count"] == 8
+        assert db.goods_rows[goods_id]["comment_count"] == 4

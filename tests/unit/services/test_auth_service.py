@@ -41,7 +41,7 @@ async def test_gen_unique_user_uuid_returns_bytes():
 @pytest.mark.asyncio
 async def test_token_persist_issue_and_create_user_paths(monkeypatch):
     redis_stub = SimpleNamespace(
-        get=AsyncMock(return_value="old-token"),
+        get=AsyncMock(side_effect=lambda key: "old-token" if key == "user_token:1" else None),
         set=AsyncMock(),
         delete=AsyncMock(),
     )
@@ -51,7 +51,7 @@ async def test_token_persist_issue_and_create_user_paths(monkeypatch):
     token_user = SimpleNamespace(user_id=1, user_name="alice", user_type=None)
     token = await AuthService._issue_token_for_user(token_user)
     assert token == "issued-token"
-    redis_stub.delete.assert_awaited_once_with("token:old-token")
+    redis_stub.delete.assert_any_await("token:old-token")
 
     class CreateUserDB:
         def __init__(self):
@@ -430,3 +430,270 @@ async def test_verify_email_code_missing_and_user_missing_paths(monkeypatch):
     await redis_stub.set("email_verify_code:nobody@bjtu.edu.cn", json.dumps({"code": "123456", "timestamp": 100, "attempts": 0, "user_id": 1}, ensure_ascii=False))
     with pytest.raises(Exception):
         await AuthService.verify_email_code(VerifyDB(), 1, "nobody@bjtu.edu.cn", "123456")
+
+
+@pytest.mark.asyncio
+async def test_persist_user_token_concurrent_logins_keep_single_active_token(monkeypatch):
+    class ConcurrentRedisStub:
+        def __init__(self):
+            self.store = {
+                "user_token:1": "old-token",
+                "token:old-token": "1",
+            }
+
+        async def get(self, key):
+            if key == "user_token:1":
+                snapshot = self.store.get(key)
+                await asyncio.sleep(0.01)
+                return snapshot
+            return self.store.get(key)
+
+        async def set(self, key, value, ex=None, nx=False):
+            if nx and key in self.store:
+                return None
+            self.store[key] = str(value)
+            return True
+
+        async def delete(self, *keys):
+            removed = 0
+            for key in keys:
+                if key in self.store:
+                    removed += 1
+                    self.store.pop(key, None)
+            return removed
+
+        async def eval(self, script, numkeys, *args):
+            lock_key = args[0]
+            lock_token = args[1]
+            if self.store.get(lock_key) == lock_token:
+                self.store.pop(lock_key, None)
+                return 1
+            return 0
+
+    redis_stub = ConcurrentRedisStub()
+    monkeypatch.setattr("app.services.auth_service.redis", redis_stub)
+
+    await asyncio.gather(
+        AuthService._persist_user_token(1, "token-a"),
+        AuthService._persist_user_token(1, "token-b"),
+    )
+
+    active_token = redis_stub.store.get("user_token:1")
+    assert active_token in {"token-a", "token-b"}
+    assert redis_stub.store.get(f"token:{active_token}") == "1"
+    stale_tokens = {"token-a", "token-b"} - {active_token}
+    for stale_token in stale_tokens:
+        assert f"token:{stale_token}" not in redis_stub.store
+    assert "token:old-token" not in redis_stub.store
+
+
+@pytest.mark.asyncio
+async def test_send_email_verify_code_concurrent_requests_only_one_succeeds(monkeypatch):
+    class ConcurrentRedisStub:
+        def __init__(self):
+            self.store = {}
+
+        async def get(self, key):
+            if key == "email_verify_rate:race@bjtu.edu.cn":
+                snapshot = self.store.get(key)
+                await asyncio.sleep(0.01)
+                return snapshot
+            return self.store.get(key)
+
+        async def set(self, key, value, ex=None, nx=False):
+            if nx and key in self.store:
+                return None
+            self.store[key] = value
+            return True
+
+        async def delete(self, *keys):
+            for key in keys:
+                self.store.pop(key, None)
+
+    class EmailDB:
+        async def execute(self, stmt):
+            return FakeResult(items=[])
+
+    redis_stub = ConcurrentRedisStub()
+    monkeypatch.setattr("app.services.auth_service.redis", redis_stub)
+    monkeypatch.setattr("app.services.auth_service.send_email", lambda email, subject, body: True)
+
+    results = await asyncio.gather(
+        AuthService.send_email_verify_code(EmailDB(), 1, "race@bjtu.edu.cn"),
+        AuthService.send_email_verify_code(EmailDB(), 1, "race@bjtu.edu.cn"),
+        return_exceptions=True,
+    )
+
+    success_count = sum(1 for item in results if isinstance(item, dict))
+    error_count = sum(1 for item in results if isinstance(item, Exception))
+    assert success_count == 1
+    assert error_count == 1
+    assert redis_stub.store.get("email_verify_rate:race@bjtu.edu.cn") == "1"
+
+
+@pytest.mark.asyncio
+async def test_verify_admin_login_code_concurrent_replay_only_allows_once(monkeypatch):
+    class ConcurrentRedisStub:
+        def __init__(self):
+            self.store = {
+                "admin:login:code:admin@bjtu.edu.cn": "123456",
+                "admin:login:lock:admin@bjtu.edu.cn": "1",
+            }
+
+        async def get(self, key):
+            if key == "admin:login:code:admin@bjtu.edu.cn":
+                snapshot = self.store.get(key)
+                await asyncio.sleep(0.01)
+                return snapshot
+            return self.store.get(key)
+
+        async def set(self, key, value, ex=None, nx=False):
+            if nx and key in self.store:
+                return None
+            self.store[key] = str(value)
+            return True
+
+        async def delete(self, *keys):
+            removed = 0
+            for key in keys:
+                if key in self.store:
+                    removed += 1
+                    self.store.pop(key, None)
+            return removed
+
+        async def eval(self, script, numkeys, *args):
+            lock_key = args[0]
+            lock_token = args[1]
+            if self.store.get(lock_key) == lock_token:
+                self.store.pop(lock_key, None)
+                return 1
+            return 0
+
+    class AdminDB:
+        async def execute(self, stmt):
+            return FakeResult(items=[SimpleNamespace(user_id=9, user_name="admin", is_admin=True, user_type=None)])
+
+    redis_stub = ConcurrentRedisStub()
+    monkeypatch.setattr("app.services.auth_service.create_access_token", lambda payload: f"token-{payload['sub']}")
+    persist_mock = AsyncMock()
+    monkeypatch.setattr(AuthService, "_persist_user_token", persist_mock)
+
+    results = await asyncio.gather(
+        AuthService.verify_admin_login_code(AdminDB(), redis_stub, "admin@bjtu.edu.cn", "123456"),
+        AuthService.verify_admin_login_code(AdminDB(), redis_stub, "admin@bjtu.edu.cn", "123456"),
+        return_exceptions=True,
+    )
+
+    success_count = sum(1 for item in results if isinstance(item, dict))
+    error_count = sum(1 for item in results if isinstance(item, Exception))
+    assert success_count == 1
+    assert error_count == 1
+    persist_mock.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_cleanup_stale_token_keys_only_removes_non_current_tokens():
+    class CleanupRedisStub:
+        def __init__(self):
+            self._data = {
+                "user_token:1": "token-live-1",
+                "token:token-live-1": "1",
+                "token:token-stale-1": "1",
+                "user_token:2": "token-live-2",
+                "token:token-live-2": "2",
+                "token:token-orphan": "3",
+            }
+
+        async def get(self, key):
+            return self._data.get(key)
+
+        async def set(self, key, value, ex=None, nx=False):
+            if nx and key in self._data:
+                return None
+            self._data[key] = str(value)
+            return True
+
+        async def delete(self, *keys):
+            removed = 0
+            for key in keys:
+                if key in self._data:
+                    removed += 1
+                    self._data.pop(key, None)
+            return removed
+
+        async def eval(self, script, numkeys, *args):
+            lock_key = args[0]
+            lock_token = args[1]
+            if self._data.get(lock_key) == lock_token:
+                self._data.pop(lock_key, None)
+                return 1
+            return 0
+
+    redis_stub = CleanupRedisStub()
+
+    result = await AuthService.cleanup_stale_token_keys(redis_stub)
+
+    assert result == {
+        "scanned": 4,
+        "deleted": 2,
+        "kept": 2,
+        "skipped_locked": 0,
+        "missing_mapping": 0,
+    }
+    assert redis_stub._data["user_token:1"] == "token-live-1"
+    assert redis_stub._data["token:token-live-1"] == "1"
+    assert redis_stub._data["user_token:2"] == "token-live-2"
+    assert redis_stub._data["token:token-live-2"] == "2"
+    assert "token:token-stale-1" not in redis_stub._data
+    assert "token:token-orphan" not in redis_stub._data
+
+
+@pytest.mark.asyncio
+async def test_cleanup_stale_token_keys_skips_busy_user_lock():
+    class LockedCleanupRedisStub:
+        def __init__(self):
+            self._data = {
+                "user_token:1": "token-live-1",
+                "token:token-live-1": "1",
+                "token:token-stale-1": "1",
+                "lock:user_token:1": "occupied",
+            }
+
+        async def get(self, key):
+            return self._data.get(key)
+
+        async def set(self, key, value, ex=None, nx=False):
+            if nx and key in self._data:
+                return None
+            self._data[key] = str(value)
+            return True
+
+        async def delete(self, *keys):
+            removed = 0
+            for key in keys:
+                if key in self._data:
+                    removed += 1
+                    self._data.pop(key, None)
+            return removed
+
+        async def eval(self, script, numkeys, *args):
+            lock_key = args[0]
+            lock_token = args[1]
+            if self._data.get(lock_key) == lock_token:
+                self._data.pop(lock_key, None)
+                return 1
+            return 0
+
+    redis_stub = LockedCleanupRedisStub()
+
+    result = await AuthService.cleanup_stale_token_keys(redis_stub)
+
+    assert result == {
+        "scanned": 2,
+        "deleted": 0,
+        "kept": 0,
+        "skipped_locked": 2,
+        "missing_mapping": 0,
+    }
+    assert redis_stub._data["token:token-live-1"] == "1"
+    assert redis_stub._data["token:token-stale-1"] == "1"
