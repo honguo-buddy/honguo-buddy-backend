@@ -16,7 +16,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import func, select
 
-from app.api import get_current_user, get_current_user_optional
+from app.api import get_current_user_optional, get_current_verified_user
 from app.core import AuthHTTPException, BusinessHTTPException, ResourceHTTPException, get_now_naive, settings
 from app.db import get_db, get_redis, redis
 from app.schemas import (
@@ -123,7 +123,7 @@ def _get_post_open_quota_limit(direction: str) -> int:
 @router.post("/", response_model=ResponseModel[PostRead])
 async def publish_post(
     post_create: PostCreate,
-    current_user: UserRead = Depends(get_current_user),
+    current_user: UserRead = Depends(get_current_verified_user),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -270,7 +270,7 @@ async def list_posts(
 
 @router.get("/me", response_model=ResponseModel[PostList])
 async def list_my_posts(
-    current_user: UserRead = Depends(get_current_user),
+    current_user: UserRead = Depends(get_current_verified_user),
     category_id: Optional[int] = Query(None, description="分类ID"),
     status: Optional[str] = Query(None, description="状态筛选"),
     page: int = Query(1, ge=1, description="页码"),
@@ -381,7 +381,7 @@ async def list_public_user_posts(
 async def update_post_bulletin(
     post_id: int,
     payload: PostBulletinUpdate,
-    current_user: UserRead = Depends(get_current_user),
+    current_user: UserRead = Depends(get_current_verified_user),
     db: AsyncSession = Depends(get_db),
 ):
     """更新帖子公告栏。bulletin 为 None 不修改，为空字符串清空公告。"""
@@ -433,7 +433,7 @@ async def get_post_bulletin(
 @router.post("/batch-accept", response_model=ResponseModel[PostBatchAcceptResponse])
 async def batch_accept_posts(
     payload: PostBatchAcceptRequest,
-    current_user: UserRead = Depends(get_current_user),
+    current_user: UserRead = Depends(get_current_verified_user),
     db: AsyncSession = Depends(get_db),
     redis_client = Depends(get_redis),
 ):
@@ -457,7 +457,7 @@ async def batch_accept_posts(
 @router.get("/{post_id}/applications", response_model=ResponseModel[PostApplicationListResponse])
 async def list_post_applications(
     post_id: int,
-    current_user: UserRead = Depends(get_current_user),
+    current_user: UserRead = Depends(get_current_verified_user),
     db: AsyncSession = Depends(get_db),
 ):
     """查看指定帖子的接单申请列表，仅帖子发布者可访问。"""
@@ -497,7 +497,7 @@ async def list_post_applications(
 async def update_post(
     post_id: int,
     payload: PostUpdate,
-    current_user: UserRead = Depends(get_current_user),
+    current_user: UserRead = Depends(get_current_verified_user),
     db: AsyncSession = Depends(get_db),
 ):
     """局部更新帖子。"""
@@ -516,7 +516,7 @@ async def update_post(
 @router.delete("/{post_id}", response_model=ResponseModel[dict])
 async def delete_post(
     post_id: int,
-    current_user: UserRead = Depends(get_current_user),
+    current_user: UserRead = Depends(get_current_verified_user),
     db: AsyncSession = Depends(get_db),
 ):
     """软删除帖子。"""
@@ -608,7 +608,7 @@ async def get_post_detail(
 async def accept_post(
     post_id: int,
     background_tasks: BackgroundTasks,
-    current_user: UserRead = Depends(get_current_user),
+    current_user: UserRead = Depends(get_current_verified_user),
     db: AsyncSession = Depends(get_db),
     redis_client = Depends(get_redis),
 ):
@@ -674,7 +674,7 @@ async def accept_post(
 @router.post("/{post_id}/suspend", response_model=ResponseModel)
 async def suspend_post(
     post_id: int,
-    current_user: UserRead = Depends(get_current_user),
+    current_user: UserRead = Depends(get_current_verified_user),
     db: AsyncSession = Depends(get_db),
 ):
     """暂停招募：将帖子状态从 OPEN 变更为 SUSPENDED。"""
@@ -697,7 +697,7 @@ async def suspend_post(
 @router.post("/{post_id}/resume", response_model=ResponseModel)
 async def resume_post(
     post_id: int,
-    current_user: UserRead = Depends(get_current_user),
+    current_user: UserRead = Depends(get_current_verified_user),
     db: AsyncSession = Depends(get_db),
 ):
     """恢复招募：将帖子状态从 SUSPENDED 还原为 OPEN。"""
@@ -719,7 +719,7 @@ async def resume_post(
 @router.get("/{post_id}/contact", response_model=ResponseModel)
 async def get_post_contact(
     post_id: int,
-    current_user: UserRead = Depends(get_current_user),
+    current_user: UserRead = Depends(get_current_verified_user),
     db: AsyncSession = Depends(get_db),
 ):
     """获取帖子发布者的联系方式（需鉴权：楼主本人或已申请者）。"""

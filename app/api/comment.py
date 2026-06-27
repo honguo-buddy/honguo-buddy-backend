@@ -5,7 +5,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api import get_current_user, get_current_user_optional
+from app.api import get_current_user_optional, get_current_verified_user
 from app.core import settings
 from app.db import get_db
 from app.schemas import ResponseModel
@@ -57,7 +57,7 @@ def _build_comment_with_reply_count_response(comment, reply_count: int, preview_
 @router.post("", response_model=ResponseModel[CommentResponse])
 async def create_comment(
     req: CommentCreateRequest,
-    current_user: UserSchema = Depends(get_current_user),
+    current_user: UserSchema = Depends(get_current_verified_user),
     db: AsyncSession = Depends(get_db),
 ):
     """发布评论或回复。
@@ -88,7 +88,7 @@ async def create_comment(
 @router.delete("/{comment_id}", response_model=ResponseModel[dict])
 async def delete_comment(
     comment_id: int,
-    current_user: UserSchema = Depends(get_current_user),
+    current_user: UserSchema = Depends(get_current_verified_user),
     db: AsyncSession = Depends(get_db),
 ):
     """软删除评论。

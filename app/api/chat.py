@@ -5,7 +5,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api import get_current_user
+from app.api import get_current_verified_user
 from app.core import BusinessHTTPException, settings
 from app.db import get_db
 from app.models import ChatSession
@@ -62,7 +62,7 @@ def _build_message_read(message, attachment_urls: list[str]) -> ChatMessageRead:
 @router.post("/sessions/init", response_model=ResponseModel[ChatSessionRead])
 async def init_session(
 	req: ChatSessionInitRequest,
-	current_user: UserSchema = Depends(get_current_user),
+	current_user: UserSchema = Depends(get_current_verified_user),
 	db: AsyncSession = Depends(get_db),
 ):
 	# 黑名单拦截：若对方拉黑了你，禁止发起会话
@@ -82,7 +82,7 @@ async def init_session(
 
 @router.get("/sessions", response_model=ResponseModel[ChatSessionListResponse])
 async def list_sessions(
-	current_user: UserSchema = Depends(get_current_user),
+	current_user: UserSchema = Depends(get_current_verified_user),
 	db: AsyncSession = Depends(get_db),
 ):
 	# 黑名单过滤：排除拉黑了当前用户的会话对方的会话
@@ -97,7 +97,7 @@ async def list_sessions(
 @router.post("/messages", response_model=ResponseModel[ChatMessageRead])
 async def send_message(
 	req: ChatMessageCreateRequest,
-	current_user: UserSchema = Depends(get_current_user),
+	current_user: UserSchema = Depends(get_current_verified_user),
 	db: AsyncSession = Depends(get_db),
 ):
 	# 黑名单拦截：获取会话对方并检查是否被拉黑
@@ -129,7 +129,7 @@ async def get_messages(
 	session_id: int,
 	cursor: Optional[int] = Query(None, description="游标：上一页最后一条消息ID"),
 	size: int = Query(20, ge=1, le=100, description="每页大小"),
-	current_user: UserSchema = Depends(get_current_user),
+	current_user: UserSchema = Depends(get_current_verified_user),
 	db: AsyncSession = Depends(get_db),
 ):
 	messages, next_cursor = await ChatService.get_messages(
@@ -147,7 +147,7 @@ async def get_messages(
 @router.patch("/sessions/{session_id}/read", response_model=ResponseModel[dict])
 async def read_session(
 	session_id: int,
-	current_user: UserSchema = Depends(get_current_user),
+	current_user: UserSchema = Depends(get_current_verified_user),
 	db: AsyncSession = Depends(get_db),
 ):
 	unread_count = await ChatService.mark_session_read(db=db, current_user_id=current_user.user_id, session_id=session_id)
@@ -157,7 +157,7 @@ async def read_session(
 @router.patch("/messages/{message_id}/recall", response_model=ResponseModel[ChatRecallResponse])
 async def recall_message(
 	message_id: int,
-	current_user: UserSchema = Depends(get_current_user),
+	current_user: UserSchema = Depends(get_current_verified_user),
 	db: AsyncSession = Depends(get_db),
 ):
 	message = await ChatService.recall_message(db=db, current_user_id=current_user.user_id, message_id=message_id)
@@ -170,7 +170,7 @@ async def recall_message(
 @router.delete("/messages/{message_id}/local", response_model=ResponseModel[dict])
 async def delete_local_message(
 	message_id: int,
-	current_user: UserSchema = Depends(get_current_user),
+	current_user: UserSchema = Depends(get_current_verified_user),
 	db: AsyncSession = Depends(get_db),
 ):
 	message = await ChatService.delete_local_message(db=db, current_user_id=current_user.user_id, message_id=message_id)
@@ -186,7 +186,7 @@ async def delete_local_message(
 @router.post("/messages/broadcast-post", response_model=ResponseModel[dict])
 async def broadcast_post_message(
     payload: ChatBroadcastRequest,
-    current_user: UserSchema = Depends(get_current_user),
+    current_user: UserSchema = Depends(get_current_verified_user),
     db: AsyncSession = Depends(get_db),
 ):
     """发帖人向所有已录用买家群发 1v1 私信（流式扇出）。"""

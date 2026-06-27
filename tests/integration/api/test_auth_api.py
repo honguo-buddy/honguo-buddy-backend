@@ -140,6 +140,27 @@ class TestGetCurrentUser:
         assert response.status_code == 200
         assert response.json()["code"] == settings.TOKEN_INVALID_CODE
 
+    async def test_get_current_user_info_still_allows_logged_in_unverified_user(
+        self,
+        client: AsyncClient,
+        db_session,
+        test_user: User,
+        test_user_token: str,
+        fake_redis,
+    ):
+        test_user.phonenumber = None
+        test_user.is_verified = False
+        await db_session.flush()
+        await fake_redis.set(f"token:{test_user_token}", str(test_user.user_id))
+        await fake_redis.set(f"user_token:{test_user.user_id}", test_user_token)
+
+        response = await client.get("/users/info", headers={"Authorization": f"Bearer {test_user_token}"})
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["code"] == settings.SUCCESS_CODE
+        assert body["message"]["userName"] == test_user.user_name
+
 
 class TestLogout:
     async def test_logout_with_valid_token(

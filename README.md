@@ -1709,7 +1709,7 @@ GET /users/me/blacklist?page=1&page_size=20
 
 用途: 获取当前登录用户在委托帖子（`direction=BUY`）维度的可开启剩余额度。
 
-请求头: Authorization: Bearer <token>。
+请求头: Authorization: Bearer <token>（需已认证：手机号验证或校园认证二者有其一）。
 
 请求示例:
 
@@ -1842,6 +1842,7 @@ GET /users/me/blacklist?page=1&page_size=20
 常见错误:
 
 - code: 105 - Token 失效或缺失。
+- code: 110 - 当前操作需要先完成手机号验证或校园认证。
 - code: 99 - 上传文件不是受支持的图片，或请求体缺失。
 - code: 301 - 文件保存失败或数据库写入失败。
 
@@ -1974,7 +1975,7 @@ GET /users/me/blacklist?page=1&page_size=20
 
 用途：更新模板分类信息（管理员）。
 
-请求头: Authorization: Bearer <token>。
+请求头: Authorization: Bearer <token>（需已认证：手机号验证或校园认证二者有其一）。
 
 请求示例：
 
@@ -2113,6 +2114,7 @@ GET /users/me/blacklist?page=1&page_size=20
 常见错误:
 
 - code: 105 - Token 失效或缺失。
+- code: 110 - 当前操作需要先完成手机号验证或校园认证。
 - code: 99  - 请求体校验失败。
 - code: 301 - 活跃委托帖或活跃服务帖已达对应上限。
 - code: 99  - 截止时间不能早于或等于当前时间。
@@ -2185,7 +2187,7 @@ GET /users/me/blacklist?page=1&page_size=20
 
 用途: 获取当前用户的帖子列表。
 
-请求头: Authorization: Bearer <token>。
+请求头: Authorization: Bearer <token>（需已认证：手机号验证或校园认证二者有其一）。
 
 请求示例:
 
@@ -2245,6 +2247,7 @@ GET /users/me/blacklist?page=1&page_size=20
 常见错误:
 
 - code: 105 - Token 失效或缺失。
+- code: 110 - 当前操作需要先完成手机号验证或校园认证。
 - code: 99 - 查询参数格式不合法。
 - code: 301 - 列表查询失败。
 
@@ -2384,7 +2387,7 @@ GET /posts/1001
 - `attachment_ids` 若传入，则按替换语义处理：先解绑当前帖子旧附件，再绑定新附件；传空数组表示清空当前帖子全部图片。
 - `attachment_ids` 的数组顺序会被持久化保存，并作为详情/后续编辑返回顺序；第 1 张即封面图。
 
-请求头: Authorization: Bearer <token>。
+请求头: Authorization: Bearer <token>（需已认证：手机号验证或校园认证二者有其一）。
 
 请求示例:
 
@@ -2441,7 +2444,7 @@ GET /posts/1001
 
 用途: 帖子拥有者或管理员执行软删除。
 
-请求头: Authorization: Bearer <token>。
+请求头: Authorization: Bearer <token>（需已认证：手机号验证或校园认证二者有其一）。
 
 请求示例:
 
@@ -2472,9 +2475,9 @@ GET /posts/1001
 
 #### 4.5.8 批量接单 (POST: /posts/batch-accept)
 
-用途: 供顺路接单用户一次性申请多个 `BUY` 方向帖子。支持部分成功、部分失败返回。仅登录用户可操作。
+用途: 供顺路接单用户一次性申请多个 `BUY` 方向帖子。支持部分成功、部分失败返回。需已认证用户可操作。
 
-请求头: Authorization: Bearer <token>。
+请求头: Authorization: Bearer <token>（需已认证：手机号验证或校园认证二者有其一）。
 
 请求示例:
 
@@ -2522,7 +2525,7 @@ GET /posts/1001
 
 用途: 当前用户对指定帖子发起接单申请。申请成功后订单处于 PENDING 状态（未录用），不占用帖子已录用名额。
 
-请求头: Authorization: Bearer <token>。
+请求头: Authorization: Bearer <token>（需已认证：手机号验证或校园认证二者有其一）。
 
 说明：
 - BUY 方向帖子为申请制，申请后须等待发布者逐一审批；ccepted 为 alse，message 提示"接单申请递交成功，等待发帖人审批"。
@@ -2572,7 +2575,7 @@ GET /posts/1001
 
 用途: 帖子发布者查看当前帖子下的申请列表，用于同意/拒绝接单。仅帖子拥有者可访问。查看成功后，后端会将该帖子下所有 `PENDING` 且 `is_seen_by_seller = 0` 的申请批量标记为已查阅，用于清空系统未读计数。
 
-请求头: Authorization: Bearer <token>。
+请求头: Authorization: Bearer <token>（需已认证：手机号验证或校园认证二者有其一）。
 
 请求示例:
 
@@ -2625,7 +2628,7 @@ GET /posts/1001
 
 **写入公告 (POST)**
 
-请求头: Authorization: Bearer <token>（仅帖子发布者可操作）。
+请求头: Authorization: Bearer <token>（需已认证，且仅帖子发布者可操作）。
 
 请求示例:
 
@@ -2666,7 +2669,7 @@ GET /posts/1001
 
 用途: 鉴权获取帖子发布者的联系方式（phone / wx / qq）。仅帖子发布者本人或已申请该帖子的用户可查看。
 
-请求头: Authorization: Bearer <token>。
+请求头: Authorization: Bearer <token>（需已认证：手机号验证或校园认证二者有其一）。
 
 请求示例:
 
@@ -2698,7 +2701,7 @@ GET /posts/1001/contact
 
 用途: 发帖人快捷控制帖子的招募状态：暂停招募（OPEN -> SUSPENDED）或恢复招募（SUSPENDED -> OPEN）。SUSPENDED 状态的帖子在大厅中依然可见，但禁止新用户接单。
 
-请求头: Authorization: Bearer <token>（仅帖子发布者可操作）。
+请求头: Authorization: Bearer <token>（需已认证，且仅帖子发布者可操作）。
 
 **暂停招募 (POST /posts/{post_id}/suspend)**
 
@@ -2751,7 +2754,7 @@ GET /posts/1001/contact
 
 用途: 获取当前用户相关的订单列表。
 
-请求头: Authorization: Bearer <token>。
+请求头: Authorization: Bearer <token>（需已认证：手机号验证或校园认证二者有其一）。
 
 请求示例:
 
@@ -2885,6 +2888,7 @@ JSON
 常见错误:
 
 - code: 99 - 参数缺失或无效。
+- code: 110 - 当前操作需要先完成手机号验证或校园认证。
 - code: 103 - 关联项目不存在。
 - code: 301 - 关联订单查询失败。
 
@@ -2892,7 +2896,7 @@ JSON
 
 用途: 获取指定订单的详细信息，仅订单相关方可查看。
 
-请求头: Authorization: Bearer <token>。
+请求头: Authorization: Bearer <token>。其中 `approve` / `reject` / `complete` / `submit-delivery` / `accept-delivery` 需已认证；`cancel` 仅需登录。
 
 请求示例:
 
@@ -2977,6 +2981,7 @@ JSON
 - `approve` 和 `reject` 仅限卖家（帖子发布者）操作。
 - `submit-delivery` 由卖家提交已交付状态。
 - `accept-delivery` 由买家确认收货并完成订单；`complete` 为兼容接口，内部等价于 `accept-delivery`。
+- 上述交易推进类操作（`approve` / `reject` / `complete` / `submit-delivery` / `accept-delivery`）都要求当前用户已完成手机号验证或校园认证二者之一。
 - `cancel` 仅限买家或卖家取消，遵循分水岭规则：订单创建后在配置时限内取消为闪电退单（每人每日限次，由 settings 控制），超时可无限制取消。同笔订单可多次取消，不再锁定。
 - `cancel` 接口额外返回 `curr_accepters`（当前已录用人数）、`rest_cancel_times`（闪电退单今日剩余次数）和 `cancel_message`（中文提示语）。闪电退单超额时返回 code:99。
 
@@ -3010,7 +3015,7 @@ JSON
 
 用途: 对已完成订单发起双盲评价。仅订单相关方可操作。
 
-请求头: Authorization: Bearer <token>。
+请求头: Authorization: Bearer <token>（需已认证：手机号验证或校园认证二者有其一）。
 
 请求示例:
 
@@ -3059,6 +3064,7 @@ JSON
 常见错误:
 
 - code: 105 - Token 失效或缺失。
+- code: 110 - 当前操作需要先完成手机号验证或校园认证。
 - code: 99 - 请求参数不合法，或评价内容不完整。
 - code: 102 - 仅订单相关方可评价。
 - code: 301 - 订单不存在或订单未完成。
@@ -3119,7 +3125,7 @@ JSON
 
 用途: 【仅 SELL 方向】发帖人一键启动履约，系统自动将所有未被录用的 PENDING 排队申请单批量清洗为已拒绝（REJECTED），同时帖子状态变更为 IN_PROGRESS。
 
-请求头: Authorization: Bearer <token>（仅帖子发布者可操作）。
+请求头: Authorization: Bearer <token>（需已认证，且仅帖子发布者可操作）。
 
 权限说明：
 - 仅 SELL 方向帖子支持此操作。
@@ -3152,7 +3158,7 @@ JSON
 
 用途：发布根评论或对已有评论进行回复（盖楼）。
 
-请求头：Authorization: Bearer <token>（必须登录）
+请求头：Authorization: Bearer <token>（需已认证：手机号验证或校园认证二者有其一）
 
 请求示例:
 
@@ -3193,6 +3199,7 @@ JSON
 
 常见错误:
 - code: 105 - Token 无效或已失效（未登录）。
+- code: 110 - 当前操作需要先完成手机号验证或校园认证。
 - code: 99  - 请求参数校验失败（例如 `target_id` 类型不正确、`content` 为空）。
 - code: 301 - 父评论不存在或已被删除（当 `parent_id` 指向的评论不可用时）。
 - code: 106 - 目标帖子或商品不存在或已被软删除（评论挂载的目标实体不可用）。
@@ -3201,7 +3208,7 @@ JSON
 
 用途：对指定评论执行软删除。仅评论所有者或管理员可操作。
 
-请求头：Authorization: Bearer <token>（必须登录）
+请求头：Authorization: Bearer <token>（需已认证：手机号验证或校园认证二者有其一）
 
 请求示例:
 
@@ -3222,6 +3229,7 @@ JSON
 
 常见错误:
 - code: 105 - Token 无效或已失效。
+- code: 110 - 当前操作需要先完成手机号验证或校园认证。
 - code: 102 - 权限不足（非所有者且非管理员）。
 - code: 301 - 评论不存在（无法找到指定 `comment_id`）。
 
@@ -3336,7 +3344,7 @@ LIMIT :size
 
 用途：按用户 ID 自动排序创建或复用双人会话，可选附带业务上下文（例如帖子）。
 
-请求头：Authorization: Bearer <token>（必须登录）
+请求头：Authorization: Bearer <token>（需已认证：手机号验证或校园认证二者有其一）
 
 请求示例:
 
@@ -3371,7 +3379,7 @@ LIMIT :size
 
 用途：获取当前用户的收件箱列表，并返回每个会话的未读数。
 
-请求头：Authorization: Bearer <token>（必须登录）
+请求头：Authorization: Bearer <token>（需已认证：手机号验证或校园认证二者有其一）
 
 成功响应:
 
@@ -3400,7 +3408,7 @@ LIMIT :size
 
 用途：发送文本消息，可选携带附件、引用消息和业务上下文。
 
-请求头：Authorization: Bearer <token>（必须登录）
+请求头：Authorization: Bearer <token>（需已认证：手机号验证或校园认证二者有其一）
 
 请求示例:
 
@@ -3442,7 +3450,7 @@ LIMIT :size
 
 用途：按游标分页拉取消息历史，支持消息单边删除过滤，并返回消息上下文字段。
 
-请求头：Authorization: Bearer <token>（必须登录）
+请求头：Authorization: Bearer <token>（需已认证：手机号验证或校园认证二者有其一）
 
 请求示例:
 
@@ -3457,13 +3465,13 @@ LIMIT :size
 
 用途：清除对方发来的未读红点。
 
-请求头：Authorization: Bearer <token>（必须登录）
+请求头：Authorization: Bearer <token>（需已认证：手机号验证或校园认证二者有其一）
 
 #### 4.8.6 撤回消息 (PATCH: /chats/messages/{message_id}/recall)
 
 用途：2 分钟内撤回自己发送的消息。
 
-请求头：Authorization: Bearer <token>（必须登录）
+请求头：Authorization: Bearer <token>（需已认证：手机号验证或校园认证二者有其一）
 
 #### 4.8.7 单边删除 (DELETE: /chats/messages/{message_id}/local)
 
@@ -3477,7 +3485,7 @@ LIMIT :size
 
 用途: 发帖人向所有已录用（ONGOING）买家逐一发送 1v1 私信，实现流式扇出群发。不创建群聊实体，每条消息独立落入各买家私信会话。
 
-请求头: Authorization: Bearer <token>（仅帖子发布者可操作）。
+请求头: Authorization: Bearer <token>（需已认证，且仅帖子发布者可操作）。
 
 请求示例:
 
@@ -3525,7 +3533,7 @@ LIMIT :size
 
 用途：发布一个新的闲置商品，可选绑定附件图片。
 
-请求头：Authorization: Bearer <token>（必须登录）
+请求头：Authorization: Bearer <token>（需已认证：手机号验证或校园认证二者有其一）
 
 请求示例：
 
@@ -3582,6 +3590,7 @@ LIMIT :size
 - code: 99 - 请求参数校验失败（如缺少 category_id 或 name）/ 截止时间不能早于或等于当前时间。
 - code: 301 - 当前发布的活跃商品已达上限。
 - code: 105 - Token 无效。
+- code: 110 - 当前操作需要先完成手机号验证或校园认证。
 
 说明：
 - `attachment_urls` 为兼容旧前端保留；`attachments` 为新字段，返回每张图的 `id + url`，前端编辑商品时应优先使用 `attachments[].id` 回填到 `attachment_ids`。
@@ -3654,7 +3663,7 @@ LIMIT :size
 
 用途：分页查询当前用户发布的商品列表。
 
-请求头：Authorization: Bearer <token>（必须登录）
+请求头：Authorization: Bearer <token>（需已认证：手机号验证或校园认证二者有其一）
 
 请求示例：
 
@@ -3716,7 +3725,7 @@ LIMIT :size
 - `attachment_ids` 的数组顺序会被持久化保存，并作为详情/后续编辑返回顺序；第 1 张即封面图。
 - 成功响应包含最新的 `template_data`、`attachment_urls` 与 `attachments`。
 
-请求头：Authorization: Bearer <token>（必须登录）
+请求头：Authorization: Bearer <token>（需已认证：手机号验证或校园认证二者有其一）
 
 请求示例：
 
@@ -3748,7 +3757,7 @@ LIMIT :size
 
 用途：软删除一个商品（标记 is_deleted，大厅不再可见）。仅商品发布者可操作。
 
-请求头：Authorization: Bearer <token>（必须登录）
+请求头：Authorization: Bearer <token>（需已认证：手机号验证或校园认证二者有其一）
 
 成功响应：
 
@@ -3771,7 +3780,7 @@ LIMIT :size
 
 用途: 鉴权获取商品发布者的联系方式（phone / wx / qq）。仅卖家本人或已申请该商品的用户可查看。
 
-请求头: Authorization: Bearer <token>。
+请求头: Authorization: Bearer <token>（需已认证：手机号验证或校园认证二者有其一）。
 
 请求示例:
 
@@ -3795,15 +3804,16 @@ GET /goods/5001/contact
 常见错误:
 
 - code: 103 - 商品不存在或已删除。
+- code: 110 - 当前操作需要先完成手机号验证或校园认证。
 - code: 301 - 您需要先申请该商品，才能查看车主的联系方式。
 
 ---
 
 #### 4.9.7 商品申请 (POST: /goods/{goods_id}/accept)
 
-用途：对商品发起申请，仅创建 PENDING 订单，不锁单；用于让买卖双方先建立联系。仅登录用户可发起。
+用途：对商品发起申请，仅创建 PENDING 订单，不锁单；用于让买卖双方先建立联系。需已认证用户可发起。
 
-请求头：Authorization: Bearer <token>（必须登录）
+请求头：Authorization: Bearer <token>（需已认证：手机号验证或校园认证二者有其一）
 
 请求示例：
 
@@ -3832,6 +3842,7 @@ POST /goods/5001/accept
 - code: 99  - 不能申请自己的商品 / 商品当前不可购买 / 商品已到期下架 / 商品已售出 / 已存在申请
 - code: 103 - 商品不存在或已删除
 - code: 105 - Token 无效
+- code: 110 - 当前操作需要先完成手机号验证或校园认证。
 
 ---
 
@@ -3839,7 +3850,7 @@ POST /goods/5001/accept
 
 用途：商品发布者查看当前商品下的申请列表，用于统一查看谁对商品感兴趣。仅商品拥有者可访问。查看成功后，后端会将该商品下所有 `PENDING` 且 `is_seen_by_seller = 0` 的申请批量标记为已查阅。
 
-请求头：Authorization: Bearer <token>（必须登录，且必须为商品拥有者）
+请求头：Authorization: Bearer <token>（需已认证，且必须为商品拥有者）
 
 请求示例：
 
@@ -3885,6 +3896,7 @@ POST /goods/5001/accept
 - code: 102 - 仅商品拥有者可查看申请列表。
 - code: 106 - 商品不存在。
 - code: 105 - Token 无效。
+- code: 110 - 当前操作需要先完成手机号验证或校园认证。
 
 ---
 
@@ -3892,7 +3904,7 @@ POST /goods/5001/accept
 
 用途：当当前用户已存在该商品的 PENDING 申请时，推进为 ONGOING，并将其他同商品的 PENDING 申请拒绝；同时将商品标记为已下架，用于后续线下联系与交付。
 
-请求头：Authorization: Bearer <token>（必须登录）
+请求头：Authorization: Bearer <token>（需已认证：手机号验证或校园认证二者有其一）
 
 请求示例：
 
@@ -3920,6 +3932,7 @@ POST /goods/5001/buy
 - code: 99  - 请先申请该商品 / 商品当前不可购买 / 商品已售出 / 商品已到期下架
 - code: 103 - 商品不存在或已删除
 - code: 105 - Token 无效
+- code: 110 - 当前操作需要先完成手机号验证或校园认证。
 
 ---
 
@@ -3927,7 +3940,7 @@ POST /goods/5001/buy
 
 用途：卖家主动下架商品（ON_SALE → OFF_SHELF），下架后大厅不再展示。仅商品发布者可操作。
 
-请求头：Authorization: Bearer <token>（必须登录）
+请求头：Authorization: Bearer <token>（需已认证：手机号验证或校园认证二者有其一）
 
 请求示例：
 
@@ -3955,6 +3968,7 @@ POST /goods/5001/delist
 - code: 102 - 仅商品发布者可操作
 - code: 103 - 商品不存在或已删除
 - code: 105 - Token 无效
+- code: 110 - 当前操作需要先完成手机号验证或校园认证。
 
 ---
 
@@ -3962,7 +3976,7 @@ POST /goods/5001/delist
 
 用途：卖家将已下架商品重新上架（OFF_SHELF → ON_SALE），恢复大厅曝光。仅商品发布者可操作。
 
-请求头：Authorization: Bearer <token>（必须登录）
+请求头：Authorization: Bearer <token>（需已认证：手机号验证或校园认证二者有其一）
 
 请求示例：
 
@@ -3990,6 +4004,7 @@ POST /goods/5001/relist
 - code: 102 - 仅商品发布者可操作
 - code: 103 - 商品不存在或已删除
 - code: 105 - Token 无效
+- code: 110 - 当前操作需要先完成手机号验证或校园认证。
 
 ---
 

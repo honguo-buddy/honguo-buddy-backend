@@ -186,6 +186,34 @@ async def test_chat_init_rejects_self_chat(client: AsyncClient, test_user, test_
 
 
 @pytest.mark.asyncio
+async def test_chat_init_requires_verified_or_phone_bound(
+    client: AsyncClient,
+    db_session,
+    test_user,
+    test_admin_user,
+    test_user_token,
+    fake_redis,
+):
+    """未绑定手机号且未完成校园认证的登录用户不能发起私聊。"""
+    test_user.phonenumber = None
+    test_user.is_verified = False
+    await db_session.flush()
+
+    await fake_redis.set(f"token:{test_user_token}", str(test_user.user_id))
+    await fake_redis.set(f"user_token:{test_user.user_id}", test_user_token)
+
+    response = await client.post(
+        "/chats/sessions/init",
+        headers={"Authorization": f"Bearer {test_user_token}"},
+        json={"peer_id": test_admin_user.user_id},
+    )
+
+    assert response.status_code == 200
+    message = assert_api_error(response.json(), code=settings.EMAIL_VERIFIED_NEEDED_CODE)
+    assert "手机号验证或校园认证" in message["msg"]
+
+
+@pytest.mark.asyncio
 async def test_chat_read_returns_unread_count(client: AsyncClient, db_session, test_user, test_admin_user, test_user_token, test_admin_token, fake_redis):
     await fake_redis.set(f"token:{test_user_token}", str(test_user.user_id))
     await fake_redis.set(f"token:{test_admin_token}", str(test_admin_user.user_id))

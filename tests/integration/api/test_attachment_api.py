@@ -136,3 +136,30 @@ class TestAttachmentEndpoints:
 
         await db_session.refresh(test_user)
         assert test_user.avatar_id == attachment.attachment_id
+
+    async def test_upload_attachment_requires_verified_or_phone_bound(
+        self,
+        client: AsyncClient,
+        db_session,
+        test_user: User,
+        test_user_token: str,
+        fake_redis,
+    ):
+        """未绑定手机号且未完成校园认证的登录用户不能上传附件。"""
+        test_user.phonenumber = None
+        test_user.is_verified = False
+        await db_session.flush()
+
+        await fake_redis.set(f"token:{test_user_token}", str(test_user.user_id))
+        await fake_redis.set(f"user_token:{test_user.user_id}", test_user_token)
+
+        response = await client.post(
+            "/attachments/upload",
+            headers={"Authorization": f"Bearer {test_user_token}"},
+            data={"target_type": "USER"},
+            files={"file": ("avatar.png", build_upload_image_bytes((640, 360)), "image/png")},
+        )
+
+        assert response.status_code == 200
+        message = assert_api_error(response.json(), code=settings.EMAIL_VERIFIED_NEEDED_CODE)
+        assert "手机号验证或校园认证" in message["msg"]

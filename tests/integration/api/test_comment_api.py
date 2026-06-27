@@ -61,6 +61,108 @@ async def test_create_comment(
 
 
 @pytest.mark.asyncio
+async def test_create_comment_requires_verified_or_phone_bound(
+    client: AsyncClient,
+    db_session,
+    test_user,
+    test_user_token,
+    fake_redis,
+):
+    """未绑定手机号且未完成校园认证的登录用户不能发表评论。"""
+    test_user.phonenumber = None
+    test_user.is_verified = False
+    await db_session.flush()
+
+    await fake_redis.set(f"token:{test_user_token}", str(test_user.user_id))
+    await fake_redis.set(f"user_token:{test_user.user_id}", test_user_token)
+
+    category = Category(category_id=1201, name="评论认证分类", config_json={})
+    db_session.add(category)
+    await db_session.flush()
+
+    post = Post(
+        post_id=3201,
+        publisher_id=test_user.user_id,
+        category_id=category.category_id,
+        title="评论认证帖子",
+        description="评论认证帖子描述",
+        price=10.0,
+        template_data={"max_accepters": 1},
+        direction=Direction.SELL,
+        urgency=UrgencyLevel.NORMAL,
+        status=PostStatus.OPEN,
+    )
+    db_session.add(post)
+    await db_session.flush()
+
+    resp = await client.post(
+        "/comments",
+        json={
+            "target_type": "POST",
+            "target_id": post.post_id,
+            "parent_id": None,
+            "content": "这条评论不应该被创建",
+        },
+        headers={"Authorization": f"Bearer {test_user_token}"},
+    )
+
+    assert resp.status_code == 200
+    message = assert_api_error(resp.json(), code=settings.EMAIL_VERIFIED_NEEDED_CODE)
+    assert "手机号验证或校园认证" in message["msg"]
+
+
+@pytest.mark.asyncio
+async def test_create_comment_allows_campus_verified_user_without_phone(
+    client: AsyncClient,
+    db_session,
+    test_user,
+    test_user_token,
+    fake_redis,
+):
+    """仅完成校园认证、未绑定手机号的用户也可发表评论。"""
+    test_user.phonenumber = None
+    test_user.is_verified = True
+    await db_session.flush()
+
+    await fake_redis.set(f"token:{test_user_token}", str(test_user.user_id))
+    await fake_redis.set(f"user_token:{test_user.user_id}", test_user_token)
+
+    category = Category(category_id=1202, name="校园认证评论分类", config_json={})
+    db_session.add(category)
+    await db_session.flush()
+
+    post = Post(
+        post_id=3202,
+        publisher_id=test_user.user_id,
+        category_id=category.category_id,
+        title="校园认证评论帖子",
+        description="校园认证评论帖子描述",
+        price=10.0,
+        template_data={"max_accepters": 1},
+        direction=Direction.SELL,
+        urgency=UrgencyLevel.NORMAL,
+        status=PostStatus.OPEN,
+    )
+    db_session.add(post)
+    await db_session.flush()
+
+    resp = await client.post(
+        "/comments",
+        json={
+            "target_type": "POST",
+            "target_id": post.post_id,
+            "parent_id": None,
+            "content": "校园认证用户可以评论",
+        },
+        headers={"Authorization": f"Bearer {test_user_token}"},
+    )
+
+    assert resp.status_code == 200
+    assert resp.json()["code"] == settings.SUCCESS_CODE
+    assert resp.json()["message"]["content"] == "校园认证用户可以评论"
+
+
+@pytest.mark.asyncio
 async def test_create_comment_with_invalid_target_type_returns_error(
     client: AsyncClient,
     test_user,

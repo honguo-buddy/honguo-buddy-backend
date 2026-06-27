@@ -29,6 +29,7 @@ def _build_current_user(user: User) -> SimpleNamespace:
         user_name=user.user_name,
         is_admin=user.is_admin,
         is_verified=user.is_verified,
+        phonenumber=user.phonenumber,
         user_type=user.user_type.value if getattr(user.user_type, "value", None) else str(user.user_type),
     )
 
@@ -296,6 +297,34 @@ async def test_orders_by_item_rejects_non_owner(client, app, db_session):
     assert resp.status_code == 200
     message = assert_api_error(resp.json(), code=settings.INSUFFICIENT_AUTHORITY_CODE)
     assert "仅项目拥有者可查看关联订单" in message["msg"]
+    await _clear_current_user(app)
+
+
+@pytest.mark.asyncio
+async def test_orders_by_item_requires_verified_or_phone_bound(client, app, db_session):
+    user = User(
+        user_id=4107,
+        user_uuid=b"1212121212121212",
+        user_name="auth-order-user",
+        email="auth-order@example.com",
+        phonenumber=None,
+        sex=SexEnum.UNKNOWN,
+        user_type=UserType.USER,
+        is_verified=False,
+        is_active=True,
+        is_admin=False,
+        is_deleted=False,
+        credit_score=100,
+        wechat_openid="openid-auth-order",
+    )
+    db_session.add(user)
+    await db_session.flush()
+    await _set_current_user(app, user)
+
+    resp = await client.get("/orders/by-item", params={"item_id": 1, "item_type": "POST"})
+    assert resp.status_code == 200
+    message = assert_api_error(resp.json(), code=settings.EMAIL_VERIFIED_NEEDED_CODE)
+    assert "手机号验证或校园认证" in message["msg"]
     await _clear_current_user(app)
 
 

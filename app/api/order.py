@@ -6,7 +6,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api import get_current_user
+from app.api import get_current_user, get_current_verified_user
 from app.core import BusinessHTTPException, get_now_naive, settings
 from app.db import get_db, get_redis
 from app.models import AttachmentTargetType, Goods, ItemType, Order, OrderStatus, Post
@@ -103,7 +103,7 @@ async def list_my_orders(
 async def list_orders_by_item(
     item_id: int = Query(..., description="项目ID"),
     item_type: str = Query(..., description="项目类型：POSTS/GOODS"),
-    current_user: UserRead = Depends(get_current_user),
+    current_user: UserRead = Depends(get_current_verified_user),
     db: AsyncSession = Depends(get_db),
 ):
     await _assert_item_owner(db, current_user, item_type, item_id)
@@ -157,7 +157,7 @@ async def get_order_detail(
 async def approve_order(
     order_id: int,
     background_tasks: BackgroundTasks,
-    current_user: UserRead = Depends(get_current_user),
+    current_user: UserRead = Depends(get_current_verified_user),
     db: AsyncSession = Depends(get_db),
     redis_client = Depends(get_redis),
 ):
@@ -181,7 +181,7 @@ async def approve_order(
 async def reject_order(
     order_id: int,
     background_tasks: BackgroundTasks,
-    current_user: UserRead = Depends(get_current_user),
+    current_user: UserRead = Depends(get_current_verified_user),
     db: AsyncSession = Depends(get_db),
     redis_client = Depends(get_redis),
 ):
@@ -208,7 +208,7 @@ async def reject_order(
 async def start_post_fulfillment(
     post_id: int,
     background_tasks: BackgroundTasks,
-    current_user: UserRead = Depends(get_current_user),
+    current_user: UserRead = Depends(get_current_verified_user),
     db: AsyncSession = Depends(get_db),
     redis_client = Depends(get_redis),
 ):
@@ -246,7 +246,7 @@ async def start_post_fulfillment(
 @router.post("/reviews", response_model=ResponseModel[OrderReviewRead])
 async def create_order_review(
     payload: OrderReviewCreateRequest,
-    current_user: UserRead = Depends(get_current_user),
+    current_user: UserRead = Depends(get_current_verified_user),
     db: AsyncSession = Depends(get_db),
     redis_client = Depends(get_redis),
 ):
@@ -321,7 +321,7 @@ async def list_order_reviews(
 async def submit_delivery(
     order_id: int,
     background_tasks: BackgroundTasks,
-    current_user: UserRead = Depends(get_current_user),
+    current_user: UserRead = Depends(get_current_verified_user),
     db: AsyncSession = Depends(get_db),
     redis_client = Depends(get_redis),
 ):
@@ -352,7 +352,7 @@ async def submit_delivery(
 @router.post("/{order_id}/accept-delivery", response_model=ResponseModel[OrderRead])
 async def accept_delivery(
     order_id: int,
-    current_user: UserRead = Depends(get_current_user),
+    current_user: UserRead = Depends(get_current_verified_user),
     db: AsyncSession = Depends(get_db),
 ):
     """买家确认验收完成订单。GOODS 订单完成后自动将商品标记为已售出。"""
@@ -365,7 +365,7 @@ async def accept_delivery(
 @router.post("/{order_id}/complete", response_model=ResponseModel[OrderRead])
 async def complete_order(
     order_id: int,
-    current_user: UserRead = Depends(get_current_user),
+    current_user: UserRead = Depends(get_current_verified_user),
     db: AsyncSession = Depends(get_db),
 ):
     """兼容/弃用接口：管理员手动完结走强制完成，普通买家确认仍走验收流程。"""

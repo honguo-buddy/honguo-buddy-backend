@@ -6,7 +6,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import func, select
 
-from app.api import get_current_user, get_current_user_optional
+from app.api import get_current_user_optional, get_current_verified_user
 from app.core import BusinessHTTPException, settings, ResourceHTTPException, AuthHTTPException, get_now_naive
 from app.db import get_db, get_redis
 from app.models import Goods, GoodsStatus, ItemType, Order
@@ -82,7 +82,7 @@ def _build_goods_application_applicant_read(applicant, completed_order_count: in
 @router.post("/", response_model=ResponseModel[GoodsRead])
 async def create_goods(
     obj_in: GoodsCreate,
-    current_user: UserRead = Depends(get_current_user),
+    current_user: UserRead = Depends(get_current_verified_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Publish a new goods item."""
@@ -151,7 +151,7 @@ async def list_goods(
 async def list_my_goods(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1),
-    current_user: UserRead = Depends(get_current_user),
+    current_user: UserRead = Depends(get_current_verified_user),
     db: AsyncSession = Depends(get_db),
     redis_client = Depends(get_redis),
 ):
@@ -232,7 +232,7 @@ async def get_goods_detail(
 async def buy_goods(
     goods_id: int,
     background_tasks: BackgroundTasks,
-    current_user: UserRead = Depends(get_current_user),
+    current_user: UserRead = Depends(get_current_verified_user),
     db: AsyncSession = Depends(get_db),
     redis_client = Depends(get_redis),
 ):
@@ -266,7 +266,7 @@ async def buy_goods(
 async def accept_goods(
     goods_id: int,
     background_tasks: BackgroundTasks,
-    current_user: UserRead = Depends(get_current_user),
+    current_user: UserRead = Depends(get_current_verified_user),
     db: AsyncSession = Depends(get_db),
     redis_client = Depends(get_redis),
 ):
@@ -304,7 +304,7 @@ async def accept_goods(
 @router.get("/{goods_id}/applications", response_model=ResponseModel[GoodsApplicationListResponse])
 async def list_goods_applications(
     goods_id: int,
-    current_user: UserRead = Depends(get_current_user),
+    current_user: UserRead = Depends(get_current_verified_user),
     db: AsyncSession = Depends(get_db),
 ):
     """查看指定商品的申请列表，仅商品发布者可访问。"""
@@ -343,7 +343,7 @@ async def list_goods_applications(
 @router.post("/{goods_id}/delist", response_model=ResponseModel[dict])
 async def delist_goods(
     goods_id: int,
-    current_user: UserRead = Depends(get_current_user),
+    current_user: UserRead = Depends(get_current_verified_user),
     db: AsyncSession = Depends(get_db),
 ):
     """卖家下架商品：ON_SALE → OFF_SHELF。"""
@@ -357,7 +357,7 @@ async def delist_goods(
 @router.post("/{goods_id}/relist", response_model=ResponseModel[dict])
 async def relist_goods(
     goods_id: int,
-    current_user: UserRead = Depends(get_current_user),
+    current_user: UserRead = Depends(get_current_verified_user),
     db: AsyncSession = Depends(get_db),
 ):
     """卖家重新上架商品：OFF_SHELF → ON_SALE。"""
@@ -371,7 +371,7 @@ async def relist_goods(
 async def update_goods(
     goods_id: int,
     obj_in: GoodsUpdate,
-    current_user: UserRead = Depends(get_current_user),
+    current_user: UserRead = Depends(get_current_verified_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Update / delist / relist my goods."""
@@ -391,7 +391,7 @@ async def update_goods(
 @router.delete("/{goods_id}", response_model=ResponseModel[dict])
 async def delete_goods(
     goods_id: int,
-    current_user: UserRead = Depends(get_current_user),
+    current_user: UserRead = Depends(get_current_verified_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Soft-delete a goods item."""
@@ -406,7 +406,7 @@ async def delete_goods(
 @router.get("/{goods_id}/contact", response_model=ResponseModel)
 async def get_goods_contact(
     goods_id: int,
-    current_user: UserRead = Depends(get_current_user),
+    current_user: UserRead = Depends(get_current_verified_user),
     db: AsyncSession = Depends(get_db),
 ):
     """获取商品发布者的联系方式（需鉴权：卖家本人或任意已申请者）。"""

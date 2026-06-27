@@ -83,6 +83,28 @@ class TestCreateGoods:
         assert "当前发布的活跃商品已达上限" in message["msg"]
         DynamicConfigManager()._cache.pop("MAX_OPEN_GOODS_PER_USER", None)
 
+    async def test_create_goods_requires_verified_or_phone_bound(self, client: AsyncClient, db_session, test_user, test_user_token, fake_redis):
+        """未绑定手机号且未完成校园认证的登录用户不能发布商品。"""
+        test_user.phonenumber = None
+        test_user.is_verified = False
+        await db_session.flush()
+
+        await fake_redis.set(f"token:{test_user_token}", str(test_user.user_id))
+        await fake_redis.set(f"user_token:{test_user.user_id}", test_user_token)
+
+        category = Category(category_id=518, name="goods-auth-cat", config_json={})
+        db_session.add(category)
+        await db_session.flush()
+
+        resp = await client.post(
+            "/goods/",
+            headers={"Authorization": f"Bearer {test_user_token}"},
+            json={"name": "auth goods", "category_id": 518, "price": 99.0},
+        )
+        assert resp.status_code == 200
+        message = assert_api_error(resp.json(), code=settings.EMAIL_VERIFIED_NEEDED_CODE)
+        assert "手机号验证或校园认证" in message["msg"]
+
 
 class TestListGoods:
     async def test_list_goods_empty(self, client: AsyncClient, db_session, fake_redis):
@@ -638,6 +660,59 @@ async def test_goods_apply_creates_pending_order_and_keeps_goods_on_sale(
 
 
 @pytest.mark.asyncio
+async def test_goods_apply_requires_verified_or_phone_bound(
+    client: AsyncClient,
+    db_session,
+    test_user,
+    test_user_token,
+    fake_redis,
+):
+    """未绑定手机号且未完成校园认证的登录用户不能申请商品。"""
+    test_user.phonenumber = None
+    test_user.is_verified = False
+    await db_session.flush()
+
+    seller = User(
+        user_id=8191,
+        user_uuid=b"8191000000000001",
+        user_name="goods_apply_auth_seller",
+        wechat_openid="wx_goods_apply_auth_seller",
+        email="seller_apply_auth@test.com",
+        user_type="user",
+        credit_score=60,
+    )
+    db_session.add(seller)
+    await db_session.flush()
+
+    category = Category(category_id=691, name="apply-auth-cat", config_json={})
+    db_session.add(category)
+    await db_session.flush()
+
+    goods = Goods(
+        goods_id=6191,
+        publisher_id=seller.user_id,
+        category_id=category.category_id,
+        name="apply auth goods",
+        price=59.0,
+        condition=GoodsCondition.BRAND_NEW,
+        status=GoodsStatus.ON_SALE,
+    )
+    db_session.add(goods)
+    await db_session.flush()
+
+    await fake_redis.set(f"token:{test_user_token}", str(test_user.user_id))
+    await fake_redis.set(f"user_token:{test_user.user_id}", test_user_token)
+
+    resp = await client.post(
+        f"/goods/{goods.goods_id}/accept",
+        headers={"Authorization": f"Bearer {test_user_token}"},
+    )
+    assert resp.status_code == 200
+    message = assert_api_error(resp.json(), code=settings.EMAIL_VERIFIED_NEEDED_CODE)
+    assert "手机号验证或校园认证" in message["msg"]
+
+
+@pytest.mark.asyncio
 async def test_goods_apply_allows_multiple_pending_orders(
     client: AsyncClient,
     db_session,
@@ -678,7 +753,7 @@ async def test_goods_apply_allows_multiple_pending_orders(
     assert_api_success(first.json())
 
     second_user = User(user_id=8103, user_uuid=b"8101000000000003", user_name="goods_apply_second", wechat_openid="wx_goods_apply_second",
-                       email="second_apply@test.com", user_type="user", credit_score=60)
+                       email="second_apply@test.com", phonenumber="13800008103", user_type="user", credit_score=60)
     db_session.add(second_user)
     await db_session.flush()
 
@@ -770,6 +845,7 @@ async def test_goods_applications_returns_owner_view_with_completed_count(
         user_name="goods_apply_list_user",
         wechat_openid="wx_goods_apply_list_user",
         email="goods_apply_list_user@test.com",
+        phonenumber="13800008105",
         user_type="user",
         credit_score=60,
     )

@@ -202,6 +202,45 @@ async def test_create_post_rejects_negative_price(
 
 
 @pytest.mark.asyncio
+async def test_create_post_requires_verified_or_phone_bound(
+	client: AsyncClient,
+	db_session,
+	test_user,
+	test_user_token,
+	fake_redis,
+):
+	"""未绑定手机号且未完成校园认证的登录用户不能发帖。"""
+	test_user.phonenumber = None
+	test_user.is_verified = False
+	await db_session.flush()
+
+	await fake_redis.set(f"token:{test_user_token}", str(test_user.user_id))
+	await fake_redis.set(f"user_token:{test_user.user_id}", test_user_token)
+
+	category = Category(category_id=112, name="发帖认证分类", config_json={})
+	db_session.add(category)
+	await db_session.flush()
+
+	resp = await client.post(
+		"/posts/",
+		headers={"Authorization": f"Bearer {test_user_token}"},
+		json={
+			"title": "未认证不能发帖",
+			"description": "这条帖子不应该创建成功",
+			"price": 10.0,
+			"direction": "SELL",
+			"urgency": "NORMAL",
+			"max_accepters": 1,
+			"category_id": category.category_id,
+		},
+	)
+
+	assert resp.status_code == 200
+	message = assert_api_error(resp.json(), code=settings.EMAIL_VERIFIED_NEEDED_CODE)
+	assert "手机号验证或校园认证" in message["msg"]
+
+
+@pytest.mark.asyncio
 async def test_create_buy_post_rejects_when_buy_quota_exhausted(
 	client: AsyncClient,
 	db_session,

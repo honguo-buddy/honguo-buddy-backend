@@ -197,6 +197,22 @@ async def get_current_user_optional(
         return None
 
 
+async def get_current_verified_user(
+    current_user: UserSchema = Depends(get_current_user),
+) -> UserSchema:
+    """获取当前已认证用户：手机号绑定或校园认证二者满足其一。"""
+    phone_number = current_user.phonenumber
+    has_phone_number = phone_number is not None and str(phone_number).strip() != ""
+    if has_phone_number or bool(current_user.is_verified):
+        return current_user
+
+    raise AuthHTTPException(
+        code=settings.EMAIL_VERIFIED_NEEDED_CODE,
+        msg="当前操作需要先完成手机号验证或校园认证",
+        status_code=403,
+    )
+
+
 async def _extract_swagger_login_credentials(request: Request) -> tuple[str, str]:
     content_type = (request.headers.get("content-type") or "").lower()
 
