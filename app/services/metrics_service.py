@@ -14,10 +14,10 @@ import logging
 import uuid
 from typing import Any, Optional
 
-from sqlalchemy import text, select, bindparam
+from sqlalchemy import text, select, bindparam, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Goods, Post  # 导入 Post 和 Goods 模型以进行 ID 验证
+from app.models import Comment, FavoriteTargetType, Goods, Post, TargetType, UserFavorite  # 导入 Post 和 Goods 模型以进行 ID 验证
 
 logger = logging.getLogger(__name__)
 
@@ -223,6 +223,98 @@ class MetricsService:
         await MetricsService._flush_post_metrics(db, redis_client)
         await MetricsService._flush_goods_metrics(db, redis_client)
 
+    @staticmethod
+    async def _get_post_truth_metrics_map(db: AsyncSession, post_ids: list[int]) -> dict[int, dict[str, int]]:
+        if not post_ids:
+            return {}
+
+        truth_map = {
+            int(post_id): {"favorite_count": 0, "comment_count": 0}
+            for post_id in post_ids
+        }
+
+        favorite_stmt = (
+            select(
+                UserFavorite.target_id,
+                func.count(UserFavorite.favorite_id).label("favorite_count"),
+            )
+            .where(
+                UserFavorite.target_type == FavoriteTargetType.POST,
+                UserFavorite.target_id.in_(post_ids),
+            )
+            .group_by(UserFavorite.target_id)
+        )
+        favorite_rows = await db.execute(favorite_stmt)
+        for target_id, favorite_count in favorite_rows.all():
+            truth_map[int(target_id)]["favorite_count"] = int(favorite_count or 0)
+
+        comment_stmt = (
+            select(
+                Comment.target_id,
+                func.count(Comment.comment_id).label("comment_count"),
+            )
+            .where(
+                Comment.target_type == TargetType.POST,
+                Comment.target_id.in_(post_ids),
+                Comment.is_deleted == False,
+            )
+            .group_by(Comment.target_id)
+        )
+        comment_rows = await db.execute(comment_stmt)
+        for target_id, comment_count in comment_rows.all():
+            truth_map[int(target_id)]["comment_count"] = int(comment_count or 0)
+
+        return truth_map
+
+    @staticmethod
+    async def _get_goods_truth_metrics_map(db: AsyncSession, goods_ids: list[int]) -> dict[int, dict[str, int]]:
+        if not goods_ids:
+            return {}
+
+        truth_map = {
+            int(goods_id): {"favorite_count": 0, "comment_count": 0}
+            for goods_id in goods_ids
+        }
+
+        favorite_stmt = (
+            select(
+                UserFavorite.target_id,
+                func.count(UserFavorite.favorite_id).label("favorite_count"),
+            )
+            .where(
+                UserFavorite.target_type == FavoriteTargetType.GOODS,
+                UserFavorite.target_id.in_(goods_ids),
+            )
+            .group_by(UserFavorite.target_id)
+        )
+        favorite_rows = await db.execute(favorite_stmt)
+        for target_id, favorite_count in favorite_rows.all():
+            truth_map[int(target_id)]["favorite_count"] = int(favorite_count or 0)
+
+        comment_stmt = (
+            select(
+                Comment.target_id,
+                func.count(Comment.comment_id).label("comment_count"),
+            )
+            .where(
+                Comment.target_type == TargetType.GOODS,
+                Comment.target_id.in_(goods_ids),
+                Comment.is_deleted == False,
+            )
+            .group_by(Comment.target_id)
+        )
+        comment_rows = await db.execute(comment_stmt)
+        for target_id, comment_count in comment_rows.all():
+            truth_map[int(target_id)]["comment_count"] = int(comment_count or 0)
+
+        return truth_map
+
+    @staticmethod
+    def _extract_counter(raw: dict | None, field: str) -> int:
+        if not raw:
+            return 0
+        return int(raw.get(field) or raw.get(field.encode()) or 0)
+
     # ------------------------------------------------------------------
     # 写链路异步刷盘区（100% 预编译静态绑定 + MySQL GREATEST 安全卡位）
     # ------------------------------------------------------------------
@@ -261,34 +353,48 @@ class MetricsService:
             if not valid_ids:
                 return
 
+            truth_map = await MetricsService._get_post_truth_metrics_map(db, valid_ids)
+
             pipe = redis_client.pipeline()
             for pid in valid_ids:
                 pipe.hgetall(f"metrics:post:{pid}")
             results = await pipe.execute()
 
             # 构建标准预编译批处理参数字典列表
+            redis_delta_map: dict[int, dict[str, int]] = {}
+            zero_delta_ids: list[int] = []
             bind_params_list = []
             for pid, raw in zip(valid_ids, results):
                 if not raw:
+                    zero_delta_ids.append(pid)
                     continue
-                view = int(raw.get("view") or raw.get(b"view") or 0)
-                favorite = int(raw.get("favorite") or raw.get(b"favorite") or 0)
-                comment = int(raw.get("comment") or raw.get(b"comment") or 0)
-                
+                view = MetricsService._extract_counter(raw, "view")
+                favorite = MetricsService._extract_counter(raw, "favorite")
+                comment = MetricsService._extract_counter(raw, "comment")
+
+                redis_delta_map[pid] = {
+                    "view_count": view,
+                    "favorite_delta": favorite,
+                    "comment_delta": comment,
+                }
                 if view == 0 and favorite == 0 and comment == 0:
+                    zero_delta_ids.append(pid)
                     continue
 
+                truth_metrics = truth_map.get(pid, {"favorite_count": 0, "comment_count": 0})
                 bind_params_list.append({
                     "pid": pid,
                     "view_count": view,
-                    "favorite_count": favorite,
-                    "comment_count": comment
+                    "favorite_count": int(truth_metrics["favorite_count"]),
+                    "comment_count": int(truth_metrics["comment_count"]),
                 })
 
             if not bind_params_list:
+                if zero_delta_ids:
+                    await redis_client.srem(_ACTIVE_POSTS_SET, *zero_delta_ids)
                 return
 
-            #  纯静态 SQL 模板契约：在 ON DUPLICATE KEY UPDATE 中引入 GREATEST(0, ...) 终极卡位防御
+            #  favorite/comment 真值来自业务表，view 仍保留 Redis 增量累加
             sql = text("""
                 INSERT INTO post_metrics (post_id, view_count, favorite_count, comment_count, create_time, update_time)
                 VALUES (:pid, :view_count, :favorite_count, :comment_count, 
@@ -296,8 +402,8 @@ class MetricsService:
                         CONVERT_TZ(NOW(), @@session.time_zone, '+08:00'))
                 ON DUPLICATE KEY UPDATE
                     view_count = GREATEST(0, view_count + VALUES(view_count)),
-                    favorite_count = GREATEST(0, favorite_count + VALUES(favorite_count)),
-                    comment_count = GREATEST(0, comment_count + VALUES(comment_count)),
+                    favorite_count = VALUES(favorite_count),
+                    comment_count = VALUES(comment_count),
                     update_time = CONVERT_TZ(NOW(), @@session.time_zone, '+08:00')
             """)
 
@@ -309,12 +415,14 @@ class MetricsService:
                 pipe_deduct = redis_client.pipeline()
                 for p in bind_params_list:
                     key = f"metrics:post:{p['pid']}"
-                    pipe_deduct.hincrby(key, "view", -p["view_count"])
-                    pipe_deduct.hincrby(key, "favorite", -p["favorite_count"])
-                    pipe_deduct.hincrby(key, "comment", -p["comment_count"])
+                    deltas = redis_delta_map.get(p["pid"], {"view_count": 0, "favorite_delta": 0, "comment_delta": 0})
+                    pipe_deduct.hincrby(key, "view", -deltas["view_count"])
+                    pipe_deduct.hincrby(key, "favorite", -deltas["favorite_delta"])
+                    pipe_deduct.hincrby(key, "comment", -deltas["comment_delta"])
                 await pipe_deduct.execute()
 
-                await redis_client.srem(_ACTIVE_POSTS_SET, *[p["pid"] for p in bind_params_list])
+                cleanup_ids = [p["pid"] for p in bind_params_list] + zero_delta_ids
+                await redis_client.srem(_ACTIVE_POSTS_SET, *cleanup_ids)
                 logger.info(f"[Metrics Sync] Successfully completed parameterized flush batch for posts: {[p['pid'] for p in bind_params_list]}")
             except Exception:
                 await db.rollback()
@@ -356,34 +464,48 @@ class MetricsService:
             if not valid_ids:
                 return
 
+            truth_map = await MetricsService._get_goods_truth_metrics_map(db, valid_ids)
+
             pipe = redis_client.pipeline()
             for gid in valid_ids:
                 pipe.hgetall(f"metrics:goods:{gid}")
             results = await pipe.execute()
 
             # 构建商品域原生批量参数化字典数组
+            redis_delta_map: dict[int, dict[str, int]] = {}
+            zero_delta_ids: list[int] = []
             bind_params_list = []
             for gid, raw in zip(valid_ids, results):
                 if not raw:
+                    zero_delta_ids.append(gid)
                     continue
-                view = int(raw.get("view") or raw.get(b"view") or 0)
-                favorite = int(raw.get("favorite") or raw.get(b"favorite") or 0)
-                comment = int(raw.get("comment") or raw.get(b"comment") or 0)
-                
+                view = MetricsService._extract_counter(raw, "view")
+                favorite = MetricsService._extract_counter(raw, "favorite")
+                comment = MetricsService._extract_counter(raw, "comment")
+
+                redis_delta_map[gid] = {
+                    "view_count": view,
+                    "favorite_delta": favorite,
+                    "comment_delta": comment,
+                }
                 if view == 0 and favorite == 0 and comment == 0:
+                    zero_delta_ids.append(gid)
                     continue
 
+                truth_metrics = truth_map.get(gid, {"favorite_count": 0, "comment_count": 0})
                 bind_params_list.append({
                     "gid": gid,
                     "view_count": view,
-                    "favorite_count": favorite,
-                    "comment_count": comment
+                    "favorite_count": int(truth_metrics["favorite_count"]),
+                    "comment_count": int(truth_metrics["comment_count"]),
                 })
 
             if not bind_params_list:
+                if zero_delta_ids:
+                    await redis_client.srem(_ACTIVE_GOODS_SET, *zero_delta_ids)
                 return
 
-            # 纯静态 SQL 模板契约：引入 GREATEST(0, ...) 终极卡位防御
+            # favorite/comment 真值来自业务表，view 仍保留 Redis 增量累加
             sql = text("""
                 INSERT INTO goods_metrics (goods_id, view_count, favorite_count, comment_count, create_time, update_time)
                 VALUES (:gid, :view_count, :favorite_count, :comment_count, 
@@ -391,8 +513,8 @@ class MetricsService:
                         CONVERT_TZ(NOW(), @@session.time_zone, '+08:00'))
                 ON DUPLICATE KEY UPDATE
                     view_count = GREATEST(0, view_count + VALUES(view_count)),
-                    favorite_count = GREATEST(0, favorite_count + VALUES(favorite_count)),
-                    comment_count = GREATEST(0, comment_count + VALUES(comment_count)),
+                    favorite_count = VALUES(favorite_count),
+                    comment_count = VALUES(comment_count),
                     update_time = CONVERT_TZ(NOW(), @@session.time_zone, '+08:00')
             """)
 
@@ -404,12 +526,14 @@ class MetricsService:
                 pipe_deduct = redis_client.pipeline()
                 for p in bind_params_list:
                     key = f"metrics:goods:{p['gid']}"
-                    pipe_deduct.hincrby(key, "view", -p["view_count"])
-                    pipe_deduct.hincrby(key, "favorite", -p["favorite_count"])
-                    pipe_deduct.hincrby(key, "comment", -p["comment_count"])
+                    deltas = redis_delta_map.get(p["gid"], {"view_count": 0, "favorite_delta": 0, "comment_delta": 0})
+                    pipe_deduct.hincrby(key, "view", -deltas["view_count"])
+                    pipe_deduct.hincrby(key, "favorite", -deltas["favorite_delta"])
+                    pipe_deduct.hincrby(key, "comment", -deltas["comment_delta"])
                 await pipe_deduct.execute()
 
-                await redis_client.srem(_ACTIVE_GOODS_SET, *[p["gid"] for p in bind_params_list])
+                cleanup_ids = [p["gid"] for p in bind_params_list] + zero_delta_ids
+                await redis_client.srem(_ACTIVE_GOODS_SET, *cleanup_ids)
                 logger.info(f"[Metrics Sync] Successfully completed parameterized flush batch for goods: {[p['gid'] for p in bind_params_list]}")
             except Exception:
                 await db.rollback()

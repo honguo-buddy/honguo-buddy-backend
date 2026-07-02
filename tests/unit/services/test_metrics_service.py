@@ -218,8 +218,8 @@ class FakeMetricsRoundTripDB:
                     {"view_count": 0, "favorite_count": 0, "comment_count": 0},
                 )
                 current_row["view_count"] = max(0, current_row["view_count"] + bind_item["view_count"])
-                current_row["favorite_count"] = max(0, current_row["favorite_count"] + bind_item["favorite_count"])
-                current_row["comment_count"] = max(0, current_row["comment_count"] + bind_item["comment_count"])
+                current_row["favorite_count"] = max(0, bind_item["favorite_count"])
+                current_row["comment_count"] = max(0, bind_item["comment_count"])
             return FakeMetricsQueryResult()
 
         if "INSERT INTO goods_metrics" in stmt_str:
@@ -230,8 +230,8 @@ class FakeMetricsRoundTripDB:
                     {"view_count": 0, "favorite_count": 0, "comment_count": 0},
                 )
                 current_row["view_count"] = max(0, current_row["view_count"] + bind_item["view_count"])
-                current_row["favorite_count"] = max(0, current_row["favorite_count"] + bind_item["favorite_count"])
-                current_row["comment_count"] = max(0, current_row["comment_count"] + bind_item["comment_count"])
+                current_row["favorite_count"] = max(0, bind_item["favorite_count"])
+                current_row["comment_count"] = max(0, bind_item["comment_count"])
             return FakeMetricsQueryResult()
 
         return FakeMetricsQueryResult()
@@ -402,7 +402,7 @@ class TestMetricsService:
         db.execute.assert_not_called()
         db.commit.assert_not_called()
 
-    async def test_flush_metrics_to_db_with_data(self):
+    async def test_flush_metrics_to_db_with_data(self, monkeypatch):
         from app.services.metrics_service import MetricsService
         from unittest.mock import AsyncMock
         from tests.unit.fake_sqlalchemy import FakeResult
@@ -417,13 +417,24 @@ class TestMetricsService:
             FakeResult(items=[1001]),   # validation: post 1001 exists
             FakeResult(),                # metrics INSERT
         ])
+        monkeypatch.setattr(
+            MetricsService,
+            "_get_post_truth_metrics_map",
+            AsyncMock(return_value={1001: {"favorite_count": 9, "comment_count": 4}}),
+        )
         await MetricsService.flush_metrics_to_db(db, redis_fake)
 
         assert db.execute.call_count == 2  # validation + INSERT
         db.commit.assert_called_once()
+        insert_params = db.execute.await_args_list[1].args[1]
+        assert insert_params == [{"pid": 1001, "view_count": 20, "favorite_count": 9, "comment_count": 4}]
 
         members = await redis_fake.smembers("metrics:active_posts_set")
         assert 1001 not in members
+        bucket = await redis_fake.hgetall("metrics:post:1001")
+        assert int(bucket["view"]) == 0
+        assert int(bucket["favorite"]) == 0
+        assert int(bucket["comment"]) == 0
 
     async def test_incr_post_favorite_negative_allowed_in_redis(self):
         """Redis 层放开负数限制，允许合法负数净增量沉淀，MySQL 端通过 GREATEST 兜底。"""
@@ -513,15 +524,21 @@ class TestMetricsService:
     # 刷盘→灌水循环对账测试（Redis ↔ MySQL 数据一致性）
     # ------------------------------------------------------------------
 
-    async def test_flush_then_hydrate_round_trip(self):
+    async def test_flush_then_hydrate_round_trip(self, monkeypatch):
         """首次 hydrate 只读 MySQL 基线，不得把基线灌回 Redis 增量桶。"""
         from app.services.metrics_service import MetricsService
+        from unittest.mock import AsyncMock
 
         redis_fake = FakeRedisForMetrics()
         post_id = 3001
         key = f"metrics:post:{post_id}"
         db = FakeMetricsRoundTripDB(
             post_rows={post_id: {"view_count": 100, "favorite_count": 5, "comment_count": 10}}
+        )
+        monkeypatch.setattr(
+            MetricsService,
+            "_get_post_truth_metrics_map",
+            AsyncMock(return_value={post_id: {"favorite_count": 5, "comment_count": 10}}),
         )
 
         items = [{"post_id": post_id}]
@@ -568,14 +585,20 @@ class TestMetricsService:
         assert items[0]["comment_count"] == 2
         assert await redis_fake.hgetall(f"metrics:goods:{goods_id}") is None
 
-    async def test_flush_goods_after_hydrate_and_one_new_view_only_adds_one(self):
+    async def test_flush_goods_after_hydrate_and_one_new_view_only_adds_one(self, monkeypatch):
         """商品 metrics 在 hydrate 后新增一次浏览，刷盘后只能 +1。"""
         from app.services.metrics_service import MetricsService
+        from unittest.mock import AsyncMock
 
         redis_fake = FakeRedisForMetrics()
         goods_id = 4002
         db = FakeMetricsRoundTripDB(
             goods_rows={goods_id: {"view_count": 50, "favorite_count": 8, "comment_count": 4}}
+        )
+        monkeypatch.setattr(
+            MetricsService,
+            "_get_goods_truth_metrics_map",
+            AsyncMock(return_value={goods_id: {"favorite_count": 8, "comment_count": 4}}),
         )
 
         items = [{"goods_id": goods_id}]
@@ -593,3 +616,57 @@ class TestMetricsService:
         assert db.goods_rows[goods_id]["view_count"] == 51
         assert db.goods_rows[goods_id]["favorite_count"] == 8
         assert db.goods_rows[goods_id]["comment_count"] == 4
+
+    async def test_flush_post_metrics_overwrites_favorite_and_comment_with_truth(self, monkeypatch):
+        from app.services.metrics_service import MetricsService
+        from unittest.mock import AsyncMock
+
+        redis_fake = FakeRedisForMetrics()
+        post_id = 5001
+        await redis_fake.sadd("metrics:active_posts_set", post_id)
+        redis_fake._hashes[f"metrics:post:{post_id}"] = {"view": "7", "favorite": "32", "comment": "64"}
+        db = FakeMetricsRoundTripDB(
+            post_rows={post_id: {"view_count": 100, "favorite_count": 999, "comment_count": 777}}
+        )
+        monkeypatch.setattr(
+            MetricsService,
+            "_get_post_truth_metrics_map",
+            AsyncMock(return_value={post_id: {"favorite_count": 2, "comment_count": 1}}),
+        )
+
+        await MetricsService.flush_metrics_to_db(db, redis_fake)
+
+        assert db.post_rows[post_id]["view_count"] == 107
+        assert db.post_rows[post_id]["favorite_count"] == 2
+        assert db.post_rows[post_id]["comment_count"] == 1
+        bucket = await redis_fake.hgetall(f"metrics:post:{post_id}")
+        assert int(bucket["view"]) == 0
+        assert int(bucket["favorite"]) == 0
+        assert int(bucket["comment"]) == 0
+
+    async def test_flush_goods_metrics_overwrites_favorite_and_comment_with_truth(self, monkeypatch):
+        from app.services.metrics_service import MetricsService
+        from unittest.mock import AsyncMock
+
+        redis_fake = FakeRedisForMetrics()
+        goods_id = 6001
+        await redis_fake.sadd("metrics:active_goods_set", goods_id)
+        redis_fake._hashes[f"metrics:goods:{goods_id}"] = {"view": "5", "favorite": "16", "comment": "8"}
+        db = FakeMetricsRoundTripDB(
+            goods_rows={goods_id: {"view_count": 30, "favorite_count": 888, "comment_count": 666}}
+        )
+        monkeypatch.setattr(
+            MetricsService,
+            "_get_goods_truth_metrics_map",
+            AsyncMock(return_value={goods_id: {"favorite_count": 1, "comment_count": 3}}),
+        )
+
+        await MetricsService.flush_metrics_to_db(db, redis_fake)
+
+        assert db.goods_rows[goods_id]["view_count"] == 35
+        assert db.goods_rows[goods_id]["favorite_count"] == 1
+        assert db.goods_rows[goods_id]["comment_count"] == 3
+        bucket = await redis_fake.hgetall(f"metrics:goods:{goods_id}")
+        assert int(bucket["view"]) == 0
+        assert int(bucket["favorite"]) == 0
+        assert int(bucket["comment"]) == 0
