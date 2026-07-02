@@ -5,6 +5,8 @@ from httpx import AsyncClient
 
 from app.core import create_access_token, settings
 from app.models import (
+    Attachment,
+    AttachmentTargetType,
     Category,
     Direction,
     Goods,
@@ -125,6 +127,88 @@ async def test_global_search_all_merges_posts_and_goods_with_json_value_match(
     assert item_map[("GOODS", goods.goods_id)]["template_data"] == {"brand": "北门近邻宝"}
     assert item_map[("BUY_POST", buy_post.post_id)]["hit_tips"] == "在【取件地址】中匹配到: 北门近邻宝"
     assert item_map[("GOODS", goods.goods_id)]["hit_tips"] == "在【品牌成色】中匹配到: 北门近邻宝"
+
+
+async def test_global_search_returns_attachment_urls_and_attachments(
+    client: AsyncClient,
+    db_session,
+    test_user,
+):
+    category = Category(category_id=91011, name="附件搜索分类", config_json={}, direction="SELL")
+    db_session.add(category)
+    await db_session.flush()
+
+    post = Post(
+        post_id=910111,
+        publisher_id=test_user.user_id,
+        category_id=category.category_id,
+        title="附件搜索委托",
+        description="附件搜索描述",
+        price=15.0,
+        direction=Direction.BUY,
+        urgency=UrgencyLevel.NORMAL,
+        status=PostStatus.OPEN,
+    )
+    goods = Goods(
+        goods_id=910112,
+        publisher_id=test_user.user_id,
+        category_id=category.category_id,
+        name="附件搜索商品",
+        description="附件搜索商品描述",
+        price=35.0,
+        condition=GoodsCondition.BRAND_NEW,
+        status=GoodsStatus.ON_SALE,
+    )
+    db_session.add_all([post, goods])
+    await db_session.flush()
+
+    post_attachment_1 = Attachment(
+        target_type=AttachmentTargetType.POST,
+        target_id=post.post_id,
+        url="/static/post/search_post_cover.webp",
+        creator_id=test_user.user_id,
+        sort_order=0,
+    )
+    post_attachment_2 = Attachment(
+        target_type=AttachmentTargetType.POST,
+        target_id=post.post_id,
+        url="/static/post/search_post_second.webp",
+        creator_id=test_user.user_id,
+        sort_order=1,
+    )
+    goods_attachment = Attachment(
+        target_type=AttachmentTargetType.GOODS,
+        target_id=goods.goods_id,
+        url="/static/goods/search_goods_cover.webp",
+        creator_id=test_user.user_id,
+        sort_order=0,
+    )
+    db_session.add_all([post_attachment_1, post_attachment_2, goods_attachment])
+    await db_session.flush()
+
+    resp = await client.get(
+        "/search/global",
+        params={"keyword": "附件搜索", "tab": "ALL", "page": 1, "page_size": 20},
+    )
+
+    assert resp.status_code == 200
+    msg = assert_api_success(resp.json())
+    item_map = {(item["item_type"], item["id"]): item for item in msg["list"]}
+
+    assert item_map[("BUY_POST", post.post_id)]["attachment_urls"] == [
+        "/static/post/search_post_cover.webp",
+        "/static/post/search_post_second.webp",
+    ]
+    assert item_map[("BUY_POST", post.post_id)]["attachments"] == [
+        {"id": post_attachment_1.attachment_id, "url": "/static/post/search_post_cover.webp"},
+        {"id": post_attachment_2.attachment_id, "url": "/static/post/search_post_second.webp"},
+    ]
+    assert item_map[("GOODS", goods.goods_id)]["attachment_urls"] == [
+        "/static/goods/search_goods_cover.webp",
+    ]
+    assert item_map[("GOODS", goods.goods_id)]["attachments"] == [
+        {"id": goods_attachment.attachment_id, "url": "/static/goods/search_goods_cover.webp"},
+    ]
 
 
 async def test_global_search_tab_and_sort_by_metrics(

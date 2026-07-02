@@ -6,6 +6,8 @@ from typing import Any, Optional
 
 from pydantic import BaseModel, Field
 
+from app.schemas.goods import GoodsAttachmentBriefRead
+from app.schemas.post import AttachmentBriefRead
 from app.schemas.user import UserRead
 
 
@@ -48,6 +50,8 @@ class GlobalSearchItem(BaseModel):
     create_time: datetime
     template_data: dict[str, Any] = Field(default_factory=dict, description="由分类模板驱动的业务自定义动态键值对")
     hit_tips: Optional[str] = Field(None, description="非标题/描述字段命中时的动态中文高亮提示语，如：在【取件地址】中匹配到")
+    attachment_urls: list[str] = Field(default_factory=list, description="附件 URL 列表")
+    attachments: list[AttachmentBriefRead | GoodsAttachmentBriefRead] = Field(default_factory=list, description="附件明细列表")
     view_count: int = 0
     favorite_count: int = 0
     comment_count: int = 0

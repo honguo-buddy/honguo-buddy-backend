@@ -7,7 +7,7 @@ from sqlalchemy import String, and_, cast, func, literal, or_, select, union_all
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import get_now_naive
-from app.models import Attachment, Direction, Goods, GoodsMetrics, GoodsStatus, Post, PostMetrics, PostStatus, User
+from app.models import Attachment, AttachmentTargetType, Direction, Goods, GoodsMetrics, GoodsStatus, Post, PostMetrics, PostStatus, User
 from app.schemas import GlobalSearchItem, SearchSort, SearchTab, SearchTime, UserRead
 from app.services import MetricsService
 
@@ -215,6 +215,7 @@ class SearchService:
         )
         rows = [dict(row) for row in result.mappings().all()]
         await SearchService._hydrate_search_metrics(db, redis_client, rows)
+        await SearchService._hydrate_search_attachments(db, rows)
         publisher_map = await SearchService._build_publisher_map(db, rows)
 
         items = []
@@ -231,6 +232,8 @@ class SearchService:
                     create_time=row["create_time"],
                     template_data=row.get("template_data") or {},
                     hit_tips=current_tips,
+                    attachment_urls=row.get("attachment_urls") or [],
+                    attachments=row.get("attachments") or [],
                     view_count=int(row.get("view_count") or 0),
                     favorite_count=int(row.get("favorite_count") or 0),
                     comment_count=int(row.get("comment_count") or 0),
@@ -260,6 +263,69 @@ class SearchService:
             await MetricsService.hydrate_posts_with_metrics(db, redis_client, post_items, post_ids, id_key="id")
         if goods_items:
             await MetricsService.hydrate_goods_with_metrics(db, redis_client, goods_items, goods_ids)
+
+    @staticmethod
+    async def _hydrate_search_attachments(db: AsyncSession, rows: list[dict[str, Any]]) -> None:
+        """批量灌入搜索结果附件 URL 与附件明细。"""
+        post_ids = sorted({int(row["id"]) for row in rows if row["item_type"] in {"BUY_POST", "SELL_POST"}})
+        goods_ids = sorted({int(row["id"]) for row in rows if row["item_type"] == "GOODS"})
+
+        attachment_rows = []
+        if post_ids or goods_ids:
+            conditions = [Attachment.is_deleted == False]
+            target_conditions = []
+            if post_ids:
+                target_conditions.append(
+                    and_(
+                        Attachment.target_type == AttachmentTargetType.POST,
+                        Attachment.target_id.in_(post_ids),
+                    )
+                )
+            if goods_ids:
+                target_conditions.append(
+                    and_(
+                        Attachment.target_type == AttachmentTargetType.GOODS,
+                        Attachment.target_id.in_(goods_ids),
+                    )
+                )
+            if target_conditions:
+                result = await db.execute(
+                    select(
+                        Attachment.attachment_id,
+                        Attachment.target_type,
+                        Attachment.target_id,
+                        Attachment.url,
+                        Attachment.sort_order,
+                    )
+                    .where(and_(*conditions, or_(*target_conditions)))
+                    .order_by(Attachment.target_type.asc(), Attachment.target_id.asc(), Attachment.sort_order.asc(), Attachment.attachment_id.asc())
+                )
+                attachment_rows = list(result.all())
+
+        attachment_map: dict[tuple[str, int], list[dict[str, Any]]] = {}
+        for attachment_id, target_type, target_id, url, _sort_order in attachment_rows:
+            target_type_value = target_type.value if getattr(target_type, "value", None) else str(target_type)
+            key = (target_type_value, int(target_id))
+            attachment_map.setdefault(key, []).append(
+                {
+                    "id": int(attachment_id),
+                    "url": url,
+                }
+            )
+
+        for row in rows:
+            if row["item_type"] in {"BUY_POST", "SELL_POST"}:
+                attachment_key = ("POST", int(row["id"]))
+            elif row["item_type"] == "GOODS":
+                attachment_key = ("GOODS", int(row["id"]))
+            else:
+                row["attachment_urls"] = []
+                row["attachments"] = []
+                continue
+
+            attachments = attachment_map.get(attachment_key, [])
+            row["attachments"] = attachments
+            row["attachment_urls"] = [attachment["url"] for attachment in attachments]
 
     @staticmethod
     async def _build_publisher_map(db: AsyncSession, rows: list[dict[str, Any]]) -> dict[int, UserRead]:
