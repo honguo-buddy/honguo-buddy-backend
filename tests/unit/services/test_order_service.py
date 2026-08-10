@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -485,12 +486,38 @@ async def test_cancel_order_lightning_limit_and_regular_bypass(monkeypatch):
         async def get(self, key):
             return self.data.get(key)
 
+        async def set(self, key, value, ex=None, nx=False):
+            if nx and key in self.data:
+                return None
+            self.data[key] = str(value)
+            if ex is not None:
+                self.expiries[key] = ex
+            return True
+
         async def incr(self, key):
             self.data[key] = int(self.data.get(key, 0)) + 1
             return self.data[key]
 
         async def expire(self, key, seconds):
             self.expiries[key] = seconds
+
+        async def delete(self, *keys):
+            removed = 0
+            for key in keys:
+                if key in self.data:
+                    removed += 1
+                    self.data.pop(key, None)
+                self.expiries.pop(key, None)
+            return removed
+
+        async def eval(self, script, numkeys, *args):
+            lock_key = args[0]
+            lock_token = args[1]
+            if self.data.get(lock_key) == lock_token:
+                self.data.pop(lock_key, None)
+                self.expiries.pop(lock_key, None)
+                return 1
+            return 0
 
     # 构建一个create_time为最近1分钟的订单（闪电退单场景）
     now = get_now_naive()
@@ -573,6 +600,167 @@ async def test_cancel_order_lightning_limit_and_regular_bypass(monkeypatch):
     res4 = await OrderService.cancel_order(FakeDB(), order_id=order4.order_id, operator_id=1, redis_client=fake_redis4)
     assert res4.status == OrderStatus.CANCELED
     assert lightning_key not in fake_redis4.data  # 不累加闪电退单计数
+
+
+@pytest.mark.asyncio
+async def test_raise_post_accept_rate_limit_blocks_when_daily_limit_reached_without_cooldown(monkeypatch):
+    class FakeRedis:
+        def __init__(self):
+            self.data = {
+                OrderService._post_cancel_count_key(1, 2001): str(settings.ORDER_ACCEPT_CANCEL_DAILY_LIMIT),
+            }
+
+        async def get(self, key):
+            return self.data.get(key)
+
+    with pytest.raises(BusinessHTTPException) as exc_info:
+        await OrderService._raise_post_accept_rate_limit(FakeRedis(), 1, 2001)
+    assert "今日取消次数已达上限" in exc_info.value.detail["msg"]
+
+
+@pytest.mark.asyncio
+async def test_record_post_cancel_sets_cooldown_and_daily_counter(monkeypatch):
+    class FakeRedis:
+        def __init__(self):
+            self.data = {}
+            self.expiries = {}
+
+        async def set(self, key, value, ex=None, nx=False):
+            self.data[key] = str(value)
+            if ex is not None:
+                self.expiries[key] = ex
+            return True
+
+        async def incr(self, key):
+            self.data[key] = str(int(self.data.get(key, "0")) + 1)
+            return int(self.data[key])
+
+        async def expire(self, key, seconds):
+            self.expiries[key] = seconds
+            return True
+
+    fake_redis = FakeRedis()
+    await OrderService._record_post_cancel(fake_redis, 1, 2001)
+
+    cooldown_key = OrderService._post_accept_cooldown_key(1, 2001)
+    count_key = OrderService._post_cancel_count_key(1, 2001)
+    assert fake_redis.data[cooldown_key] == "1"
+    assert fake_redis.expiries[cooldown_key] == settings.ORDER_ACCEPT_COOLDOWN_SECONDS
+    assert fake_redis.data[count_key] == "1"
+    assert fake_redis.expiries[count_key] == 86400
+
+
+@pytest.mark.asyncio
+async def test_cancel_order_concurrent_lightning_limit_allows_only_one_final_slot(monkeypatch):
+    class ConcurrentRedis:
+        def __init__(self, lightning_key: str):
+            self.data = {lightning_key: settings.LIGHTNING_CANCEL_DAILY_LIMIT - 1}
+            self.expiries = {}
+
+        async def get(self, key):
+            if key in self.data:
+                snapshot = self.data.get(key)
+                await asyncio.sleep(0.01)
+                return snapshot
+            return self.data.get(key)
+
+        async def incr(self, key):
+            self.data[key] = int(self.data.get(key, 0)) + 1
+            return self.data[key]
+
+        async def expire(self, key, seconds):
+            self.expiries[key] = seconds
+            return True
+
+        async def set(self, key, value, ex=None, nx=False):
+            if nx and key in self.data:
+                return None
+            self.data[key] = str(value)
+            if ex is not None:
+                self.expiries[key] = ex
+            return True
+
+        async def delete(self, *keys):
+            removed = 0
+            for key in keys:
+                if key in self.data:
+                    removed += 1
+                    self.data.pop(key, None)
+                self.expiries.pop(key, None)
+            return removed
+
+        async def eval(self, script, numkeys, *args):
+            lock_key = args[0]
+            lock_token = args[1]
+            if self.data.get(lock_key) == lock_token:
+                self.data.pop(lock_key, None)
+                self.expiries.pop(lock_key, None)
+                return 1
+            return 0
+
+    now = datetime(2026, 6, 1, 12, 0, 0)
+    recent_time = now - timedelta(seconds=60)
+    lightning_key = f"order:cancel:limit:1:{now.strftime('%Y%m%d')}"
+
+    order1 = build_order(
+        order_id=8001,
+        status=OrderStatus.PENDING,
+        buyer_id=1,
+        seller_id=2,
+        initiator_id=1,
+        item_type=ItemType.POST,
+        item_id=2101,
+        create_time=recent_time,
+    )
+    order2 = build_order(
+        order_id=8002,
+        status=OrderStatus.PENDING,
+        buyer_id=1,
+        seller_id=2,
+        initiator_id=1,
+        item_type=ItemType.POST,
+        item_id=2102,
+        create_time=recent_time,
+    )
+    post = build_post()
+
+    async def fake_get_post(db, pid):
+        return post
+
+    order_map = {8001: order1, 8002: order2}
+
+    async def fake_get_order(db, oid):
+        return order_map[oid]
+
+    class FakeDB:
+        async def execute(self, stmt):
+            return FakeResult(items=[])
+
+        async def flush(self):
+            pass
+
+        async def refresh(self, o):
+            pass
+
+        async def commit(self):
+            pass
+
+    monkeypatch.setattr("app.services.order_service.get_now_naive", lambda: now)
+    monkeypatch.setattr(OrderService, "_get_order_for_update", fake_get_order)
+    monkeypatch.setattr(OrderService, "_get_post_for_update", fake_get_post)
+
+    redis_client = ConcurrentRedis(lightning_key)
+    results = await asyncio.gather(
+        OrderService.cancel_order(FakeDB(), order_id=8001, operator_id=1, redis_client=redis_client),
+        OrderService.cancel_order(FakeDB(), order_id=8002, operator_id=1, redis_client=redis_client),
+        return_exceptions=True,
+    )
+
+    success_count = sum(1 for item in results if not isinstance(item, Exception))
+    error_count = sum(1 for item in results if isinstance(item, Exception))
+    assert success_count == 1
+    assert error_count == 1
+    assert int(redis_client.data[lightning_key]) == settings.LIGHTNING_CANCEL_DAILY_LIMIT
 
 @pytest.mark.asyncio
 async def test_approve_and_reject_order_branches(monkeypatch):

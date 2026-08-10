@@ -71,6 +71,13 @@ async def get_current_user(
                 msg="Token无效或已失效",
                 status_code=401,
             )
+        latest_token = await redis.get(f"user_token:{sub}")
+        if latest_token is not None and str(latest_token) != str(token):
+            raise AuthHTTPException(
+                code=settings.TOKEN_INVALID_CODE,
+                msg="Token无效或已失效",
+                status_code=401,
+            )
     except JWTError:
         raise AuthHTTPException(
             code=settings.TOKEN_INVALID_CODE,
@@ -145,6 +152,9 @@ async def get_current_user_optional(
 
         payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.TOKEN_ALGORITHM])
         if str(payload.get("sub")) != str(cached_user_id):
+            return None
+        latest_token = await redis.get(f"user_token:{payload.get('sub')}")
+        if latest_token is not None and str(latest_token) != str(token):
             return None
 
         uid = int(cached_user_id)

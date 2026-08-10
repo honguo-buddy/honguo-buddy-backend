@@ -604,6 +604,7 @@ DATA_GET_FAILED: 301
 - `keyword` 可选；为空字符串、全空格或完全不传时，接口进入大厅兜底模式，不追加任何模糊搜索条件，只按 `tab`、`sort_by`、`time_range`、分页返回内容。
 - `keyword` 非空时，后端会先按空白符切分为多个词根；所有词根都必须命中，但每个词根可在标题、描述或 `template_data` JSON 内部 Value 中任一命中。
 - JSON 搜索使用数据库 `json_search(json_doc, 'one', pattern)` 对 Value 做滑动匹配，不会因为 JSON Key 包含关键词而误命中。
+- 搜索卡片同步返回 `attachment_urls` 与 `attachments`；其中 `attachments` 每项结构为 `{id, url}`，顺序与帖子/商品附件顺序一致，第 1 项可直接作为封面图。
 - `tab` 可选：`ALL`、`BUY_POST`、`SELL_POST`、`GOODS`，默认 `ALL`。
 - `sort_by` 可选：`DEFAULT`、`FAVORITE`、`COMMENT`、`VIEW`，默认 `DEFAULT`。
 - `time_range` 可选：`ALL`、`1D`、`7D`、`180D`，默认 `ALL`。
@@ -645,6 +646,20 @@ DATA_GET_FAILED: 301
                     "pieces": "2"
                 },
                 "hit_tips": "在【取件地址】中匹配到: 北门近邻宝",
+                "attachment_urls": [
+                    "/static/post/post_1001_cover.webp",
+                    "/static/post/post_1001_second.webp"
+                ],
+                "attachments": [
+                    {
+                        "id": 5001,
+                        "url": "/static/post/post_1001_cover.webp"
+                    },
+                    {
+                        "id": 5002,
+                        "url": "/static/post/post_1001_second.webp"
+                    }
+                ],
                 "view_count": 120,
                 "favorite_count": 8,
                 "comment_count": 3,
@@ -4009,3 +4024,25 @@ POST /goods/5001/relist
 ---
 
 文件位置：评论接口位于 `app/api/comment.py`、`app/services/comment_service.py` 与 `app/schemas/comment.py`；聊天接口位于 `app/api/chat.py`、`app/services/chat_service.py` 与 `app/schemas/chat.py`；商品接口位于 `app/api/goods.py`、`app/services/goods_service.py` 与 `app/schemas/goods.py`。文档和实现保持一致。
+
+## MIT License
+
+Copyright (c) 2026 honguo-buddy
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.

@@ -18,6 +18,7 @@ from httpx import ASGITransport, AsyncClient
 from dotenv import dotenv_values, load_dotenv
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import URL, make_url
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker
 
@@ -41,6 +42,34 @@ class _DatabaseRuntime:
 _schema_lock: asyncio.Lock | None = None
 _schema_ready = False
 _runtime: _DatabaseRuntime | None = None
+
+
+def _is_transient_mysql_disconnect(exc: OperationalError) -> bool:
+    message = str(exc).lower()
+    return (
+        "lost connection to mysql server during query" in message
+        or "[winerror 121]" in message
+    )
+
+
+async def _connect_test_engine_with_retry(
+    engine: AsyncEngine,
+    *,
+    max_attempts: int = 3,
+    retry_delay_seconds: float = 0.2,
+):
+    last_error: OperationalError | None = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return await engine.connect()
+        except OperationalError as exc:
+            last_error = exc
+            if not _is_transient_mysql_disconnect(exc) or attempt >= max_attempts:
+                raise
+            await asyncio.sleep(retry_delay_seconds)
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError("测试数据库连接重试失败")
 
 
 def _sanitize_db_suffix(raw_value: str) -> str:
@@ -242,7 +271,8 @@ async def test_engine(test_db_url: URL) -> AsyncGenerator[AsyncEngine, None]:
 @pytest_asyncio.fixture
 async def db_session(test_engine) -> AsyncGenerator[AsyncSession, None]:
     """为每个测试提供独立 Session，业务代码仍可按需要提交。"""
-    async with test_engine.connect() as connection:
+    connection = await _connect_test_engine_with_retry(test_engine)
+    try:
         transaction = await connection.begin()
         session_factory = sessionmaker(
             bind=connection,
@@ -252,6 +282,8 @@ async def db_session(test_engine) -> AsyncGenerator[AsyncSession, None]:
         async with session_factory() as session:
             yield session
         await transaction.rollback()
+    finally:
+        await connection.close()
 
 
 @pytest_asyncio.fixture

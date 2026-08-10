@@ -75,7 +75,11 @@ async def test_get_user_id_from_request_success(monkeypatch):
             self.query_params = {}
 
     async def _get(k):
-        return "5001"
+        if k == f"token:{token}":
+            return "5001"
+        if k == "user_token:5001":
+            return token
+        return None
 
     # monkeypatch redis in security module
     import app.core.security as sec
@@ -97,7 +101,11 @@ async def test_get_user_id_from_request_cookie_fallback(monkeypatch):
             self.query_params = {}
 
     async def _get(k):
-        return "5002"
+        if k == f"token:{token}":
+            return "5002"
+        if k == "user_token:5002":
+            return token
+        return None
 
     import app.core.security as sec
 
@@ -115,6 +123,30 @@ async def test_get_user_id_from_request_invalid_token_returns_none(monkeypatch):
             self.query_params = {}
 
     async def _get(k):
+        return None
+
+    import app.core.security as sec
+
+    sec.redis.get = _get
+
+    assert await get_user_id_from_request(FakeRequest()) is None
+
+
+async def test_get_user_id_from_request_rejects_stale_token_when_user_token_points_elsewhere(monkeypatch):
+    active_token = create_access_token({"sub": "5003", "nonce": "active"})
+    stale_token = create_access_token({"sub": "5003", "nonce": "stale"})
+
+    class FakeRequest:
+        def __init__(self):
+            self.headers = {"authorization": f"Bearer {stale_token}"}
+            self.cookies = {}
+            self.query_params = {}
+
+    async def _get(key):
+        if key == f"token:{stale_token}":
+            return "5003"
+        if key == "user_token:5003":
+            return active_token
         return None
 
     import app.core.security as sec

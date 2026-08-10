@@ -1,6 +1,6 @@
 from typing import Any
 
-from pydantic import PrivateAttr
+from pydantic import PrivateAttr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.core.dynamic_config import DEFAULT_DYNAMIC_CONFIGS, DynamicConfigManager
@@ -103,6 +103,17 @@ class Settings(BaseSettings):
     WX_TEMPLATE_NEW_APPLICATION: str = "FDpm9NoLGRMa0LlE6beYuhh2vTKl541qHvauNW0smZY"  # 购买申请通知·万能前置审批互动
     WX_ACCESS_TOKEN_CACHE_KEY: str = "wx:access_token:cache"  # Redis 缓存键
     WX_ACCESS_TOKEN_CACHE_TTL: int = 6600  # access_token 缓存有效期（秒），110分钟
+
+    @field_validator("DEBUG", mode="before")
+    @classmethod
+    def _normalize_debug_value(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            normalized = value.strip().lower()
+            if normalized in {"true", "1", "yes", "on", "debug", "dev", "development", "test"}:
+                return True
+            if normalized in {"false", "0", "no", "off", "release", "prod", "production"}:
+                return False
+        return value
 
     @staticmethod
     def _get_dynamic_default(name: str) -> Any:

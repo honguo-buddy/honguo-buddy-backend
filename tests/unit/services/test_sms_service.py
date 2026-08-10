@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import sys
 import types
@@ -212,3 +213,98 @@ async def test_verify_code_wrong_then_success(monkeypatch, fake_redis):
 
     assert result["detail"] == "验证码验证通过"
     assert await fake_redis.get("sms:verified:13800138003") == "1"
+
+
+async def test_send_code_concurrent_requests_only_one_succeeds(monkeypatch):
+    class ConcurrentRedis:
+        def __init__(self):
+            self.store = {}
+
+        async def get(self, key):
+            if key == "sms:rate:13800138009":
+                snapshot = self.store.get(key)
+                await asyncio.sleep(0.01)
+                return snapshot
+            return self.store.get(key)
+
+        async def set(self, key, value, ex=None, nx=False):
+            if nx and key in self.store:
+                return None
+            self.store[key] = str(value)
+            return True
+
+        async def delete(self, *keys):
+            for key in keys:
+                self.store.pop(key, None)
+
+    import app.services.sms_service as sms_module
+
+    redis_stub = ConcurrentRedis()
+    monkeypatch.setattr("app.services.sms_service.redis", redis_stub)
+    monkeypatch.setattr("app.services.sms_service.settings.SMS_TEMPLATE_CODE", "TEMPLATE")
+    monkeypatch.setattr("app.services.sms_service.settings.SMS_SIGN_NAME", "SIGN")
+    monkeypatch.setattr(SMSService, "_generate_code", lambda length=6: "123456")
+    monkeypatch.setattr(
+        sms_module,
+        "asyncio",
+        SimpleNamespace(to_thread=AsyncMock(side_effect=lambda func, *args, **kwargs: func(*args, **kwargs))),
+        raising=False,
+    )
+
+    ok_body = SimpleNamespace(code="OK", message="OK")
+    ok_resp = SimpleNamespace(body=ok_body)
+    ok_client = SimpleNamespace(send_sms_with_options=MagicMock(return_value=ok_resp))
+
+    with patch.object(SMSService, "_create_client", return_value=ok_client):
+        results = await asyncio.gather(
+            SMSService.send_code("13800138009"),
+            SMSService.send_code("13800138009"),
+            return_exceptions=True,
+        )
+
+    success_count = sum(1 for item in results if isinstance(item, dict))
+    error_count = sum(1 for item in results if isinstance(item, Exception))
+    assert success_count == 1
+    assert error_count == 1
+    assert redis_stub.store.get("sms:rate:13800138009") == "1"
+
+
+async def test_verify_code_concurrent_wrong_attempts_accumulate(monkeypatch):
+    class ConcurrentRedis:
+        def __init__(self):
+            self.store = {}
+
+        async def get(self, key):
+            if key == "sms:code:13800138010":
+                snapshot = self.store.get(key)
+                await asyncio.sleep(0.01)
+                return snapshot
+            return self.store.get(key)
+
+        async def set(self, key, value, ex=None, nx=False):
+            if nx and key in self.store:
+                return None
+            self.store[key] = str(value)
+            return True
+
+        async def delete(self, *keys):
+            for key in keys:
+                self.store.pop(key, None)
+
+    redis_stub = ConcurrentRedis()
+    monkeypatch.setattr("app.services.sms_service.redis", redis_stub)
+    monkeypatch.setattr("app.services.sms_service.get_now", lambda: SimpleNamespace(timestamp=lambda: 1000.0))
+    await redis_stub.set(
+        "sms:code:13800138010",
+        json.dumps({"code": "222222", "timestamp": 999.0, "attempts": 0}),
+    )
+
+    results = await asyncio.gather(
+        SMSService.verify_code("13800138010", "111111"),
+        SMSService.verify_code("13800138010", "111111"),
+        return_exceptions=True,
+    )
+
+    assert all(isinstance(item, BusinessHTTPException) for item in results)
+    stored = json.loads(redis_stub.store["sms:code:13800138010"])
+    assert stored["attempts"] == 2

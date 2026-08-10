@@ -8,7 +8,7 @@ from alibabacloud_tea_openapi import models as open_api_models
 from alibabacloud_dysmsapi20170525 import models as dysmsapi_models
 from alibabacloud_tea_util import models as util_models
 from app.db import redis
-from app.core import BusinessHTTPException, get_now, settings
+from app.core import BusinessHTTPException, acquire_redis_lock, get_now, release_redis_lock, set_if_absent, settings
 
 logger = logging.getLogger(__name__)
 
@@ -50,12 +50,12 @@ class SMSService:
     async def send_code(cls, phone: str) -> dict:
         # 基础节流：每手机号 60s
         rate_key = f"sms:rate:{phone}"
-        if await redis.get(rate_key):
+        rate_acquired = await set_if_absent(redis, rate_key, "1", ex=cls.RATE_LIMIT_SECONDS)
+        if not rate_acquired:
             raise BusinessHTTPException(
                 code=settings.DATA_GET_FAILED_CODE,
                 msg="发送过于频繁，请稍后再试"
             )
-        await redis.set(rate_key, "1", ex=cls.RATE_LIMIT_SECONDS)
 
         code = cls._generate_code(6)
         data = {"code": code, "timestamp": get_now().timestamp(), "attempts": 0}
@@ -102,51 +102,59 @@ class SMSService:
 
     @classmethod
     async def verify_code(cls, phone: str, input_code: str) -> dict:
-        raw = await redis.get(f"sms:code:{phone}")
-        if not raw:
+        code_key = f"sms:code:{phone}"
+        lock_key = f"lock:{code_key}"
+        lock_token = await acquire_redis_lock(redis, lock_key, ttl_seconds=3, wait_timeout_seconds=1.0)
+        if lock_token is None:
             raise BusinessHTTPException(
                 code=settings.DATA_GET_FAILED_CODE,
-                msg="验证码错误或已过期"
+                msg="验证码校验繁忙，请稍后重试"
             )
+
         try:
-            data = json.loads(raw)
-            if not isinstance(data, dict):
-                raise ValueError("sms code data is not a dict")
-        except Exception:
-            await redis.delete(f"sms:code:{phone}")
-            raise BusinessHTTPException(
-                code=settings.DATA_GET_FAILED_CODE,
-                msg="验证码状态异常，请重试"
-            )
+            raw = await redis.get(code_key)
+            if not raw:
+                raise BusinessHTTPException(
+                    code=settings.DATA_GET_FAILED_CODE,
+                    msg="验证码错误或已过期"
+                )
+            try:
+                data = json.loads(raw)
+                if not isinstance(data, dict):
+                    raise ValueError("sms code data is not a dict")
+            except Exception:
+                await redis.delete(code_key)
+                raise BusinessHTTPException(
+                    code=settings.DATA_GET_FAILED_CODE,
+                    msg="验证码状态异常，请重试"
+                )
 
-        # 尝试次数限制
-        attempts = int(data.get("attempts", 0))
-        if attempts >= 3:
-            await redis.delete(f"sms:code:{phone}")
-            raise BusinessHTTPException(
-                code=settings.DATA_GET_FAILED_CODE,
-                msg="尝试次数过多，请重新获取验证码"
-            )
+            attempts = int(data.get("attempts", 0))
+            if attempts >= 3:
+                await redis.delete(code_key)
+                raise BusinessHTTPException(
+                    code=settings.DATA_GET_FAILED_CODE,
+                    msg="尝试次数过多，请重新获取验证码"
+                )
 
-        # 时间检查
-        if get_now().timestamp() - float(data.get("timestamp", 0)) > cls.CODE_TTL_SECONDS:
-            await redis.delete(f"sms:code:{phone}")
-            raise BusinessHTTPException(
-                code=settings.DATA_GET_FAILED_CODE,
-                msg="验证码已过期，请重新获取"
-            )
+            if get_now().timestamp() - float(data.get("timestamp", 0)) > cls.CODE_TTL_SECONDS:
+                await redis.delete(code_key)
+                raise BusinessHTTPException(
+                    code=settings.DATA_GET_FAILED_CODE,
+                    msg="验证码已过期，请重新获取"
+                )
 
-        # 比对验证码
-        if str(input_code) != str(data.get("code")):
-            data["attempts"] = attempts + 1
-            await redis.set(f"sms:code:{phone}", json.dumps(data), ex=cls.CODE_TTL_SECONDS)
-            left = max(0, 3 - data["attempts"])
-            raise BusinessHTTPException(
-                code=settings.DATA_GET_FAILED_CODE,
-                msg=f"验证码错误，还剩{left}次机会"
-            )
+            if str(input_code) != str(data.get("code")):
+                data["attempts"] = attempts + 1
+                await redis.set(code_key, json.dumps(data), ex=cls.CODE_TTL_SECONDS)
+                left = max(0, 3 - data["attempts"])
+                raise BusinessHTTPException(
+                    code=settings.DATA_GET_FAILED_CODE,
+                    msg=f"验证码错误，还剩{left}次机会"
+                )
 
-        # 成功：删除验证码，写入 verified 标记
-        await redis.delete(f"sms:code:{phone}")
-        await redis.set(f"sms:verified:{phone}", "1", ex=cls.VERIFIED_WINDOW_SECONDS)
-        return {"detail": "验证码验证通过"}
+            await redis.delete(code_key)
+            await redis.set(f"sms:verified:{phone}", "1", ex=cls.VERIFIED_WINDOW_SECONDS)
+            return {"detail": "验证码验证通过"}
+        finally:
+            await release_redis_lock(redis, lock_key, lock_token)

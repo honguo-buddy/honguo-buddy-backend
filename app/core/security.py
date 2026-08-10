@@ -112,6 +112,9 @@ async def get_user_id_from_request(request: Request) -> int | None:
             return None
         if str(user_id) != str(sub):
             return None
+        latest_token = await redis.get(f"user_token:{sub}")
+        if latest_token is not None and str(latest_token) != str(token):
+            return None
         return int(sub)
     except JWTError:
         return None

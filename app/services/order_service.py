@@ -10,7 +10,16 @@ from sqlalchemy import and_, func, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased, selectinload
 
-from app.core import BusinessHTTPException, ResourceHTTPException, get_now, get_now_naive, parse_datetime_to_beijing_naive, settings
+from app.core import (
+    BusinessHTTPException,
+    ResourceHTTPException,
+    acquire_redis_lock,
+    get_now,
+    get_now_naive,
+    parse_datetime_to_beijing_naive,
+    release_redis_lock,
+    settings,
+)
 from app.core.delay_queue import ORDER_AUTO_CONFIRM_QUEUE_KEY, enqueue_delayed_task
 from app.models import CreditLog, Direction, Goods, GoodsStatus, ItemType, Order, OrderStatus, OrderTriggerType, Post, PostStatus, User
 
@@ -1208,11 +1217,27 @@ class OrderService:
         else:
             duration_seconds = 999999
 
+        lightning_key = None
+        lightning_lock_key = None
+        lightning_lock_token = None
         if redis_client is not None and duration_seconds <= settings.LIGHTNING_CANCEL_LIMIT_SECONDS:
             today_str = now.strftime("%Y%m%d")
             lightning_key = f"order:cancel:limit:{operator_id}:{today_str}"
+            lightning_lock_key = f"lock:{lightning_key}"
+            lightning_lock_token = await acquire_redis_lock(
+                redis_client,
+                lightning_lock_key,
+                ttl_seconds=3,
+                wait_timeout_seconds=1.0,
+            )
+            if lightning_lock_token is None:
+                raise BusinessHTTPException(
+                    code=settings.REQ_ERROR_CODE,
+                    msg="退单操作繁忙，请稍后重试",
+                )
             current_count = await redis_client.get(lightning_key)
             if current_count is not None and int(current_count) >= settings.LIGHTNING_CANCEL_DAILY_LIMIT:
+                await release_redis_lock(redis_client, lightning_lock_key, lightning_lock_token)
                 raise BusinessHTTPException(
                     code=settings.REQ_ERROR_CODE,
                     msg=f"每日{settings.LIGHTNING_CANCEL_LIMIT_SECONDS // 60}分钟内闪电退单次数已达{settings.LIGHTNING_CANCEL_DAILY_LIMIT}次上限，请稍后再试或与对端私信沟通"
@@ -1243,16 +1268,18 @@ class OrderService:
                 goods.template_data = locked
 
         # 闪电退单：累加Redis日期维度计数器并设置24h过期
-        if redis_client is not None and duration_seconds <= settings.LIGHTNING_CANCEL_LIMIT_SECONDS:
-            today_str = now.strftime("%Y%m%d")
-            lightning_key = f"order:cancel:limit:{operator_id}:{today_str}"
-            await redis_client.incr(lightning_key)
-            await redis_client.expire(lightning_key, 86400)
+        try:
+            if redis_client is not None and duration_seconds <= settings.LIGHTNING_CANCEL_LIMIT_SECONDS and lightning_key is not None:
+                await redis_client.incr(lightning_key)
+                await redis_client.expire(lightning_key, 86400)
 
-        await db.flush()
-        await db.refresh(order)
-        await db.commit()
-        return order
+            await db.flush()
+            await db.refresh(order)
+            await db.commit()
+            return order
+        finally:
+            if redis_client is not None and lightning_lock_key is not None:
+                await release_redis_lock(redis_client, lightning_lock_key, lightning_lock_token)
 
     @staticmethod
     async def update_status(db: AsyncSession, order_id: int, new_status: str, operator_id: int) -> Order:

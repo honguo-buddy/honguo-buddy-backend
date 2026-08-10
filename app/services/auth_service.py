@@ -14,8 +14,11 @@ from app.core import (
     AuthHTTPException,
     BusinessHTTPException,
     ResourceHTTPException,
+    acquire_redis_lock,
     create_access_token,
     get_now,
+    release_redis_lock,
+    set_if_absent,
     send_email,
 )
 from app.db import redis, User, UserType, CreditLog
@@ -35,12 +38,27 @@ class AuthService:
     @staticmethod
     async def _persist_user_token(user_id: int, token: str) -> None:
         ttl_seconds = settings.TOKEN_EXPIRE_TIME * 60
-        old_token = await redis.get(f"user_token:{user_id}")
-        if old_token and old_token != token:
-            await redis.delete(f"token:{old_token}")
+        lock_key = f"lock:user_token:{user_id}"
+        lock_token = await acquire_redis_lock(redis, lock_key, ttl_seconds=3, wait_timeout_seconds=1.0)
+        if lock_token is None:
+            raise BusinessHTTPException(
+                code=settings.DATA_GET_FAILED_CODE,
+                msg="登录状态写入繁忙，请稍后重试",
+                status_code=503,
+            )
+        try:
+            old_token = await redis.get(f"user_token:{user_id}")
+            if old_token and old_token != token:
+                await redis.delete(f"token:{old_token}")
 
-        await redis.set(f"token:{token}", str(user_id), ex=ttl_seconds)
-        await redis.set(f"user_token:{user_id}", token, ex=ttl_seconds)
+            await redis.set(f"token:{token}", str(user_id), ex=ttl_seconds)
+            await redis.set(f"user_token:{user_id}", token, ex=ttl_seconds)
+
+            latest_token = await redis.get(f"user_token:{user_id}")
+            if latest_token and latest_token != token:
+                await redis.delete(f"token:{token}")
+        finally:
+            await release_redis_lock(redis, lock_key, lock_token)
 
     @staticmethod
     async def _issue_token_for_user(user: User) -> str:
@@ -57,6 +75,84 @@ class AuthService:
     @staticmethod
     def _normalize_user_name(raw_name: str) -> str:
         return (raw_name or "").strip()
+
+    @staticmethod
+    async def _scan_redis_keys(redis_client, pattern: str) -> list[str]:
+        scan_iter = getattr(redis_client, "scan_iter", None)
+        if callable(scan_iter):
+            keys: list[str] = []
+            async for key in scan_iter(match=pattern, count=200):
+                if isinstance(key, (bytes, bytearray)):
+                    keys.append(key.decode("utf-8"))
+                else:
+                    keys.append(str(key))
+            return keys
+
+        keys_method = getattr(redis_client, "keys", None)
+        if callable(keys_method):
+            raw_keys = await keys_method(pattern)
+            result: list[str] = []
+            for key in raw_keys:
+                if isinstance(key, (bytes, bytearray)):
+                    result.append(key.decode("utf-8"))
+                else:
+                    result.append(str(key))
+            return result
+
+        raw_data = getattr(redis_client, "_data", None)
+        if isinstance(raw_data, dict):
+            prefix = pattern[:-1] if pattern.endswith("*") else pattern
+            return [str(key) for key in raw_data.keys() if str(key).startswith(prefix)]
+
+        raise BusinessHTTPException(
+            code=settings.DATA_GET_FAILED_CODE,
+            msg="Redis 客户端不支持键扫描，无法执行旧 token 清理",
+            status_code=500,
+        )
+
+    @staticmethod
+    async def cleanup_stale_token_keys(redis_client=redis) -> dict[str, int]:
+        token_keys = await AuthService._scan_redis_keys(redis_client, "token:*")
+        summary = {
+            "scanned": 0,
+            "deleted": 0,
+            "kept": 0,
+            "skipped_locked": 0,
+            "missing_mapping": 0,
+        }
+
+        for token_key in token_keys:
+            summary["scanned"] += 1
+            token = token_key[len("token:"):]
+            user_id = await redis_client.get(token_key)
+            if user_id is None:
+                summary["missing_mapping"] += 1
+                continue
+
+            normalized_user_id = str(user_id)
+            lock_key = f"lock:user_token:{normalized_user_id}"
+            lock_token = await acquire_redis_lock(
+                redis_client,
+                lock_key,
+                ttl_seconds=3,
+                wait_timeout_seconds=0.1,
+            )
+            if lock_token is None:
+                summary["skipped_locked"] += 1
+                continue
+
+            try:
+                latest_token = await redis_client.get(f"user_token:{normalized_user_id}")
+                if latest_token is not None and str(latest_token) == token:
+                    summary["kept"] += 1
+                    continue
+
+                await redis_client.delete(token_key)
+                summary["deleted"] += 1
+            finally:
+                await release_redis_lock(redis_client, lock_key, lock_token)
+
+        return summary
 
     @staticmethod
     async def _gen_unique_user_uuid(db: AsyncSession) -> bytes:
@@ -262,13 +358,18 @@ class AuthService:
             )
 
         rate_key = f"email_verify_rate:{email}"
-        if await redis.get(rate_key):
+        rate_acquired = await set_if_absent(
+            redis,
+            rate_key,
+            "1",
+            ex=AuthService.EMAIL_VERIFY_RATE_LIMIT_SECONDS,
+        )
+        if not rate_acquired:
             raise BusinessHTTPException(
                 code=settings.UPDATEPROFILE_FAILED_CODE,
                 msg="发送过于频繁，请稍后再试",
                 status_code=429,
             )
-        await redis.set(rate_key, "1", ex=AuthService.EMAIL_VERIFY_RATE_LIMIT_SECONDS)
 
         code = "".join(str(random.randint(0, 9)) for _ in range(6))
         code_data = {
@@ -308,79 +409,92 @@ class AuthService:
 
     @staticmethod
     async def verify_email_code(db: AsyncSession, current_user_id: int, email: str, code: str) -> dict[str, str]:
-        raw = await redis.get(f"email_verify_code:{email}")
-        if not raw:
+        code_key = f"email_verify_code:{email}"
+        lock_key = f"lock:{code_key}"
+        lock_token = await acquire_redis_lock(redis, lock_key, ttl_seconds=3, wait_timeout_seconds=1.0)
+        if lock_token is None:
             raise BusinessHTTPException(
                 code=settings.UPDATEPROFILE_FAILED_CODE,
-                msg="验证码错误或已过期",
-                status_code=400,
+                msg="验证码校验繁忙，请稍后重试",
+                status_code=429,
             )
 
         try:
-            code_data = json.loads(raw)
-        except Exception:
-            await redis.delete(f"email_verify_code:{email}")
-            raise BusinessHTTPException(
-                code=settings.UPDATEPROFILE_FAILED_CODE,
-                msg="验证码状态异常，请重新获取",
-                status_code=400,
-            )
+            raw = await redis.get(code_key)
+            if not raw:
+                raise BusinessHTTPException(
+                    code=settings.UPDATEPROFILE_FAILED_CODE,
+                    msg="验证码错误或已过期",
+                    status_code=400,
+                )
 
-        if int(code_data.get("user_id", -1)) != current_user_id:
-            raise BusinessHTTPException(
-                code=settings.UPDATEPROFILE_FAILED_CODE,
-                msg="验证码与当前用户不匹配",
-                status_code=403,
-            )
+            try:
+                code_data = json.loads(raw)
+            except Exception:
+                await redis.delete(code_key)
+                raise BusinessHTTPException(
+                    code=settings.UPDATEPROFILE_FAILED_CODE,
+                    msg="验证码状态异常，请重新获取",
+                    status_code=400,
+                )
 
-        attempts = int(code_data.get("attempts", 0))
-        if attempts >= AuthService.EMAIL_VERIFY_MAX_ATTEMPTS:
-            await redis.delete(f"email_verify_code:{email}")
-            raise BusinessHTTPException(
-                code=settings.UPDATEPROFILE_FAILED_CODE,
-                msg="尝试次数过多，请重新获取验证码",
-                status_code=400,
-            )
+            if int(code_data.get("user_id", -1)) != current_user_id:
+                raise BusinessHTTPException(
+                    code=settings.UPDATEPROFILE_FAILED_CODE,
+                    msg="验证码与当前用户不匹配",
+                    status_code=403,
+                )
 
-        if get_now().timestamp() - float(code_data.get("timestamp", 0)) > AuthService.EMAIL_VERIFY_TTL_SECONDS:
-            await redis.delete(f"email_verify_code:{email}")
-            raise BusinessHTTPException(
-                code=settings.UPDATEPROFILE_FAILED_CODE,
-                msg="验证码已过期，请重新获取",
-                status_code=400,
-            )
+            attempts = int(code_data.get("attempts", 0))
+            if attempts >= AuthService.EMAIL_VERIFY_MAX_ATTEMPTS:
+                await redis.delete(code_key)
+                raise BusinessHTTPException(
+                    code=settings.UPDATEPROFILE_FAILED_CODE,
+                    msg="尝试次数过多，请重新获取验证码",
+                    status_code=400,
+                )
 
-        if str(code) != str(code_data.get("code")):
-            code_data["attempts"] = attempts + 1
-            await redis.set(
-                f"email_verify_code:{email}",
-                json.dumps(code_data, ensure_ascii=False),
-                ex=AuthService.EMAIL_VERIFY_TTL_SECONDS,
-            )
-            left = max(0, AuthService.EMAIL_VERIFY_MAX_ATTEMPTS - code_data["attempts"])
-            raise BusinessHTTPException(
-                code=settings.UPDATEPROFILE_FAILED_CODE,
-                msg=f"验证码错误，还剩{left}次机会",
-                status_code=400,
-            )
+            if get_now().timestamp() - float(code_data.get("timestamp", 0)) > AuthService.EMAIL_VERIFY_TTL_SECONDS:
+                await redis.delete(code_key)
+                raise BusinessHTTPException(
+                    code=settings.UPDATEPROFILE_FAILED_CODE,
+                    msg="验证码已过期，请重新获取",
+                    status_code=400,
+                )
 
-        user_res = await db.execute(select(User).where(and_(User.user_id == current_user_id, User.is_deleted == False)))
-        user = user_res.scalar_one_or_none()
-        if not user:
-            raise ResourceHTTPException(
-                code=settings.USER_GET_FAILED_CODE,
-                msg="用户不存在",
-                status_code=404,
-            )
+            if str(code) != str(code_data.get("code")):
+                code_data["attempts"] = attempts + 1
+                await redis.set(
+                    code_key,
+                    json.dumps(code_data, ensure_ascii=False),
+                    ex=AuthService.EMAIL_VERIFY_TTL_SECONDS,
+                )
+                left = max(0, AuthService.EMAIL_VERIFY_MAX_ATTEMPTS - code_data["attempts"])
+                raise BusinessHTTPException(
+                    code=settings.UPDATEPROFILE_FAILED_CODE,
+                    msg=f"验证码错误，还剩{left}次机会",
+                    status_code=400,
+                )
 
-        user.email = email
-        user.is_verified = AuthService._is_campus_email(email)
-        await db.commit()
-        await db.refresh(user)
+            user_res = await db.execute(select(User).where(and_(User.user_id == current_user_id, User.is_deleted == False)))
+            user = user_res.scalar_one_or_none()
+            if not user:
+                raise ResourceHTTPException(
+                    code=settings.USER_GET_FAILED_CODE,
+                    msg="用户不存在",
+                    status_code=404,
+                )
 
-        await redis.delete(f"email_verify_code:{email}")
-        await redis.delete(f"email_verify_rate:{email}")
-        return {"detail": "邮箱绑定成功", "email": email}
+            user.email = email
+            user.is_verified = AuthService._is_campus_email(email)
+            await db.commit()
+            await db.refresh(user)
+
+            await redis.delete(code_key)
+            await redis.delete(f"email_verify_rate:{email}")
+            return {"detail": "邮箱绑定成功", "email": email}
+        finally:
+            await release_redis_lock(redis, lock_key, lock_token)
 
     @staticmethod
     async def send_admin_login_code(
@@ -417,7 +531,13 @@ class AuthService:
 
         # 限频锁检查
         lock_key = f"admin:login:lock:{email}"
-        if await redis_client.get(lock_key):
+        rate_acquired = await set_if_absent(
+            redis_client,
+            lock_key,
+            "1",
+            ex=60,
+        )
+        if not rate_acquired:
             raise BusinessHTTPException(
                 code=settings.REQ_ERROR_CODE,
                 msg="验证码请求过于频繁，请60秒后再试",
@@ -430,7 +550,6 @@ class AuthService:
 
         # 原子性写入 Redis：验证码 + 限频锁
         await redis_client.set(code_key, code, ex=300)  # 5分钟
-        await redis_client.set(lock_key, "1", ex=60)    # 60秒限频
 
         # 异步投递邮件
         subject = "管理端登录验证码"
@@ -465,26 +584,35 @@ class AuthService:
         - 返回结构完全对齐 wxLogin 规范
         """
         code_key = f"admin:login:code:{email}"
-
-        # 提取验证码
-        stored_code = await redis_client.get(code_key)
-        if not stored_code:
+        lock_key = f"lock:{code_key}"
+        lock_token = await acquire_redis_lock(redis_client, lock_key, ttl_seconds=3, wait_timeout_seconds=1.0)
+        if lock_token is None:
             raise BusinessHTTPException(
                 code=settings.UPDATEPROFILE_FAILED_CODE,
-                msg="验证码错误或已过期",
-                status_code=400,
+                msg="验证码校验繁忙，请稍后重试",
+                status_code=429,
             )
 
-        if str(stored_code) != str(code):
-            raise BusinessHTTPException(
-                code=settings.UPDATEPROFILE_FAILED_CODE,
-                msg="验证码输入错误",
-                status_code=400,
-            )
+        try:
+            stored_code = await redis_client.get(code_key)
+            if not stored_code:
+                raise BusinessHTTPException(
+                    code=settings.UPDATEPROFILE_FAILED_CODE,
+                    msg="验证码错误或已过期",
+                    status_code=400,
+                )
 
-        # 核销验证码，阻断重放攻击
-        await redis_client.delete(code_key)
-        await redis_client.delete(f"admin:login:lock:{email}")
+            if str(stored_code) != str(code):
+                raise BusinessHTTPException(
+                    code=settings.UPDATEPROFILE_FAILED_CODE,
+                    msg="验证码输入错误",
+                    status_code=400,
+                )
+
+            await redis_client.delete(code_key)
+            await redis_client.delete(f"admin:login:lock:{email}")
+        finally:
+            await release_redis_lock(redis_client, lock_key, lock_token)
 
         # 二次提取用户实体，重新验证 is_admin 状态
         user_result = await db.execute(
